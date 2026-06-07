@@ -85,8 +85,12 @@ the verifier (test tooling in `tools/harness/`, **not** product).
   construction); `workspace.py` (invariant `WorkspaceContract` + pluggable `WorkspaceLayout` + a
   default spec-role layout + outbox harvest); `config.py` (`TaskConfig` + deterministic 3-layer
   prompt); `domains/fake.py`. *(§8, §3.4)*
-- **1.3 Context assembly** — stable-prefix / volatile-tail split, regenerate-per-turn, the manifest,
-  and the bounded-context test. *(§9)*
+- **1.3 Context assembly ✅** — stable-prefix / volatile-tail split, regenerate-per-turn, the
+  manifest, and the bounded-context test. Landed in `context.py`: a `ContextAssembler` that
+  regenerates the two-part context from the store each turn (stable prefix = system prompt +
+  capped, payload-free, ranked manifest; volatile tail = retrieved artifacts + goal + scratch).
+  The **bounded-context guarantee (§13.5)** is structural — manifest/tail caps + per-item
+  truncation — and proven by a test: 40× the artifacts assembles to the same size. *(§9)*
 - **1.4 Service boundary + async API** — configure-by-task; proposal intake + shape validation +
   object harvest; verifier dispatch; cycle control; extraction. *(§3.4)*
 - **1.5 Integration doubles** (`tools/harness/`, non-product) — a **stub agent/workspace** (reads the
