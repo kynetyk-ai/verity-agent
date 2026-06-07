@@ -42,17 +42,17 @@ with no declared gate cannot be committed), the proposer is never its own gate, 
 accept/reject (`proposed → tentative → accepted`, plus `rejected` / `superseded` / `revised`), and
 the `refine` verdict recovers a mostly-sound artifact with a localized defect.
 
-## Build order (spec §17)
+## Roadmap and build order
 
-1. Kernel contracts — Store interface + data model, audit-contract invariants (as property tests),
-   the lifecycle state machine, the commit path.
-2. Extension-point interfaces — schema / tool / gate registries + retrieval policy (with a fake
-   domain, including a gateless type to prove "no implicit accept").
-3. Context assembly — stable-prefix / volatile-tail split; regenerate-per-turn; bounded-context test.
-4. Service scaffolding — split into the three services; prove the shape-error, advisory-verifier,
-   `refine`, and object-harvest round-trips.
-5. Feature-engineering domain (§12) — first real end-to-end run.
-6. v1 acceptance criteria (§13) — twelve runnable checks; v1 is not done until they pass.
+The live plan is **[ROADMAP.md](ROADMAP.md)** — the canonical "where are we, what's next." Read the
+lowest ⬜/🚧 item there before starting work, and keep it current (update it in the same PR that
+changes the plan's reality).
+
+The arc: **Phase 1** builds the control plane and proves it against bespoke test doubles (a stub agent
+and a stub verifier in `tools/harness/`); **Phases 2–3** swap in the real verifier and sandbox;
+**Phase 4** wires the feature-engineering domain (§12) and reaches MVP when the twelve §13 acceptance
+criteria pass. This follows the spec's §17 build order (kernel contracts → extension interfaces →
+context assembly → service scaffolding → domain → acceptance).
 
 ## Coding habits
 
