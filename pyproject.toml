@@ -5,6 +5,7 @@ description = "Implementation of the Self-Revising Discovery Harness (verity = t
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.107.1",
     "structlog>=24.1",
 ]
 

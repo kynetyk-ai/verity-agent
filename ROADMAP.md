@@ -115,13 +115,42 @@ the verifier (test tooling in `tools/harness/`, **not** product).
 
 ### Phase 2 — Verifier service + gate-primitive SDK 🚧
 
-Replace the stub verifier with the real, advisory verifier.
+Replace the stub verifier with the real, advisory verifier (spec §3.6): an **SDK of composable gate
+primitives** behind the existing `VerifierPort` seam. The verifier holds the gate **plugins** (keyed
+by gate name); the control plane keeps only the **binding** — pipeline position (`is_hard`) and the
+declared-inputs allowlist — so §8.3's split (bindings in the control plane, plugins in the verifier)
+is realized, not just designed. Built in sub-phases, each a tested, gate-green commit:
 
-- Queue-fronted async API; an SDK of gate primitives (auto-code-runner, model-tester, llm-judge,
-  agentic-grader, human-in-the-loop); the independence/network boundary; declared store-slice
-  handling. *(§3.6, §8.3, §11)*
-- **Exit:** the real verifier renders reproducible verdicts on (still-simple) artifacts; the stub
+- **2.1 SDK primitives + the verifier service ⬜** — a `GatePrimitive` contract and the rungs of the
+  reliability ladder (§11) that need no container: **deterministic-check** (rung 2, free → earns
+  `tentative`), **numeric-scorer** (rung 1, improve-score-net-of-cost), **llm-judge** (rung 4,
+  *labeled-weak*, behind a `ModelClient` seam with a deterministic fake so the suite stays offline),
+  plus *human-in-the-loop* (returns no verdict → rests `tentative`) and *model-tester* as seams. An
+  `SdkVerifier` implementing `VerifierPort`, keyed by gate name, registered as a provider. *(§3.6,
+  §8.3, §11)*
+- **2.2 Container-isolated auto-code-runner ⬜** — a `CodeRunner` seam with a real
+  **`ContainerCodeRunner`** (`docker run` with a hostile-input posture: `--network=none`, read-only
+  mounts, writable `tmpfs`, non-root, memory/cpu/pids limits, dropped caps, hard timeout; result read
+  from a captured output file — a concrete data-plane in/out, feeds #3) and a deterministic
+  `FakeCodeRunner` for the unit suite. The `auto-code-runner` primitive composes over it. One real
+  integration test is marked `@pytest.mark.docker` and auto-skips when Docker is absent, so the
+  minimal CI needs no Docker-in-CI. *(§3.6, §11, §12)*
+- **2.3 Independence boundary, made checkable ⬜** — each gate declares its store inputs
+  (`declared_inputs` on the binding); a static check confirms the resolved slice ⊆ the allowlist
+  *before* dispatch, so an over-broad gate fails before it runs (§10). Property test. *(§8.3, §10)*
+- **2.4 Real artifacts through the loop ⬜** — enrich the stub agent to emit *genuine* code objects
+  (a valid feature, one that raises, a borderline one) so the auto-code-runner earns its verdicts;
+  drive accept/reject/refine end-to-end on real evaluation, not scripts.
+- **2.5 Integration + exit ⬜** — retire the stub verifier from the happy path (kept as a unit-test
+  double); a reproducibility test (same inputs → same verdict).
+- **Exit:** the real verifier renders **reproducible** verdicts on (still-simple) artifacts; the stub
   verifier is retired from the happy path.
+
+*Decisions taken entering Phase 2:* container isolation is built **now** (not deferred) for the code
+runner; the LLM client is `anthropic` behind a `ModelClient` seam (suite uses a deterministic fake);
+the runner shells out to the `docker` CLI rather than taking a Python Docker SDK dependency. Hardening
+beyond Phase 2's needs (rootless/gVisor/seccomp) and the networked standing-service data plane (#3)
+are tracked as issues, not blockers.
 
 ### Phase 3 — Sandbox service (agent runtime + workspace) ⬜
 

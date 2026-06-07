@@ -90,12 +90,13 @@ class VerifierRequest:
 class VerifierPort(Protocol):
     """The advisory verifier service, behind one async method plus the lifecycle (§3.6).
 
-    ``dispatch`` is the **only** path to a gate verdict; the sandbox has none. Returns the same
-    :class:`GateVerdict` the commit path consumes, so a verifier-backed
-    :class:`~verity.control_plane.commit.GateRunner` is a thin adapter over this (wired in 1.4).
+    ``dispatch`` is the **only** path to a gate verdict; the sandbox has none. It returns the same
+    :class:`GateVerdict` the commit path consumes — or ``None`` when the gate cannot auto-resolve
+    (a ``requires_human`` gate), so the artifact rests at ``tentative`` (§7.4, §8.3) — matching the
+    :class:`~verity.control_plane.commit.GateRunner` contract the dispatch adapter feeds (§1.4).
     """
 
-    async def dispatch(self, request: VerifierRequest) -> GateVerdict: ...
+    async def dispatch(self, request: VerifierRequest) -> GateVerdict | None: ...
     async def provision(self) -> None: ...
     async def teardown(self) -> None: ...
     async def health(self) -> bool: ...
