@@ -49,24 +49,28 @@ These hold in every phase (see `CLAUDE.md` → *Coding habits*):
 
 ## Phases
 
-### Phase 0 — Bootstrap 🚧
+### Phase 0 — Bootstrap ✅
 
 Working day-one infrastructure so everything after this is built on solid ground.
 
 - uv project, `src/` package layout, structured logging, green test harness, lint/format/type config,
   a `justfile` for the common commands.
-- **Exit:** `just check` (lint + type + test) is green on the skeleton.
+- **Exit:** lint + type + test green on the skeleton; minimal CI runs them on every push.
 
-*(Mostly delivered by the initial scaffold; closes when CI runs `just check` on every push.)*
+*(Delivered by the initial scaffold; CI added in `feat/kernel-contracts` — a small GitHub Actions
+workflow calling `uv run` directly, no `just` in CI. CI is intentionally not a focus this early.)*
 
-### Phase 1 — Control plane + integration doubles ⬜
+### Phase 1 — Control plane + integration doubles 🚧
 
 A configurable control plane, proven end-to-end against bespoke stand-ins for the agent/workspace and
 the verifier (test tooling in `tools/harness/`, **not** product).
 
-- **1.1 Kernel contracts** — Store interface + data model (artifacts / operations / decisions /
+- **1.1 Kernel contracts ✅** — Store interface + data model (artifacts / operations / decisions /
   schema_versions + object store), audit-contract invariants as property tests, the lifecycle state
-  machine, the commit path. *(spec §4–§7)*
+  machine, the commit path. Landed in `feat/kernel-contracts`: SQLite reference backend behind a
+  `Store`/`CommitSink` split (privileged writes unreachable from the read+propose surface); the §6
+  transition table; §5 invariants as Hypothesis property tests; the §7 commit protocol (shape-error,
+  no-implicit-accept, proposer≠gate, cheap→tentative→accepted, reject, refine, supersede). *(§4–§7)*
 - **1.2 Extension-point interfaces** — schema / tool / gate registries (+ bindings) and the
   retrieval/planner policy; the invariant workspace contract + composed 3-layer prompt; per-task
   config; a trivial fake domain including a **gateless type** to prove "no implicit accept." *(§8,
