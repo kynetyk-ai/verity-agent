@@ -32,8 +32,6 @@ from verity.control_plane.registries import (
     GateRegistry,
     OperationSignature,
     SchemaRegistry,
-    ToolRegistry,
-    ToolSpec,
 )
 from verity.control_plane.store import Artifact, VerdictKind
 
@@ -59,7 +57,6 @@ class FakeDomain:
 
     schema: SchemaRegistry
     gates: GateRegistry
-    tools: ToolRegistry
     shape_validator: ShapeValidator
     run_gate: GateRunner
 
@@ -69,11 +66,10 @@ def build_fake_domain() -> FakeDomain:
     schema.register_type(ArtifactTypeDef(SOURCE, is_root=True))
     schema.register_type(ArtifactTypeDef(NOTE))
     schema.register_type(ArtifactTypeDef(ORPHAN))
+    # 'author' is the typed edge a Note-producing tool realizes; the executable tool itself is a
+    # harness-bound, sandbox-adapter concern (Phase 3), not a control-plane registration.
     schema.register_operation(OperationSignature("author", inputs=(SOURCE,), output=NOTE))
     schema.register_operation(OperationSignature("note_orphan", inputs=(SOURCE,), output=ORPHAN))
-
-    tools = ToolRegistry(schema)
-    tools.register(ToolSpec("author_note", inputs=(SOURCE,), output=NOTE))
 
     gates = GateRegistry()
     # 'Note' has a cheap structural gate then a hard selection gate; 'Orphan' is left UNBOUND.
@@ -86,7 +82,6 @@ def build_fake_domain() -> FakeDomain:
     return FakeDomain(
         schema=schema,
         gates=gates,
-        tools=tools,
         shape_validator=_validate_shape,
         run_gate=_run_gate,
     )

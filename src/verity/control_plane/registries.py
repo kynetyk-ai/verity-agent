@@ -1,14 +1,11 @@
 """The extension-point registries (spec §8).
 
-The four per-domain seams the kernel manipulates only through typed contracts:
+The per-domain seams the kernel manipulates only through typed contracts:
 
 * **Schema registry** (§8.1) — artifact types + typed operation signatures, versioned. The
   kernel reads only the *meta-schema* (names and signatures); it never interprets payload
-  semantics.
-* **Tool registry** (§8.2) — typed plugins (a declared input/output signature referencing the
-  schema). A tool produces a *proposal*; it carries no acceptance authority. Signatures are
-  typed on **both** sides — the [SC] lesson: declared input types make operation composition
-  checkable rather than coincidental.
+  semantics. Operation signatures are typed on **both** sides — the [SC] lesson: declared input
+  types make operation composition checkable rather than coincidental.
 * **Gate registry** (§8.3) — **bindings** (an ordered per-type pipeline) live here; the gate
   **plugins** that actually judge live in the verifier (§3.6). :meth:`GateRegistry.resolve` is
   the :class:`~verity.control_plane.commit.GateBindingResolver` the commit path consumes, and a
@@ -16,8 +13,19 @@ The four per-domain seams the kernel manipulates only through typed contracts:
 * **Retrieval / planner policy** (§8.4) — ``(goal, store) → ranked artifacts``. The kernel ships
   a status-aware default (prefers ``accepted`` over ``tentative``); a domain may replace it.
 
-The registries are configuration the control plane reads; they hold no LLM and make no
-judgment (Principle 9). Gate *bindings* are reused from :mod:`.commit` so the commit path stays
+**On the §8.2 tool registry — intentionally collapsed.** A tool is the *executable* realization
+of an operation, and the executable form is harness-specific (a pi-mono tool, a Claude Agent SDK
+tool def, a LangChain tool, an MCP server — different schemas and calling conventions). Strip the
+harness binding out and a tool's only harness-agnostic content is its typed signature — which is
+*already* the :class:`OperationSignature` above (a tool invocation is recorded as an ``operations``
+row, §8.2). So a separate control-plane tool registry would merely duplicate op signatures while
+implying the control plane owns tool execution (it does not). The typed/provenance half lives here
+in the schema registry; the harness-bound half belongs to the **sandbox adapter** (Phase 3),
+parallel to ``WorkspaceLayout``. This is a deliberate divergence from §8.2's four-extension-point
+shape, to be synced back to the spec.
+
+The registries are configuration the control plane reads; they hold no LLM and make no judgment
+(Principle 9). Gate *bindings* are reused from :mod:`.commit` so the commit path stays
 self-contained and the registry simply stores and resolves them.
 """
 
@@ -39,8 +47,6 @@ __all__ = [
     "ArtifactTypeDef",
     "OperationSignature",
     "SchemaRegistry",
-    "ToolSpec",
-    "ToolRegistry",
     "GateRegistry",
     "RetrievalPolicy",
     "DefaultRetrievalPolicy",
@@ -134,46 +140,9 @@ class SchemaRegistry:
         )
 
 
-# ----------------------------------------------------------------------- tool registry (§8.2)
-
-
-@dataclass(frozen=True, slots=True)
-class ToolSpec:
-    """A typed tool plugin: a name and an input/output signature over schema types (§8.2).
-
-    The callable executes in the **sandbox** (§3.5), not here — the registry holds the typed
-    signature so composition is checkable and the invocation can be recorded as an
-    ``operations`` row. A tool carries no acceptance authority; it produces a *proposal*.
-    """
-
-    name: str
-    inputs: tuple[str, ...]
-    output: str
-
-
-class ToolRegistry:
-    """The domain's tools, keyed by name, validated against the schema (§8.2)."""
-
-    def __init__(self, schema: SchemaRegistry) -> None:
-        self._schema = schema
-        self._tools: dict[str, ToolSpec] = {}
-
-    def register(self, tool: ToolSpec) -> None:
-        if tool.name in self._tools:
-            raise RegistryError(f"tool already registered: {tool.name!r}")
-        for referenced in (*tool.inputs, tool.output):
-            if not self._schema.is_registered(referenced):
-                raise RegistryError(
-                    f"tool {tool.name!r} references unknown type {referenced!r}"
-                )
-        self._tools[tool.name] = tool
-        log.debug("tool_registered", tool=tool.name)
-
-    def get(self, name: str) -> ToolSpec | None:
-        return self._tools.get(name)
-
-    def tools(self) -> tuple[ToolSpec, ...]:
-        return tuple(self._tools.values())
+# Note: there is no tool registry (§8.2) here — see the module docstring. A tool's typed
+# signature is an :class:`OperationSignature` (above); its harness-bound, executable form is a
+# Phase-3 sandbox-adapter concern, not a control-plane construct.
 
 
 # ----------------------------------------------------------------------- gate registry (§8.3)

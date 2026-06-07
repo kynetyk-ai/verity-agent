@@ -71,11 +71,15 @@ the verifier (test tooling in `tools/harness/`, **not** product).
   `Store`/`CommitSink` split (privileged writes unreachable from the read+propose surface); the §6
   transition table; §5 invariants as Hypothesis property tests; the §7 commit protocol (shape-error,
   no-implicit-accept, proposer≠gate, cheap→tentative→accepted, reject, refine, supersede). *(§4–§7)*
-- **1.2 Extension-point interfaces ✅** — schema / tool / gate registries (+ bindings) and the
+- **1.2 Extension-point interfaces ✅** — schema / gate registries (+ bindings) and the
   retrieval/planner policy; the invariant workspace contract + composed 3-layer prompt; per-task
   config; a trivial fake domain including a **gateless type** to prove "no implicit accept." Landed:
-  `registries.py` (typed schema/tool/gate registries; the gate registry *is* the commit path's
-  binding resolver, so a gateless type resolves to `None` → `NoImplicitAccept`); `ports.py`
+  `registries.py` (typed schema + gate registries; the gate registry *is* the commit path's
+  binding resolver, so a gateless type resolves to `None` → `NoImplicitAccept`). **The §8.2 tool
+  registry was intentionally collapsed** — a tool's harness-agnostic content is just its typed
+  signature (= an `OperationSignature` in the schema registry), and its executable form is
+  harness-specific, so it belongs to the Phase-3 sandbox adapter (parallel to `WorkspaceLayout`),
+  not the control plane. Divergence from §8.2 to sync back to the spec. Also: `ports.py`
   (`SandboxPort`/`VerifierPort` behind a config-keyed `ProviderRegistry`, async + no-op lifecycle
   hooks — the multi-harness/multi-verifier seam; the verifier request carries no rationale field by
   construction); `workspace.py` (invariant `WorkspaceContract` + pluggable `WorkspaceLayout` + a
@@ -112,6 +116,9 @@ Replace the stub agent with the real sandbox.
 - Open-source agent loop + LLM client; ephemeral workspace provisioned to the workspace contract;
   the outbox; per-cycle workspace regeneration + chat flush; read-only data/context mounts; never
   contacts the verifier. *(§3.5, §10)*
+- **Harness-bound tools.** This is where the executable form of a tool lands — the sandbox adapter
+  binds each domain operation (typed in the schema registry, §8.1) to its framework's native tool
+  model (the control plane carries no tool registry; see Phase 1.2). Parallel to `WorkspaceLayout`.
 - **Exit:** a real agent drives read→propose→gate→commit against the control plane; ephemerality and
   gold-data isolation hold across cycles.
 

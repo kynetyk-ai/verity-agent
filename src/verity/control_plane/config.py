@@ -28,7 +28,6 @@ from verity.control_plane.registries import (
     GateRegistry,
     RetrievalPolicy,
     SchemaRegistry,
-    ToolRegistry,
 )
 from verity.control_plane.workspace import WORKSPACE_CONTRACT, WorkspaceContract
 
@@ -54,7 +53,6 @@ class TaskConfig:
     domain_instructions: str
     schema: SchemaRegistry
     gates: GateRegistry
-    tools: ToolRegistry
     retrieval: RetrievalPolicy
     shape_validator: ShapeValidator
     sandbox_key: str

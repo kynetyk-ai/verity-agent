@@ -13,8 +13,6 @@ from verity.control_plane.registries import (
     OperationSignature,
     RegistryError,
     SchemaRegistry,
-    ToolRegistry,
-    ToolSpec,
 )
 from verity.control_plane.store import ArtifactStatus
 
@@ -54,20 +52,6 @@ def test_schema_snapshot_is_stampable() -> None:
     assert snap.version == 1
     assert snap.types == ("Note",)
     assert snap.op_signatures == ("noop",)
-
-
-# ------------------------------------------------------------------------- tools (§8.2)
-
-
-def test_tool_registry_validates_against_schema() -> None:
-    schema = SchemaRegistry()
-    schema.register_type(ArtifactTypeDef("Source", is_root=True))
-    schema.register_type(ArtifactTypeDef("Note"))
-    tools = ToolRegistry(schema)
-    tools.register(ToolSpec("author_note", inputs=("Source",), output="Note"))
-    assert tools.get("author_note") is not None
-    with pytest.raises(RegistryError):
-        tools.register(ToolSpec("bad", inputs=("Ghost",), output="Note"))
 
 
 # -------------------------------------------------------------------------- gates (§8.3)

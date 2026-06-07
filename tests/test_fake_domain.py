@@ -31,7 +31,8 @@ def test_fake_domain_registers_expected_schema() -> None:
     assert {t.name for t in domain.schema.types()} == {SOURCE, NOTE, ORPHAN}
     source = domain.schema.type(SOURCE)
     assert source is not None and source.is_root
-    assert domain.tools.get("author_note") is not None
+    # the typed Note-producing edge is an operation signature (no tool registry, by design)
+    assert domain.schema.operation("author") is not None
 
 
 def test_well_formed_note_walks_to_accepted() -> None:
