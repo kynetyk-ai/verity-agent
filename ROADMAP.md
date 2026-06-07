@@ -71,10 +71,16 @@ the verifier (test tooling in `tools/harness/`, **not** product).
   `Store`/`CommitSink` split (privileged writes unreachable from the read+propose surface); the §6
   transition table; §5 invariants as Hypothesis property tests; the §7 commit protocol (shape-error,
   no-implicit-accept, proposer≠gate, cheap→tentative→accepted, reject, refine, supersede). *(§4–§7)*
-- **1.2 Extension-point interfaces** — schema / tool / gate registries (+ bindings) and the
+- **1.2 Extension-point interfaces ✅** — schema / tool / gate registries (+ bindings) and the
   retrieval/planner policy; the invariant workspace contract + composed 3-layer prompt; per-task
-  config; a trivial fake domain including a **gateless type** to prove "no implicit accept." *(§8,
-  §3.4)*
+  config; a trivial fake domain including a **gateless type** to prove "no implicit accept." Landed:
+  `registries.py` (typed schema/tool/gate registries; the gate registry *is* the commit path's
+  binding resolver, so a gateless type resolves to `None` → `NoImplicitAccept`); `ports.py`
+  (`SandboxPort`/`VerifierPort` behind a config-keyed `ProviderRegistry`, async + no-op lifecycle
+  hooks — the multi-harness/multi-verifier seam; the verifier request carries no rationale field by
+  construction); `workspace.py` (invariant `WorkspaceContract` + pluggable `WorkspaceLayout` + a
+  default spec-role layout + outbox harvest); `config.py` (`TaskConfig` + deterministic 3-layer
+  prompt); `domains/fake.py`. *(§8, §3.4)*
 - **1.3 Context assembly** — stable-prefix / volatile-tail split, regenerate-per-turn, the manifest,
   and the bounded-context test. *(§9)*
 - **1.4 Service boundary + async API** — configure-by-task; proposal intake + shape validation +
