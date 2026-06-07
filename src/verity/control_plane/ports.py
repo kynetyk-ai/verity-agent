@@ -108,13 +108,15 @@ class VerifierPort(Protocol):
 class ServedContext:
     """The assembled context served to the sandbox at the start of a cycle (§9).
 
-    A placeholder shape for the seam; context assembly (§9, Phase 1.3) fills in the
-    stable-prefix / volatile-tail structure. Held here so the port signature is stable.
+    Carries the stable prefix and volatile tail (§9) plus a ``feedback`` channel — the
+    correction returned from the previous cycle (a shape-error message or a refine defect list,
+    §3.5), so the agent can fix formatting or produce a tracked revision.
     """
 
     system_prompt: str
     manifest: str = ""
     tail: str = ""
+    feedback: str = ""
 
 
 @dataclass(frozen=True, slots=True)

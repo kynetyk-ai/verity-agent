@@ -170,7 +170,9 @@ class ControlPlane:
 
     # -- cycle control: serve context (§9) ----------------------------------------
 
-    async def serve_context(self, task_id: str, *, goal: str, scratch: str = "") -> ServedContext:
+    async def serve_context(
+        self, task_id: str, *, goal: str, scratch: str = "", feedback: str = ""
+    ) -> ServedContext:
         task = self._task(task_id)
         assembled: AssembledContext = self._assembler.assemble(
             self._store,
@@ -181,6 +183,7 @@ class ControlPlane:
         served = ServedContext(
             system_prompt=assembled.stable_prefix,
             tail=assembled.volatile_tail,
+            feedback=feedback,
         )
         await task.sandbox.serve_context(served)
         return served
@@ -208,6 +211,7 @@ class ControlPlane:
             task.rationale[envelope.artifact.id] = envelope.metadata
 
         self._store.propose(envelope.artifact, envelope.operation)
+        self._link_revision_if_any(envelope)
         result = await self._run_commit(task, envelope, supersedes=supersedes)
         log.info("proposal_committed", task_id=task_id, outcome=result.outcome.value)
         return IntakeResult(entered_protocol=True, commit=result, harvested=harvested)
@@ -253,12 +257,25 @@ class ControlPlane:
         rejected = self._store.rejected_log(type=artifact.type)
         return (*accepted, *rejected)
 
+    def _link_revision_if_any(self, envelope: ProposalEnvelope) -> None:
+        """A ``revises`` operation links the flagged artifact to its revision (spec §4.1, §7.5b).
+
+        On a ``refine`` verdict the flagged artifact is already ``revised``; when the agent
+        re-proposes via a ``revises`` op, this sets its ``revised_by`` so the lineage stays intact.
+        """
+        op = envelope.operation
+        if op.op_name != "revises" or not op.parents:
+            return
+        flagged = self._store.get_artifact(op.parents[0])
+        if flagged is not None and flagged.status is ArtifactStatus.REVISED:
+            self._store.link_revision(flagged.id, envelope.artifact.id)
+
     # -- cycle control: the orchestration loop (§3.4) -----------------------------
 
-    async def run_cycle(self, task_id: str, *, goal: str) -> IntakeResult:
+    async def run_cycle(self, task_id: str, *, goal: str, feedback: str = "") -> IntakeResult:
         """One read → propose → gate → commit cycle, then regenerate the sandbox (§3.5, §10)."""
         task = self._task(task_id)
-        await self.serve_context(task_id, goal=goal)
+        await self.serve_context(task_id, goal=goal, feedback=feedback)
         envelope = await task.sandbox.collect_proposal()
         result = await self.submit_proposal(task_id, envelope)
         # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
@@ -266,11 +283,16 @@ class ControlPlane:
         return result
 
     async def run(self, task_id: str, *, goal: str) -> list[IntakeResult]:
-        """Drive cycles until the orchestration policy stops the run (§3.4)."""
+        """Drive cycles until the orchestration policy stops the run (§3.4).
+
+        The correction from each cycle (a shape-error or refine defects) is fed back into the next
+        cycle's served context, so the agent can fix or revise (§3.5).
+        """
         results: list[IntakeResult] = []
+        feedback = ""
         cycles = 0
         while self._policy.should_continue(cycles_run=cycles):
-            result = await self.run_cycle(task_id, goal=goal)
+            result = await self.run_cycle(task_id, goal=goal, feedback=feedback)
             results.append(result)
             cycles += 1
             if (
@@ -279,6 +301,7 @@ class ControlPlane:
                 and result.commit.status is ArtifactStatus.ACCEPTED
             ):
                 break
+            feedback = _feedback_from(result)
         log.info("run_complete", task_id=task_id, cycles=cycles)
         return results
 
@@ -306,3 +329,12 @@ class ControlPlane:
             if artifact_id in task.rationale:
                 return task.rationale[artifact_id]
         return None
+
+
+def _feedback_from(result: IntakeResult) -> str:
+    """Render the cycle's correction for the next served context (a shape-error or refine, §3.5)."""
+    if not result.entered_protocol and result.shape_error is not None:
+        return f"shape-error: {result.shape_error.message}"
+    if result.commit is not None and result.commit.defects:
+        return "refine: " + ", ".join(result.commit.defects)
+    return ""

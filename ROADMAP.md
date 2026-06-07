@@ -60,7 +60,7 @@ Working day-one infrastructure so everything after this is built on solid ground
 *(Delivered by the initial scaffold; CI added in `feat/kernel-contracts` — a small GitHub Actions
 workflow calling `uv run` directly, no `just` in CI. CI is intentionally not a focus this early.)*
 
-### Phase 1 — Control plane + integration doubles 🚧
+### Phase 1 — Control plane + integration doubles ✅
 
 A configurable control plane, proven end-to-end against bespoke stand-ins for the agent/workspace and
 the verifier (test tooling in `tools/harness/`, **not** product).
@@ -101,17 +101,19 @@ the verifier (test tooling in `tools/harness/`, **not** product).
   thread; an `OrchestrationPolicy` (max-cycles, refine cap, stop-on-accept) drives the
   serve→collect→commit→regenerate loop; extraction reads accepted artifacts, provenance, and the
   rejected/superseded/revised logs. *(§3.4)*
-- **1.5 Integration doubles** (`tools/harness/`, non-product) — a **stub agent/workspace** (reads the
-  served context, emits scripted proposals, writes object attachments to the outbox, handles
-  shape-error and refine feedback) and a **stub verifier** (returns scripted verdicts, consumes the
-  object attachments it's handed).
-- **Exit:** the control-plane subset of the §13 criteria demonstrated via the doubles —
-  propose→gate→commit; shape-error returns correctable with **no** decision row; refine →
-  `revised`/`revised_by` → `revises` with intact lineage; object **harvest-before-teardown**;
-  no-implicit-accept refusal; the privileged-mutator boundary holds; bounded context across a large
-  store; "why do we believe X" answerable from provenance.
+- **1.5 Integration doubles ✅** (`tools/harness/`, non-product) — a **stub agent/workspace** (reads
+  the served context, emits scripted proposals, writes object attachments to a real
+  `DefaultLayout` outbox, handles shape-error and refine feedback, regenerates to discard the
+  writable workspace) and a **stub verifier** (returns scripted verdicts, consumes the object
+  attachments it's handed). Both implement their ports and hold no path to the store or each other.
+- **Exit ✅:** the control-plane subset of the §13 criteria demonstrated via the doubles
+  (`tests/test_exit_criteria.py`) — propose→gate→commit; shape-error returns correctable with **no**
+  decision row / trial-count entry; refine → `revised`/`revised_by` → `revises` with intact
+  lineage; object **harvest-before-teardown** round-trip; no-implicit-accept refusal; the
+  privileged-mutator boundary holds; bounded context across a large store; "why do we believe X"
+  answerable from provenance.
 
-### Phase 2 — Verifier service + gate-primitive SDK ⬜
+### Phase 2 — Verifier service + gate-primitive SDK 🚧
 
 Replace the stub verifier with the real, advisory verifier.
 
