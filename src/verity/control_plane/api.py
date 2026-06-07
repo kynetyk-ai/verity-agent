@@ -9,7 +9,7 @@ the sole, serialized mutator, so that crossing is safe.
 What it does (the §3.4 API contract):
 
 * **Configure-by-task** — register a task's configuration, stamp its schema version, and resolve
-  + provision its sandbox and verifier from the provider registries (:mod:`.ports`).
+  + provision its sandbox and verifier from the provider registries (:mod:`verity.contracts`).
 * **Proposal intake** — validate shape (a malformed proposal is corrected and **records nothing**,
   not even a `proposed` row); **harvest the outbox objects before teardown** and content-address
   them into the object store; capture the agent's rationale on a **separate channel** (never sent
@@ -26,16 +26,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from verity.control_plane.commit import (
-    CommitResult,
-    GateSpec,
-    GateVerdict,
-    ShapeError,
-    run_commit,
-)
-from verity.control_plane.config import TaskConfig
-from verity.control_plane.context import AssembledContext, ContextAssembler
-from verity.control_plane.ports import (
+from verity.contracts import (
     SANDBOX_PROVIDERS,
     VERIFIER_PROVIDERS,
     ProposalEnvelope,
@@ -45,6 +36,15 @@ from verity.control_plane.ports import (
     VerifierPort,
     VerifierRequest,
 )
+from verity.control_plane.commit import (
+    CommitResult,
+    GateSpec,
+    GateVerdict,
+    ShapeError,
+    run_commit,
+)
+from verity.control_plane.config import TaskConfig
+from verity.control_plane.context import AssembledContext, ContextAssembler
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,

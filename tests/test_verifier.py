@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from verity.control_plane.ports import VerifierPort, VerifierRequest
+from verity.contracts import VerifierPort, VerifierRequest
 from verity.control_plane.store import Artifact, ArtifactStatus, VerdictKind
 from verity.verifier import (
     CheckOutcome,

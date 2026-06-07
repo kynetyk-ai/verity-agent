@@ -13,8 +13,8 @@ import json
 
 import pytest
 
+from verity.contracts import VerifierRequest
 from verity.control_plane.commit import GateVerdict
-from verity.control_plane.ports import VerifierRequest
 from verity.control_plane.store import Artifact, ArtifactStatus, VerdictKind
 from verity.verifier import (
     ContainerCodeRunner,

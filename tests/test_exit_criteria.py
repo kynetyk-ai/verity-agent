@@ -14,16 +14,16 @@ import pytest
 from tools.harness.stub_agent import StubAgent
 from tools.harness.stub_verifier import StubVerifier, accept_all
 
-from verity.control_plane.api import ControlPlane, OrchestrationPolicy
-from verity.control_plane.commit import CommitOutcome, GateVerdict, NoImplicitAccept
-from verity.control_plane.config import TaskConfig
-from verity.control_plane.ports import (
+from verity.contracts import (
     ProposalEnvelope,
     ProviderRegistry,
     SandboxPort,
     VerifierPort,
     VerifierRequest,
 )
+from verity.control_plane.api import ControlPlane, OrchestrationPolicy
+from verity.control_plane.commit import CommitOutcome, GateVerdict, NoImplicitAccept
+from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import (
     Artifact,

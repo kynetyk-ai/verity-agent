@@ -31,9 +31,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from verity.control_plane.commit import GateVerdict
-from verity.control_plane.ports import VerifierRequest
-from verity.control_plane.store import Artifact, VerdictKind
+from verity.contracts import Artifact, GateVerdict, VerdictKind, VerifierRequest
 from verity.logging import get_logger
 from verity.verifier.code_runner import CodeRunner, RunRequest, RunResult
 from verity.verifier.model_client import ModelClient

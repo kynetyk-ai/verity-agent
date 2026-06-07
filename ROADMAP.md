@@ -135,6 +135,17 @@ is realized, not just designed. Built in sub-phases, each a tested, gate-green c
   `FakeCodeRunner` for the unit suite. The `auto-code-runner` primitive composes over it. One real
   integration test is marked `@pytest.mark.docker` and auto-skips when Docker is absent, so the
   minimal CI needs no Docker-in-CI. *(§3.6, §11, §12)*
+- **2.3a Contract extraction ✅** — pulled the cross-service vocabulary into a new
+  **`verity.contracts`** package (the value model + the service ports/provider registry), so no
+  service depends on another's internals: the verifier now imports `verity.contracts` and has
+  **zero** `control_plane` imports. `control_plane.store`/`commit` re-export the value types they
+  operate on (a legitimate façade); `control_plane.ports` was a pure passthrough after the move and
+  was **deleted**, its callers repointed to `verity.contracts`. Control-plane-internal types
+  (`Decision`/`Provenance`/`Store`/`CommitSink`, the commit machinery, the registries) stay in
+  `control_plane` — the cut is "what crosses a wire" vs "what the control plane persists". This is
+  the structural enabler for the multi-verifier / multi-harness vision (a second verifier is an
+  added adapter against a fixed contract); a wire serialization schema + a networked transport
+  adapter remain later work. *(§3.3)*
 - **2.3 Independence boundary, made checkable ⬜** — each gate declares its store inputs
   (`declared_inputs` on the binding); a static check confirms the resolved slice ⊆ the allowlist
   *before* dispatch, so an over-broad gate fails before it runs (§10). Property test. *(§8.3, §10)*

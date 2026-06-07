@@ -24,15 +24,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from verity.contracts.model import Artifact, ArtifactStatus, GateVerdict, VerdictKind
 from verity.control_plane import lifecycle
 from verity.control_plane.store import (
-    Artifact,
-    ArtifactStatus,
     Clock,
     CommitSink,
     Decision,
     Store,
-    VerdictKind,
     default_clock,
 )
 from verity.logging import get_logger
@@ -59,14 +57,10 @@ log = get_logger("verity.control_plane.commit")
 # ----------------------------------------------------------------- collaborator types
 
 
-@dataclass(frozen=True, slots=True)
-class GateVerdict:
-    """One gate's advisory verdict (spec §3.6, §7.3). ``defects`` localizes a ``refine``."""
-
-    kind: VerdictKind
-    rationale: str
-    defects: tuple[str, ...] | None = None
-    score: float | None = None
+# GateVerdict (the verifier's reply) is a cross-service value type — defined in
+# verity.contracts.model, imported above, and re-exported here so the commit path's callers keep a
+# stable surface. GateSpec / GateBinding below are control-plane-internal config (the binding), not
+# part of the wire contract.
 
 
 @dataclass(frozen=True, slots=True)

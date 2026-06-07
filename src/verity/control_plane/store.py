@@ -24,10 +24,22 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
 
+# The boundary-crossing value model lives in verity.contracts and is re-exported here, so the store
+# still surfaces the nouns it persists (§4.1). Control-plane-internal value types — Decision,
+# SchemaVersion, Provenance — are defined below, alongside the storage mechanism.
+from verity.contracts.model import (
+    Artifact,
+    ArtifactStatus,
+    JSONValue,
+    ObjectRef,
+    Operation,
+    OperationStatus,
+    Payload,
+    VerdictKind,
+)
 from verity.logging import get_logger
 
 __all__ = [
@@ -55,92 +67,10 @@ __all__ = [
 log = get_logger("verity.control_plane.store")
 
 
-# --------------------------------------------------------------------------- enums
-
-
-class ArtifactStatus(StrEnum):
-    """The artifact lifecycle states (spec §4.1, §6)."""
-
-    PROPOSED = "proposed"
-    TENTATIVE = "tentative"
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-    SUPERSEDED = "superseded"
-    REVISED = "revised"
-
-
-class OperationStatus(StrEnum):
-    """The status of a provenance edge (spec §4.1)."""
-
-    SUCCESS = "success"
-    FAILED = "failed"
-    RETRIED = "retried"
-
-
-class VerdictKind(StrEnum):
-    """The three answers a gate can give (spec §4.1, §7, §11)."""
-
-    ACCEPT = "accept"
-    REJECT = "reject"
-    REFINE = "refine"
-
-
-# --------------------------------------------------------------------- value model
-
-JSONValue = bool | int | float | str | None | list["JSONValue"] | dict[str, "JSONValue"]
-
-
-@dataclass(frozen=True, slots=True)
-class ObjectRef:
-    """A reference to a content-addressed object in the object store (spec §4.1).
-
-    Artifact payloads hold this instead of inlining bytes, so code, a data file, or a
-    serialized model fits the relational/JSON backends: the row carries the hash and the
-    pointer, the bytes live in the object store (§4.2).
-    """
-
-    blob_ref: str
-    content_hash: str
-
-
-# A payload is either an inline JSON value or a reference to a stored object (§4.1).
-Payload = JSONValue | ObjectRef
-
-
-@dataclass(frozen=True, slots=True)
-class Artifact:
-    """A typed payload with a lifecycle status — the durable noun (spec §4.1, §6).
-
-    Frozen: a status transition produces a *new* snapshot via the commit path, never an
-    in-place payload edit (§5.2). ``superseded_by`` / ``revised_by`` point to the artifact
-    that replaced or revised this one, once that happens (§6, §7).
-    """
-
-    id: str
-    type: str
-    payload: Payload
-    status: ArtifactStatus
-    created_by: str
-    created_at: str
-    superseded_by: str | None = None
-    revised_by: str | None = None
-    is_root: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class Operation:
-    """A typed provenance edge: parents → output, with a success/failed/retried status.
-
-    A ``revises`` operation (parent = the flagged artifact, output = its revision) records a
-    refine as provenance-bearing work rather than an in-place edit (spec §4.1, §6).
-    """
-
-    op_id: str
-    op_name: str
-    parents: tuple[str, ...]
-    output_id: str
-    status: OperationStatus
-    created_at: str
+# The cross-service value model (ArtifactStatus / OperationStatus / VerdictKind / ObjectRef /
+# Payload / Artifact / Operation) is imported from verity.contracts.model above and re-exported via
+# __all__. What follows are the control-plane-internal value types — never sent to a gate or the
+# sandbox — defined here alongside the storage mechanism.
 
 
 @dataclass(frozen=True, slots=True)

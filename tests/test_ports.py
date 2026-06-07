@@ -7,17 +7,15 @@ import dataclasses
 
 import pytest
 
-from verity.control_plane.commit import GateVerdict
-from verity.control_plane.ports import (
-    ProviderError,
-    ProviderRegistry,
-    VerifierPort,
-    VerifierRequest,
-)
-from verity.control_plane.store import (
+from verity.contracts import (
     Artifact,
     ArtifactStatus,
+    GateVerdict,
+    ProviderError,
+    ProviderRegistry,
     VerdictKind,
+    VerifierPort,
+    VerifierRequest,
 )
 
 

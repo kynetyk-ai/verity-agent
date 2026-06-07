@@ -1,7 +1,7 @@
 """The advisory verifier service (spec §3.6).
 
 :class:`SdkVerifier` is the real, in-process verifier: an SDK of gate **plugins** (built from the
-primitives in :mod:`.primitives`) behind the :class:`~verity.control_plane.ports.VerifierPort`. It
+primitives in :mod:`.primitives`) behind the :class:`~verity.contracts.ports.VerifierPort`. It
 holds a map of **gate name → plugin** and, on :meth:`dispatch`, runs the named plugin over the
 shaped proposal, its declared store-slice, and any object attachments — returning the verdict the
 commit path acts on. It never writes to the store and never decides whether to continue (§3.6).
@@ -15,15 +15,14 @@ raised as :class:`~verity.verifier.errors.VerifierError` — the verifier-side "
 an unknown gate never silently passes (§3.6, §5.7).
 
 In-process today; the async + lifecycle shape is the queue-fronted networked service's shape, so
-fronting it with a real queue later is an added adapter, not a reshape (§3.6, :mod:`.ports`).
+fronting it with a real queue later is an added adapter, not a reshape (§3.6).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from verity.control_plane.commit import GateVerdict
-from verity.control_plane.ports import VerifierRequest
+from verity.contracts import GateVerdict, VerifierRequest
 from verity.logging import get_logger
 from verity.verifier.errors import VerifierError
 from verity.verifier.primitives import GatePrimitive

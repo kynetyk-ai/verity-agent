@@ -10,10 +10,7 @@ from __future__ import annotations
 import asyncio
 
 from tests.helpers import accept, reject
-from verity.control_plane.api import ControlPlane, OrchestrationPolicy
-from verity.control_plane.commit import CommitOutcome, GateVerdict
-from verity.control_plane.config import TaskConfig
-from verity.control_plane.ports import (
+from verity.contracts import (
     ProposalEnvelope,
     ProviderRegistry,
     SandboxPort,
@@ -21,6 +18,9 @@ from verity.control_plane.ports import (
     VerifierPort,
     VerifierRequest,
 )
+from verity.control_plane.api import ControlPlane, OrchestrationPolicy
+from verity.control_plane.commit import CommitOutcome, GateVerdict
+from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import (
     Artifact,

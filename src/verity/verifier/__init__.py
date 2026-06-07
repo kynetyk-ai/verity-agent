@@ -2,7 +2,7 @@
 
 An SDK of composable gate **primitives** (:mod:`.primitives`) realizing the rungs of the
 reliability ladder, plus the :class:`~verity.verifier.service.SdkVerifier` that hosts them behind
-the :class:`~verity.control_plane.ports.VerifierPort`. The LLM-judge's model dependency is isolated
+the :class:`~verity.contracts.ports.VerifierPort`. The LLM-judge's model dependency is isolated
 behind the :class:`~verity.verifier.model_client.ModelClient` seam, so the suite runs offline.
 """
 

@@ -5,7 +5,7 @@ plus its declared store-slice and any object attachments, and returns a *scripte
 (``accept`` / ``reject`` / ``refine``, with rationale and optional defects). No real evaluation.
 Used to drive every commit-path branch deterministically.
 
-It implements :class:`~verity.control_plane.ports.VerifierPort`, records every request it is
+It implements :class:`~verity.contracts.ports.VerifierPort`, records every request it is
 handed (so tests can assert the independence contract — a rationale-free slice, §10 — and that
 object attachments arrive), and resolves a verdict through an injected ``responder`` callable.
 """
@@ -15,9 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from verity.control_plane.commit import GateVerdict
-from verity.control_plane.ports import VerifierRequest
-from verity.control_plane.store import VerdictKind
+from verity.contracts import GateVerdict, VerdictKind, VerifierRequest
 from verity.logging import get_logger
 
 __all__ = ["Responder", "StubVerifier", "accept_all", "by_gate"]

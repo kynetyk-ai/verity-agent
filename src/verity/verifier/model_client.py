@@ -5,7 +5,7 @@ one dependency on a live model is isolated behind this narrow :class:`ModelClien
 
 * the test suite runs **offline and deterministically** against :class:`FakeModelClient`, and
 * a real model backend (:class:`AnthropicModelClient`) is an *added adapter*, not a rewrite —
-  the same seam reasoning as the sandbox/verifier ports (:mod:`verity.control_plane.ports`).
+  the same seam reasoning as the sandbox/verifier ports (:mod:`verity.contracts.ports`).
 
 A client is handed only the artifact under test and the declared store-slice — never the
 proposer's rationale (the slice is :class:`Artifact` only, by construction, §10).
@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from verity.control_plane.store import Artifact, VerdictKind
+from verity.contracts import Artifact, VerdictKind
 from verity.logging import get_logger
 from verity.verifier.errors import VerifierError
 
