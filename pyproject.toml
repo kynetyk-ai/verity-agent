@@ -40,3 +40,6 @@ files = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra"
+markers = [
+    "docker: integration test requiring a reachable Docker daemon (auto-skipped when absent)",
+]

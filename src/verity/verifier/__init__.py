@@ -8,6 +8,14 @@ behind the :class:`~verity.verifier.model_client.ModelClient` seam, so the suite
 
 from __future__ import annotations
 
+from verity.verifier.code_runner import (
+    CodeRunner,
+    ContainerCodeRunner,
+    FakeCodeRunner,
+    RunRequest,
+    RunResult,
+    docker_available,
+)
 from verity.verifier.errors import VerifierError
 from verity.verifier.model_client import (
     AnthropicModelClient,
@@ -18,6 +26,7 @@ from verity.verifier.model_client import (
 from verity.verifier.primitives import (
     CheckOutcome,
     GatePrimitive,
+    auto_code_runner,
     deterministic_check,
     human_in_the_loop,
     llm_judge,
@@ -37,7 +46,14 @@ __all__ = [
     "deterministic_check",
     "numeric_scorer",
     "llm_judge",
+    "auto_code_runner",
     "human_in_the_loop",
     "model_tester",
+    "CodeRunner",
+    "FakeCodeRunner",
+    "ContainerCodeRunner",
+    "RunRequest",
+    "RunResult",
+    "docker_available",
     "SdkVerifier",
 ]
