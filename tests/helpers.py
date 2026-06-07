@@ -1,8 +1,8 @@
-"""Shared test helpers for the kernel-contract tests (ROADMAP Phase 1.1).
+"""Shared test helpers for the kernel-contract tests (ROADMAP Phase 1.1; ADR 0001).
 
-Deterministic clocks/ids and scripted commit-path collaborators (shape validator, gate
-binding resolver, gate runner) so the store, lifecycle, and commit path can be exercised in
-isolation before the registries (§8) and verifier dispatch (§3.6) exist.
+Deterministic clocks/ids, a proposer, and scripted commit-path collaborators for the **opaque
+verifier** model: a coverage resolver, a bundle dispatcher, and verdict-bundle builders, so the
+store, lifecycle, and commit path can be exercised in isolation.
 """
 
 from __future__ import annotations
@@ -10,23 +10,22 @@ from __future__ import annotations
 import itertools
 from collections.abc import Iterable
 
-from verity.control_plane.commit import (
-    GateBinding,
-    GateSpec,
-    GateVerdict,
-    ShapeError,
-)
-from verity.control_plane.store import (
+from verity.contracts import (
     Artifact,
     ArtifactStatus,
+    GateDecision,
+    GateVerdict,
     Operation,
     OperationStatus,
     Payload,
-    SqliteStore,
+    VerdictBundle,
     VerdictKind,
 )
+from verity.control_plane.commit import ShapeError
+from verity.control_plane.independence import StoreInput
+from verity.control_plane.store import SqliteStore
 
-VERIFIER = "verifier"  # a gate identity distinct from the proposer
+VERIFIER = "verifier"  # a verifier identity distinct from the proposer
 AGENT = "agent"  # the default proposer identity
 
 
@@ -72,28 +71,56 @@ def propose(
     return store.propose(artifact, op)
 
 
-def gate(
-    name: str = "g",
-    *,
-    identity: str = VERIFIER,
-    is_hard: bool = False,
-    requires_human: bool = False,
-) -> GateSpec:
-    return GateSpec(name=name, identity=identity, is_hard=is_hard, requires_human=requires_human)
+# ------------------------------------------------------------------- commit collaborators
 
 
-def binding(artifact_type: str, *gates: GateSpec) -> GateBinding:
-    return GateBinding(artifact_type=artifact_type, gates=tuple(gates))
+def coverage(*gated: tuple[str, frozenset[StoreInput]] | str):
+    """A :class:`CoverageResolver`: gated types resolve to their inputs, others to ``None``.
 
+    Pass a bare type name for an empty-slice gated type, or ``(type, declared_inputs)`` to grant it.
+    """
+    table: dict[str, frozenset[StoreInput]] = {}
+    for entry in gated:
+        if isinstance(entry, str):
+            table[entry] = frozenset()
+        else:
+            table[entry[0]] = entry[1]
 
-def resolver(*bindings: GateBinding):
-    """A :class:`GateBindingResolver` over a fixed map; unknown types resolve to ``None``."""
-    table = {b.artifact_type: b for b in bindings}
-
-    def resolve(artifact_type: str) -> GateBinding | None:
+    def resolve(artifact_type: str) -> frozenset[StoreInput] | None:
         return table.get(artifact_type)
 
     return resolve
+
+
+def decision(
+    gate: str = "g",
+    kind: VerdictKind = VerdictKind.ACCEPT,
+    rationale: str = "ok",
+    *,
+    defects: tuple[str, ...] | None = None,
+    score: float | None = None,
+) -> GateDecision:
+    return GateDecision(gate=gate, kind=kind, rationale=rationale, defects=defects, score=score)
+
+
+def bundle(
+    status: ArtifactStatus,
+    *decisions: GateDecision,
+    supersedes: str | None = None,
+) -> VerdictBundle:
+    return VerdictBundle(status=status, decisions=tuple(decisions), supersedes=supersedes)
+
+
+def returns(result: VerdictBundle):
+    """A :class:`BundleDispatch` that returns a fixed bundle, recording the artifacts it judged."""
+    seen: list[Artifact] = []
+
+    def dispatch(artifact: Artifact) -> VerdictBundle:
+        seen.append(artifact)
+        return result
+
+    dispatch.seen = seen  # type: ignore[attr-defined]
+    return dispatch
 
 
 def shape_ok():
@@ -124,12 +151,3 @@ def reject(rationale: str = "no") -> GateVerdict:
 
 def refine(*defects: str, rationale: str = "fixable") -> GateVerdict:
     return GateVerdict(VerdictKind.REFINE, rationale, defects=tuple(defects) or ("defect",))
-
-
-def runner(verdicts: dict[str, GateVerdict | None]):
-    """A :class:`GateRunner` mapping gate name → verdict (``None`` = cannot auto-resolve)."""
-
-    def run(g: GateSpec, _artifact: Artifact) -> GateVerdict | None:
-        return verdicts.get(g.name, accept())
-
-    return run

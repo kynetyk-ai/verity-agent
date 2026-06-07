@@ -5,11 +5,11 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers import make_store, propose
-from verity.control_plane.commit import GateSpec
+from verity.control_plane.independence import StoreInput
 from verity.control_plane.registries import (
     ArtifactTypeDef,
     DefaultRetrievalPolicy,
-    GateRegistry,
+    GatedTypeRegistry,
     OperationSignature,
     RegistryError,
     SchemaRegistry,
@@ -57,25 +57,27 @@ def test_schema_snapshot_is_stampable() -> None:
 # -------------------------------------------------------------------------- gates (§8.3)
 
 
-def test_gate_registry_resolves_bindings_and_unknown_is_none() -> None:
-    gates = GateRegistry()
-    gates.bind("Note", GateSpec("g", identity="verifier"))
-    assert gates.resolve("Note") is not None
-    # the no-implicit-accept trigger: an unbound type resolves to None (§5.7)
-    assert gates.resolve("Orphan") is None
+def test_gated_type_registry_resolves_inputs_and_unknown_is_none() -> None:
+    gated = GatedTypeRegistry()
+    gated.gate("Note", declared_inputs=frozenset({StoreInput.INCUMBENTS}))
+    assert gated.resolve("Note") == frozenset({StoreInput.INCUMBENTS})
+    # the no-implicit-accept trigger: an unregistered type resolves to None (§5.7)
+    assert gated.resolve("Orphan") is None
+    assert gated.is_gated("Note") and not gated.is_gated("Orphan")
 
 
-def test_gate_registry_refuses_empty_pipeline() -> None:
-    gates = GateRegistry()
+def test_gated_type_with_empty_inputs_is_still_gated() -> None:
+    gated = GatedTypeRegistry()
+    gated.gate("Note")  # gated, but its verifier sees only the artifact under test
+    assert gated.resolve("Note") == frozenset()
+    assert gated.is_gated("Note")
+
+
+def test_gated_type_registry_rejects_duplicate() -> None:
+    gated = GatedTypeRegistry()
+    gated.gate("Note")
     with pytest.raises(RegistryError):
-        gates.bind("Note")  # an empty pipeline is an implicit accept (§5.7)
-
-
-def test_gate_registry_rejects_duplicate_binding() -> None:
-    gates = GateRegistry()
-    gates.bind("Note", GateSpec("g", identity="verifier"))
-    with pytest.raises(RegistryError):
-        gates.bind("Note", GateSpec("g2", identity="verifier"))
+        gated.gate("Note")
 
 
 # --------------------------------------------------------------------- retrieval (§8.4)

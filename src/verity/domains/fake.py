@@ -1,64 +1,65 @@
-"""A trivial fake domain to prove the extension-point contracts (spec §8, §17.2).
+"""A trivial fake domain to prove the extension-point contracts (spec §8, §17.2; ADR 0001).
 
-Not a real domain — it exists only to exercise the registries and the commit path before the
-feature-engineering domain (§12, Phase 4) lands. It is deliberately minimal and **deterministic**
-(no LLM, no real evaluation), and it includes a **gateless type** so "no implicit accept" (§5.7)
-can be demonstrated: registering a type with no gate binding and attempting to commit it must
-error, not default-accept.
+Not a real domain — it exercises the registries, the commit path, and the **opaque verifier** before
+the feature-engineering domain (§12, Phase 4) lands. Deterministic (no LLM), and it includes a
+**gateless type** so "no implicit accept" (§5.7) can be demonstrated: a type not registered as gated
+cannot be committed.
 
 Types:
 * ``Source`` — a root (raw input) type.
-* ``Note`` — the gated type: a cheap "well-formed" gate (→ ``tentative``) then a hard
-  "worth-keeping" gate (→ ``accepted``).
-* ``Orphan`` — a registered type with **no** gate binding (the no-implicit-accept probe).
+* ``Note`` — the gated type. Its verifier runs a cheap "well-formed" check (→ ``tentative``) then a
+  hard "worth-keeping" check (→ ``accepted``); the control plane declares it gated and grants it the
+  incumbents + rejected-log slice (§8.3, §10).
+* ``Orphan`` — a registered type with **no** gate (the no-implicit-accept probe).
 
-The in-process gate runner here stands in for the verifier *for this fake domain only*; the real
-verifier is a separate service (§3.6, Phase 2).
+The control plane only declares *that* ``Note`` is gated and *what slice* its verifier may see; the
+pipeline itself lives in :func:`build_fake_verifier` (the opaque verifier package).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from verity.control_plane.commit import (
-    GateRunner,
-    GateSpec,
-    GateVerdict,
-    ShapeError,
-    ShapeValidator,
-)
+from verity.contracts import JSONValue, VerifierRequest
+from verity.control_plane.commit import ShapeError, ShapeValidator
+from verity.control_plane.independence import StoreInput
 from verity.control_plane.registries import (
     ArtifactTypeDef,
-    GateRegistry,
+    GatedTypeRegistry,
     OperationSignature,
     SchemaRegistry,
 )
-from verity.control_plane.store import Artifact, VerdictKind
+from verity.control_plane.store import Artifact
+from verity.verifier import CheckOutcome, GateStep, SdkVerifier, deterministic_check
 
 __all__ = [
     "SOURCE",
     "NOTE",
     "ORPHAN",
+    "FAKE_VERIFIER_IDENTITY",
     "FakeDomain",
     "build_fake_domain",
+    "build_fake_verifier",
 ]
 
 SOURCE = "Source"
 NOTE = "Note"
 ORPHAN = "Orphan"
 
-# Gate identities — distinct from any proposer, so proposer ≠ gate holds (§7.2).
-_GATE_IDENTITY = "fake-verifier"
+# The verifier package's identity — distinct from any proposer, so proposer ≠ gate holds (§7.2).
+FAKE_VERIFIER_IDENTITY = "fake-verifier"
 
 
 @dataclass(frozen=True, slots=True)
 class FakeDomain:
-    """The bundle a task wires in: the registries, the shape validator, and the gate runner."""
+    """The control-plane side a task wires in: the schema, the gated-type coverage, the shape spec.
+
+    The verifier side (the pipeline) is :func:`build_fake_verifier`, selected by ``verifier_key``.
+    """
 
     schema: SchemaRegistry
-    gates: GateRegistry
+    gated_types: GatedTypeRegistry
     shape_validator: ShapeValidator
-    run_gate: GateRunner
 
 
 def build_fake_domain() -> FakeDomain:
@@ -66,24 +67,34 @@ def build_fake_domain() -> FakeDomain:
     schema.register_type(ArtifactTypeDef(SOURCE, is_root=True))
     schema.register_type(ArtifactTypeDef(NOTE))
     schema.register_type(ArtifactTypeDef(ORPHAN))
-    # 'author' is the typed edge a Note-producing tool realizes; the executable tool itself is a
-    # harness-bound, sandbox-adapter concern (Phase 3), not a control-plane registration.
     schema.register_operation(OperationSignature("author", inputs=(SOURCE,), output=NOTE))
     schema.register_operation(OperationSignature("note_orphan", inputs=(SOURCE,), output=ORPHAN))
 
-    gates = GateRegistry()
-    # 'Note' has a cheap structural gate then a hard selection gate; 'Orphan' is left UNBOUND.
-    gates.bind(
-        NOTE,
-        GateSpec("well-formed", identity=_GATE_IDENTITY, is_hard=False),
-        GateSpec("worth-keeping", identity=_GATE_IDENTITY, is_hard=True),
+    gated_types = GatedTypeRegistry()
+    # 'Note' is gated; its verifier may see the incumbents it must beat and the rejected-log (§8.3,
+    # §10). 'Orphan' is left UNGATED → committing it is a NoImplicitAccept error (§5.7).
+    gated_types.gate(
+        NOTE, declared_inputs=frozenset({StoreInput.INCUMBENTS, StoreInput.REJECTED_LOG})
     )
 
-    return FakeDomain(
-        schema=schema,
-        gates=gates,
-        shape_validator=_validate_shape,
-        run_gate=_run_gate,
+    return FakeDomain(schema=schema, gated_types=gated_types, shape_validator=_validate_shape)
+
+
+def build_fake_verifier() -> SdkVerifier:
+    """The opaque verifier package for the fake domain — its pipeline (spec §3.6, ADR 0001).
+
+    Deterministic, marker-driven plugins reproduce the classic fake semantics: a payload ``reject``
+    marker rejects, ``defect`` refines, ``keep=False`` fails the hard check. Lets the fake domain
+    drive the **real** verifier end-to-end while staying fully reproducible.
+    """
+    return SdkVerifier(
+        identity=FAKE_VERIFIER_IDENTITY,
+        pipelines={
+            NOTE: (
+                GateStep("well-formed", deterministic_check(_well_formed_check), is_hard=False),
+                GateStep("worth-keeping", deterministic_check(_worth_keeping_check), is_hard=True),
+            )
+        },
     )
 
 
@@ -97,25 +108,22 @@ def _validate_shape(artifact: Artifact) -> ShapeError | None:
     return None
 
 
-def _run_gate(gate: GateSpec, artifact: Artifact) -> GateVerdict | None:
-    """Deterministic verdicts keyed off marker fields in the payload (stands in for a verifier).
+def _markers(request: VerifierRequest) -> dict[str, JSONValue]:
+    payload = request.proposal.payload
+    return payload if isinstance(payload, dict) else {}
 
-    Markers (all optional) on a ``Note`` payload drive the outcome so tests can script any branch:
-    ``reject`` → reject; ``defect`` → refine(that defect); ``keep=False`` → hard-gate reject.
-    """
-    payload = artifact.payload if isinstance(artifact.payload, dict) else {}
 
-    if gate.name == "well-formed":
-        if payload.get("reject"):
-            return GateVerdict(VerdictKind.REJECT, "marked reject")
-        defect = payload.get("defect")
-        if defect:
-            return GateVerdict(VerdictKind.REFINE, "marked defect", defects=(str(defect),))
-        return GateVerdict(VerdictKind.ACCEPT, "well-formed")
+def _well_formed_check(request: VerifierRequest) -> CheckOutcome:
+    payload = _markers(request)
+    if payload.get("reject"):
+        return CheckOutcome(ok=False, rationale="marked reject")
+    defect = payload.get("defect")
+    if defect:
+        return CheckOutcome(ok=False, rationale="marked defect", defects=(str(defect),))
+    return CheckOutcome(ok=True, rationale="well-formed")
 
-    if gate.name == "worth-keeping":
-        if payload.get("keep", True) is False:
-            return GateVerdict(VerdictKind.REJECT, "not worth keeping", score=0.0)
-        return GateVerdict(VerdictKind.ACCEPT, "worth keeping", score=1.0)
 
-    return GateVerdict(VerdictKind.ACCEPT, f"unknown gate {gate.name!r} default-accepts in fake")
+def _worth_keeping_check(request: VerifierRequest) -> CheckOutcome:
+    if _markers(request).get("keep", True) is False:
+        return CheckOutcome(ok=False, rationale="not worth keeping")
+    return CheckOutcome(ok=True, rationale="worth keeping")

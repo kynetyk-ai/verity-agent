@@ -1,8 +1,9 @@
-"""Phase 1 exit criteria — the control-plane subset of §13, via the integration doubles.
+"""Control-plane §13 criteria, demonstrated against the **real** verifier (ROADMAP Phase 1/2.5).
 
-Drives the real :class:`ControlPlane` against the Phase 1.5 stub agent/workspace and stub
-verifier (tools/harness), demonstrating each control-plane-level acceptance criterion as a
-runnable check (ROADMAP Phase 1 exit).
+Drives the real :class:`ControlPlane` and the deterministic fake domain on the **real**
+:class:`~verity.verifier.SdkVerifier` (Phase 2.5 retired the stub verifier from the happy path; it
+survives only as a port-protocol double, asserted below). The stub agent/workspace stands in for the
+sandbox. Each control-plane-level acceptance criterion is a runnable check.
 """
 
 from __future__ import annotations
@@ -12,18 +13,17 @@ from pathlib import Path
 
 import pytest
 from tools.harness.stub_agent import StubAgent
-from tools.harness.stub_verifier import StubVerifier, accept_all
+from tools.harness.stub_verifier import StubVerifier
 
-from verity.control_plane.api import ControlPlane, OrchestrationPolicy
-from verity.control_plane.commit import CommitOutcome, GateVerdict, NoImplicitAccept
-from verity.control_plane.config import TaskConfig
-from verity.control_plane.ports import (
+from verity.contracts import (
     ProposalEnvelope,
     ProviderRegistry,
     SandboxPort,
     VerifierPort,
-    VerifierRequest,
 )
+from verity.control_plane.api import ControlPlane, OrchestrationPolicy
+from verity.control_plane.commit import CommitOutcome, NoImplicitAccept
+from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import (
     Artifact,
@@ -33,7 +33,8 @@ from verity.control_plane.store import (
     SqliteStore,
     VerdictKind,
 )
-from verity.domains.fake import NOTE, ORPHAN, SOURCE, build_fake_domain
+from verity.domains.fake import NOTE, ORPHAN, SOURCE, build_fake_domain, build_fake_verifier
+from verity.verifier import SdkVerifier
 
 # --------------------------------------------------------------------------- helpers
 
@@ -44,7 +45,7 @@ def _config(domain) -> TaskConfig:
         instructions="produce good notes",
         domain_instructions="a Note has a text field",
         schema=domain.schema,
-        gates=domain.gates,
+        gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
         sandbox_key="stub",
@@ -75,16 +76,15 @@ def _build(
     tmp_path: Path,
     *,
     steps: list[ProposalEnvelope],
-    responder=accept_all,
     policy: OrchestrationPolicy | None = None,
-) -> tuple[ControlPlane, StubAgent, StubVerifier, SqliteStore]:
+) -> tuple[ControlPlane, StubAgent, SdkVerifier, SqliteStore]:
     store = SqliteStore()
     store.propose(
         Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
         Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
     )
     agent = StubAgent(root=tmp_path / "ws", steps=steps)
-    verifier = StubVerifier(responder=responder)
+    verifier = build_fake_verifier()  # the REAL verifier, not the stub (§2.5)
     sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
     vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
     sp.register("stub", lambda: agent)
@@ -97,13 +97,6 @@ def _build(
     )
     asyncio.run(cp.configure(_config(build_fake_domain())))
     return cp, agent, verifier, store
-
-
-def _refine_n1(request: VerifierRequest) -> GateVerdict:
-    """A responder: refine n1 at its cheap gate; accept everything else."""
-    if request.proposal.id == "n1" and request.gate == "well-formed":
-        return GateVerdict(VerdictKind.REFINE, "fix the tone", defects=("tone",))
-    return GateVerdict(VerdictKind.ACCEPT, "ok")
 
 
 # --------------------------------------------------------------------------- the doubles
@@ -146,8 +139,12 @@ def test_shape_error_is_correctable_and_unrecorded(tmp_path: Path) -> None:
 
 
 def test_refine_yields_tracked_revision_with_intact_lineage(tmp_path: Path) -> None:
-    steps = [_env("n1"), _env("n2", parents=("n1",), op_name="revises")]
-    cp, agent, _verifier, store = _build(tmp_path, steps=steps, responder=_refine_n1)
+    # the 'defect' marker drives the real well-formed gate to refine n1; n2 is its clean revision
+    steps = [
+        _env("n1", payload={"text": "hi", "defect": "tone"}),
+        _env("n2", parents=("n1",), op_name="revises"),
+    ]
+    cp, agent, _verifier, store = _build(tmp_path, steps=steps)
     asyncio.run(cp.run("t1", goal="make a note"))
 
     n1 = store.get_artifact("n1")

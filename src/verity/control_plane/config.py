@@ -2,7 +2,7 @@
 
 The configuration surface for a task (configured, not coded): task instructions, the
 proposal-shape validator, data sources, contextual info, and the §8 registrations — plus the
-provider keys that select the sandbox and verifier adapters (:mod:`.ports`). The invariant
+provider keys that select the sandbox and verifier adapters (:mod:`verity.contracts`). The invariant
 **workspace contract** itself lives in :mod:`.workspace`; this module composes the agent's
 system prompt against it.
 
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 from verity.control_plane.commit import ShapeValidator
 from verity.control_plane.registries import (
-    GateRegistry,
+    GatedTypeRegistry,
     RetrievalPolicy,
     SchemaRegistry,
 )
@@ -44,7 +44,8 @@ class TaskConfig:
     """A task's full configuration surface (spec §3.4).
 
     ``sandbox_key`` / ``verifier_key`` name the providers to resolve from the port registries
-    (:mod:`.ports`), so swapping the harness or verifier is a config change. ``shape_validator``
+    (:mod:`verity.contracts`), so swapping the harness or verifier is a config change.
+    ``shape_validator``
     realizes the proposal-shape spec the commit path checks at §7.0.
     """
 
@@ -52,7 +53,7 @@ class TaskConfig:
     instructions: str
     domain_instructions: str
     schema: SchemaRegistry
-    gates: GateRegistry
+    gated_types: GatedTypeRegistry
     retrieval: RetrievalPolicy
     shape_validator: ShapeValidator
     sandbox_key: str

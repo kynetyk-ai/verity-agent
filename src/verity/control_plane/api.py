@@ -9,7 +9,7 @@ the sole, serialized mutator, so that crossing is safe.
 What it does (the §3.4 API contract):
 
 * **Configure-by-task** — register a task's configuration, stamp its schema version, and resolve
-  + provision its sandbox and verifier from the provider registries (:mod:`.ports`).
+  + provision its sandbox and verifier from the provider registries (:mod:`verity.contracts`).
 * **Proposal intake** — validate shape (a malformed proposal is corrected and **records nothing**,
   not even a `proposed` row); **harvest the outbox objects before teardown** and content-address
   them into the object store; capture the agent's rationale on a **separate channel** (never sent
@@ -24,27 +24,28 @@ What it does (the §3.4 API contract):
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 
-from verity.control_plane.commit import (
-    CommitResult,
-    GateSpec,
-    GateVerdict,
-    ShapeError,
-    run_commit,
-)
-from verity.control_plane.config import TaskConfig
-from verity.control_plane.context import AssembledContext, ContextAssembler
-from verity.control_plane.ports import (
+from verity.contracts import (
     SANDBOX_PROVIDERS,
     VERIFIER_PROVIDERS,
     ProposalEnvelope,
     ProviderRegistry,
     SandboxPort,
     ServedContext,
+    VerdictBundle,
     VerifierPort,
     VerifierRequest,
 )
+from verity.control_plane.commit import (
+    CommitResult,
+    ShapeError,
+    run_commit,
+)
+from verity.control_plane.config import TaskConfig
+from verity.control_plane.context import AssembledContext, ContextAssembler
+from verity.control_plane.independence import resolve_declared_slice
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
@@ -179,6 +180,7 @@ class ControlPlane:
             system_prompt=task.config.system_prompt(),
             goal=goal,
             scratch=scratch,
+            retrieval=task.config.retrieval,  # the task's policy drives the tail (§8.4)
         )
         served = ServedContext(
             system_prompt=assembled.stable_prefix,
@@ -191,12 +193,13 @@ class ControlPlane:
     # -- proposal intake (§3.4, §7) -----------------------------------------------
 
     async def submit_proposal(
-        self, task_id: str, envelope: ProposalEnvelope, *, supersedes: str | None = None
+        self, task_id: str, envelope: ProposalEnvelope
     ) -> IntakeResult:
-        """Validate shape, harvest objects before teardown, then propose and commit (§3.4, §7)."""
+        """Shape-check, harvest objects before teardown, then propose and commit (§3.4, §7)."""
         task = self._task(task_id)
 
-        # §7.0 — a malformed proposal is corrected and records NOTHING (no harvest, no row).
+        # §7.0 — a malformed proposal is corrected and records NOTHING (no harvest, no row). The
+        # shape check is a presence/type filter only; if it fails the verifier is never triggered.
         shape_error = task.config.shape_validator(envelope.artifact)
         if shape_error is not None:
             log.info("intake_shape_error", task_id=task_id, artifact_id=envelope.artifact.id)
@@ -206,56 +209,55 @@ class ControlPlane:
         # into the object store (§3.4). Harvest-before-teardown is the hard ordering constraint.
         harvested = {name: self._store.put_object(data) for name, data in envelope.objects.items()}
 
+        # Record the object refs as a control-plane-owned **sidecar** on the artifact (§4.1, ADR
+        # 0001) — the domain payload is stored verbatim; the control plane never reaches into it.
+        artifact = (
+            replace(envelope.artifact, objects=tuple(harvested.items()))
+            if harvested
+            else envelope.artifact
+        )
+
         # The agent's rationale is provenance/context — stored here, NEVER sent to a gate (§10).
         if envelope.metadata:
-            task.rationale[envelope.artifact.id] = envelope.metadata
+            task.rationale[artifact.id] = envelope.metadata
 
-        self._store.propose(envelope.artifact, envelope.operation)
+        self._store.propose(artifact, envelope.operation)
         self._link_revision_if_any(envelope)
-        result = await self._run_commit(task, envelope, supersedes=supersedes)
+        result = await self._run_commit(task, artifact.id, envelope.objects)
         log.info("proposal_committed", task_id=task_id, outcome=result.outcome.value)
         return IntakeResult(entered_protocol=True, commit=result, harvested=harvested)
 
     async def _run_commit(
-        self, task: TaskState, envelope: ProposalEnvelope, *, supersedes: str | None
+        self, task: TaskState, artifact_id: str, objects: Mapping[str, bytes]
     ) -> CommitResult:
-        """Run the sync §7 commit path in a worker thread, bridging to the async verifier."""
-        loop = asyncio.get_running_loop()
-        objects = dict(envelope.objects)
+        """Run the sync §7 commit path in a worker thread, bridging the one opaque verifier handoff.
 
-        def run_gate(gate: GateSpec, artifact: Artifact) -> GateVerdict | None:
+        The ``dispatch`` closure cuts the proposal's declared store-slice (§10) and hands the whole
+        proposal to the verifier in a single call; the commit path records the bundle it returns.
+        """
+        loop = asyncio.get_running_loop()
+        bound_objects = dict(objects)
+
+        def dispatch(artifact: Artifact) -> VerdictBundle:
+            declared = task.config.gated_types.resolve(artifact.type) or frozenset()
             request = VerifierRequest(
                 proposal=artifact,
-                gate=gate.name,
-                store_slice=self._build_slice(artifact),
-                objects=objects,
+                store_slice=resolve_declared_slice(self._store, artifact, declared),
+                objects=bound_objects,
             )
             future = asyncio.run_coroutine_threadsafe(task.verifier.dispatch(request), loop)
             return future.result()
 
         return await asyncio.to_thread(
             run_commit,
-            envelope.artifact.id,
+            artifact_id,
             store=self._store,
             sink=self._store,
-            resolve_binding=task.config.gates.resolve,
-            validate_shape=task.config.shape_validator,
-            run_gate=run_gate,
-            supersedes=supersedes,
+            resolve_coverage=task.config.gated_types.resolve,
+            dispatch=dispatch,
+            verifier_identity=task.verifier.identity,
             clock=self._clock,
         )
-
-    def _build_slice(self, artifact: Artifact) -> tuple[Artifact, ...]:
-        """The declared, control-plane-cut store-slice handed to a gate (spec §8.3, §10, §12).
-
-        Default slice: the accepted incumbents of the same type (to beat) plus the rejected-log
-        (the trial count, §12). It is a tuple of :class:`Artifact`, which carries no rationale, so
-        the proposer's reasoning cannot ride along — "no proposer rationale reaches a gate" holds
-        by construction. A per-gate declared allowlist can narrow this further later (§8.3).
-        """
-        accepted = self._store.query_artifacts(type=artifact.type, status=ArtifactStatus.ACCEPTED)
-        rejected = self._store.rejected_log(type=artifact.type)
-        return (*accepted, *rejected)
 
     def _link_revision_if_any(self, envelope: ProposalEnvelope) -> None:
         """A ``revises`` operation links the flagged artifact to its revision (spec §4.1, §7.5b).

@@ -113,15 +113,81 @@ the verifier (test tooling in `tools/harness/`, **not** product).
   privileged-mutator boundary holds; bounded context across a large store; "why do we believe X"
   answerable from provenance.
 
-### Phase 2 — Verifier service + gate-primitive SDK 🚧
+### Phase 2 — Verifier service + gate-primitive SDK ✅
 
-Replace the stub verifier with the real, advisory verifier.
+Replace the stub verifier with the real, advisory verifier (spec §3.6): an **SDK of composable gate
+primitives** behind the existing `VerifierPort` seam. The verifier holds the gate **plugins** (keyed
+by gate name); the control plane keeps only the **binding** — pipeline position (`is_hard`) and the
+declared-inputs allowlist — so §8.3's split (bindings in the control plane, plugins in the verifier)
+is realized, not just designed. Built in sub-phases, each a tested, gate-green commit:
 
-- Queue-fronted async API; an SDK of gate primitives (auto-code-runner, model-tester, llm-judge,
-  agentic-grader, human-in-the-loop); the independence/network boundary; declared store-slice
-  handling. *(§3.6, §8.3, §11)*
-- **Exit:** the real verifier renders reproducible verdicts on (still-simple) artifacts; the stub
-  verifier is retired from the happy path.
+- **2.1 SDK primitives + the verifier service ✅** — a `GatePrimitive` contract and the rungs of the
+  reliability ladder (§11) that need no container: **deterministic-check** (rung 2, free → earns
+  `tentative`), **numeric-scorer** (rung 1, improve-score-net-of-cost), **llm-judge** (rung 4,
+  *labeled-weak*, behind a `ModelClient` seam with a deterministic fake so the suite stays offline),
+  plus *human-in-the-loop* (returns no verdict → rests `tentative`) and *model-tester* as seams. An
+  `SdkVerifier` implementing `VerifierPort`, keyed by gate name, registered as a provider. *(§3.6,
+  §8.3, §11)*
+- **2.2 Container-isolated auto-code-runner ✅** — a `CodeRunner` seam with a real
+  **`ContainerCodeRunner`** (`docker run` with a hostile-input posture: `--network=none`, read-only
+  mounts, writable `tmpfs`, non-root, memory/cpu/pids limits, dropped caps, hard timeout; result read
+  from a captured output file — a concrete data-plane in/out, feeds #3) and a deterministic
+  `FakeCodeRunner` for the unit suite. The `auto-code-runner` primitive composes over it. One real
+  integration test is marked `@pytest.mark.docker` and auto-skips when Docker is absent, so the
+  minimal CI needs no Docker-in-CI. *(§3.6, §11, §12)*
+- **2.3a Contract extraction ✅** — pulled the cross-service vocabulary into a new
+  **`verity.contracts`** package (the value model + the service ports/provider registry), so no
+  service depends on another's internals: the verifier now imports `verity.contracts` and has
+  **zero** `control_plane` imports. `control_plane.store`/`commit` re-export the value types they
+  operate on (a legitimate façade); `control_plane.ports` was a pure passthrough after the move and
+  was **deleted**, its callers repointed to `verity.contracts`. Control-plane-internal types
+  (`Decision`/`Provenance`/`Store`/`CommitSink`, the commit machinery, the registries) stay in
+  `control_plane` — the cut is "what crosses a wire" vs "what the control plane persists". This is
+  the structural enabler for the multi-verifier / multi-harness vision (a second verifier is an
+  added adapter against a fixed contract); a wire serialization schema + a networked transport
+  adapter remain later work. *(§3.3)*
+- **2.3 Independence boundary, made checkable ✅** — each gate declares its store inputs
+  (`declared_inputs: frozenset[StoreInput]` on `GateSpec`, default **empty** → the gate sees only
+  the artifact under test); the new `control_plane/independence.py` assembles exactly those via
+  per-input providers and asserts the resolved slice's sources ⊆ the declared allowlist *before*
+  dispatch (`IndependenceViolation` otherwise), so an over-broad gate fails before it runs (§10).
+  This complements the type-level no-rationale guarantee from `verity.contracts` (slice is
+  `Artifact`-only): that closes the rationale channel, this closes the over-broad-context channel.
+  The per-gate slice replaces the old one-size-fits-all `_build_slice`; the fake domain's selection
+  gate declares `{INCUMBENTS, REJECTED_LOG}`. Property-tested (Hypothesis). *(§8.3, §10)*
+- **2.4 Real artifacts through the loop ✅** — a minimal **code-execution domain**
+  (`domains/code.py`: a `Submission` type gated by a cheap `parses` check (real `ast.parse`) then a
+  hard `runs-clean` execution gate over the auto-code-runner) plus reusable *genuine* sample scripts
+  (`tools/harness/sample_code.py`: `CLEAN` / `RAISES` / `SYNTAX_ERROR`). The stub agent emits real
+  Python; the `SdkVerifier` parses and executes it, so verdicts are **earned**, not scripted.
+  `test_code_loop.py` drives it end-to-end: offline, a syntax error is localized to a `refine`
+  before any run and a clean submission commits through the fake runner; under Docker, a clean
+  script *executes* in a container → accepted and a raising script → rejected — accept/refine/reject
+  all on real evaluation.
+- **2.5 Integration + exit ✅** — the deterministic fake domain gained real `SdkVerifier` plugins
+  (`build_fake_verifier`, marker semantics as `deterministic_check`s), and `test_exit_criteria`
+  (the control-plane §13 demonstrations) was migrated onto the **real verifier** — the stub verifier
+  now survives only as a port-protocol double (`isinstance(StubVerifier(), VerifierPort)`).
+  `test_reproducibility.py` pins the exit bar: identical inputs → identical verdicts across
+  independent verifier instances, and the same code submission reaches the same committed outcome
+  through two independent stacks.
+- **Exit ✅:** the real verifier renders **reproducible** verdicts on (still-simple) artifacts; the
+  stub verifier is retired from the happy path.
+- **Correction — opaque verifier (ADR 0001).** After Phase 2 landed, the verifier seam was reworked
+  to match the product vision: the verifier is an **opaque, user-selected package** that returns a
+  **verdict bundle** (status + decisions) from one handoff — the control plane no longer sequences
+  gates or parses the proposal. The gate pipeline + cheap/hard staging moved into the verifier; the
+  control plane keeps coverage (no-implicit-accept), the per-type declared slice (§10), proposer ≠
+  gate, and lifecycle validation. Also: the proposal-shape check is a presence-only pre-gate filter,
+  and harvested objects are recorded as an artifact **sidecar** (payload untouched). This amends
+  spec §3.3/§3.6/§7/§8.3/§10 and adds the `proposed → accepted` edge (§6); see
+  [docs/adr/0001](docs/adr/0001-opaque-verifier-and-control-plane-boundary.md). Folds in #8.
+
+*Decisions taken entering Phase 2:* container isolation is built **now** (not deferred) for the code
+runner; the LLM client is `anthropic` behind a `ModelClient` seam (suite uses a deterministic fake);
+the runner shells out to the `docker` CLI rather than taking a Python Docker SDK dependency. Hardening
+beyond Phase 2's needs (rootless/gVisor/seccomp) and the networked standing-service data plane (#3)
+are tracked as issues, not blockers.
 
 ### Phase 3 — Sandbox service (agent runtime + workspace) ⬜
 

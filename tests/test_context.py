@@ -6,11 +6,11 @@ size must not grow with store size.
 
 from __future__ import annotations
 
-from tests.helpers import make_store, propose
+from tests.helpers import bundle, decision, make_store, propose, returns
 from verity.control_plane.commit import run_commit
 from verity.control_plane.context import ContextAssembler
 from verity.control_plane.store import ArtifactStatus, SqliteStore
-from verity.domains.fake import NOTE, SOURCE, build_fake_domain
+from verity.domains.fake import FAKE_VERIFIER_IDENTITY, NOTE, SOURCE, build_fake_domain
 
 
 def _fill(store: SqliteStore, n: int) -> None:
@@ -94,9 +94,9 @@ def test_committed_artifact_appears_in_regenerated_manifest() -> None:
         "n1",
         store=store,
         sink=store,
-        resolve_binding=domain.gates.resolve,
-        validate_shape=domain.shape_validator,
-        run_gate=domain.run_gate,
+        resolve_coverage=domain.gated_types.resolve,
+        dispatch=returns(bundle(ArtifactStatus.ACCEPTED, decision("worth-keeping"))),
+        verifier_identity=FAKE_VERIFIER_IDENTITY,
     )
     manifest = ContextAssembler().manifest(store)
     note_entries = [e for e in manifest.entries if e.artifact_id == "n1"]

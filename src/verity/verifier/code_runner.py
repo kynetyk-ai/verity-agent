@@ -1,0 +1,219 @@
+"""The code-runner seam — executing object attachments in isolation (spec §3.6, §11, §12).
+
+The auto-code-runner is the rung where a gate must *execute* material rather than merely read it
+(§3.6): in the v1 domain it receives the submitted code and the gate's datasets, runs the pipeline,
+and lets the gate score the result (§12). Running an agent-proposed program is the hostile-input
+case, so the real runner is **container-isolated**, and the execution mechanism sits behind a narrow
+:class:`CodeRunner` port so:
+
+* the unit suite runs offline and deterministically against :class:`FakeCodeRunner`, and
+* the real :class:`ContainerCodeRunner` (Docker) is exercised only by a Docker-marked integration
+  test (auto-skipped when Docker is absent), so CI needs no Docker-in-CI.
+
+The runner shuttles **bytes in, bytes out** and knows nothing about artifact types or scoring — the
+gate's :func:`~verity.verifier.primitives.auto_code_runner` plugin interprets the result (§8.3).
+This is also a concrete instance of the data plane: code + datasets in, a result file out, with no
+standing container per request (the networked successor is tracked as issue #3).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+from verity.logging import get_logger
+
+__all__ = [
+    "RunRequest",
+    "RunResult",
+    "RunScript",
+    "CodeRunner",
+    "FakeCodeRunner",
+    "ContainerCodeRunner",
+    "docker_available",
+]
+
+log = get_logger("verity.verifier.code_runner")
+
+
+@dataclass(frozen=True, slots=True)
+class RunRequest:
+    """What to execute in isolation (spec §3.6).
+
+    ``code`` is written as ``entrypoint`` into a read-only work dir and run with ``python``;
+    ``inputs`` are read-only datasets mounted alongside (name → bytes); the script is expected to
+    write its result to ``output_name`` in a writable output dir, whose bytes come back on the
+    result. ``timeout_s`` bounds the run.
+    """
+
+    code: bytes
+    entrypoint: str = "submission.py"
+    inputs: Mapping[str, bytes] = field(default_factory=dict)
+    output_name: str = "result.json"
+    timeout_s: float = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class RunResult:
+    """The outcome of one isolated run (spec §3.6).
+
+    ``output`` is the bytes the script wrote to the declared output file, or ``None`` if it wrote
+    none. The runner makes no judgment — interpreting this into a verdict is the gate's job (§8.3).
+    """
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    output: bytes | None = None
+    timed_out: bool = False
+
+
+# A fake runner's scripted behaviour: request -> result.
+RunScript = Callable[[RunRequest], RunResult]
+
+
+@runtime_checkable
+class CodeRunner(Protocol):
+    """The narrow port the auto-code-runner gate depends on (spec §3.6). Bytes in, bytes out."""
+
+    async def run(self, request: RunRequest, /) -> RunResult: ...
+
+
+def _ran_clean(_request: RunRequest) -> RunResult:
+    return RunResult(exit_code=0, stdout="", stderr="")
+
+
+@dataclass
+class FakeCodeRunner:
+    """A deterministic, in-process :class:`CodeRunner` for the suite (NON-PRODUCT).
+
+    ``script`` is a pure rule from :class:`RunRequest` to :class:`RunResult`, so a test drives any
+    outcome (clean run, non-zero exit, timeout, a written output file) without a container;
+    ``calls`` records each request for assertions.
+    """
+
+    script: RunScript = _ran_clean
+    calls: list[RunRequest] = field(default_factory=list)
+
+    async def run(self, request: RunRequest, /) -> RunResult:
+        self.calls.append(request)
+        return self.script(request)
+
+
+@dataclass(frozen=True, slots=True)
+class ContainerCodeRunner:
+    """A container-isolated :class:`CodeRunner` (Docker), for running agent-proposed code (§3.6).
+
+    Each run is a fresh ``docker run`` with a hostile-input posture: no network, a read-only root
+    filesystem, a small ``tmpfs`` for scratch, memory / CPU / PID limits, all capabilities dropped,
+    ``no-new-privileges``, and a non-root user (the host uid, so mounted files round-trip cleanly).
+    Code and datasets are mounted **read-only**; only the output dir is writable. The timeout is
+    enforced by killing the container. Integration-only — **not exercised by the unit suite**.
+    """
+
+    image: str = "python:3.12-slim"
+    docker_bin: str = "docker"
+    memory: str = "512m"
+    cpus: str = "1"
+    pids_limit: int = 128
+    tmpfs_size: str = "64m"
+
+    async def run(self, request: RunRequest, /) -> RunResult:
+        host = Path(tempfile.mkdtemp(prefix="verity-run-"))
+        name = host.name
+        try:
+            code_dir, data_dir, out_dir = host / "code", host / "data", host / "out"
+            for d in (code_dir, data_dir, out_dir):
+                d.mkdir()
+            (code_dir / request.entrypoint).write_bytes(request.code)
+            for input_name, blob in request.inputs.items():
+                (data_dir / input_name).write_bytes(blob)
+            out_dir.chmod(0o777)  # the non-root container user must be able to write here
+
+            cmd = self._docker_cmd(name, code_dir, data_dir, out_dir, request.entrypoint)
+            result = await self._run_container(cmd, name, request.timeout_s)
+
+            output_path = out_dir / request.output_name
+            output = output_path.read_bytes() if output_path.is_file() else None
+            log.info(
+                "code_run",
+                entrypoint=request.entrypoint,
+                exit_code=result.exit_code,
+                timed_out=result.timed_out,
+                produced_output=output is not None,
+            )
+            return RunResult(
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                output=output,
+                timed_out=result.timed_out,
+            )
+        finally:
+            shutil.rmtree(host, ignore_errors=True)
+
+    def _docker_cmd(
+        self, name: str, code_dir: Path, data_dir: Path, out_dir: Path, entrypoint: str
+    ) -> list[str]:
+        return [
+            self.docker_bin, "run", "--rm", "--name", name,
+            "--network=none",
+            "--read-only",
+            f"--tmpfs=/tmp:rw,size={self.tmpfs_size},mode=1777",
+            f"--memory={self.memory}", f"--memory-swap={self.memory}",
+            f"--cpus={self.cpus}", f"--pids-limit={self.pids_limit}",
+            "--cap-drop=ALL", "--security-opt=no-new-privileges",
+            f"--user={os.getuid()}:{os.getgid()}",
+            "-v", f"{code_dir}:/work:ro",
+            "-v", f"{data_dir}:/data:ro",
+            "-v", f"{out_dir}:/out:rw",
+            "-w", "/work",
+            "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HOME=/tmp",
+            self.image,
+            "python", f"/work/{entrypoint}",
+        ]
+
+    async def _run_container(self, cmd: list[str], name: str, timeout_s: float) -> RunResult:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        except TimeoutError:
+            await self._kill(name)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            return RunResult(exit_code=-1, stdout="", stderr="", timed_out=True)
+        return RunResult(
+            exit_code=proc.returncode if proc.returncode is not None else -1,
+            stdout=out.decode(errors="replace"),
+            stderr=err.decode(errors="replace"),
+        )
+
+    async def _kill(self, name: str) -> None:
+        with contextlib.suppress(Exception):
+            killer = await asyncio.create_subprocess_exec(
+                self.docker_bin, "kill", name,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(killer.wait(), timeout=10.0)
+
+
+def docker_available(docker_bin: str = "docker") -> bool:
+    """True if a Docker daemon is reachable — gates the integration test (skips otherwise)."""
+    try:
+        completed = subprocess.run(
+            [docker_bin, "version", "--format", "{{.Server.Version}}"],
+            capture_output=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0

@@ -1,28 +1,42 @@
-"""Fake-domain end-to-end tests (spec §8, §17.2) — ROADMAP Phase 1.2.
+"""Fake-domain end-to-end tests (spec §8, §17.2; ADR 0001) — ROADMAP Phase 1.2/refactor.
 
-Drives the §7 commit path through the *real* registries (not test fakes), proving the
-extension-point contracts compose — including "no implicit accept" on the gateless type.
+Drives the §7 commit path through the *real* registries and the *real* opaque verifier
+(:func:`build_fake_verifier`), proving the extension-point contracts compose — including "no
+implicit accept" on the gateless type.
 """
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from tests.helpers import make_store, propose
+from verity.contracts import Artifact, ArtifactStatus, VerifierRequest
 from verity.control_plane.commit import CommitOutcome, NoImplicitAccept, run_commit
-from verity.control_plane.store import ArtifactStatus
-from verity.domains.fake import NOTE, ORPHAN, SOURCE, build_fake_domain
+from verity.domains.fake import (
+    NOTE,
+    ORPHAN,
+    SOURCE,
+    build_fake_domain,
+    build_fake_verifier,
+)
 
 
-def _commit_note(store, note_id):
+def _commit_note(store, note_id: str):
     domain = build_fake_domain()
+    verifier = build_fake_verifier()
+
+    def dispatch(artifact):
+        return asyncio.run(verifier.dispatch(VerifierRequest(proposal=artifact)))
+
     return run_commit(
         note_id,
         store=store,
         sink=store,
-        resolve_binding=domain.gates.resolve,
-        validate_shape=domain.shape_validator,
-        run_gate=domain.run_gate,
+        resolve_coverage=domain.gated_types.resolve,
+        dispatch=dispatch,
+        verifier_identity=verifier.identity,
     )
 
 
@@ -35,7 +49,7 @@ def test_fake_domain_registers_expected_schema() -> None:
     assert domain.schema.operation("author") is not None
 
 
-def test_well_formed_note_walks_to_accepted() -> None:
+def test_well_formed_note_is_accepted() -> None:
     store = make_store()
     propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
     propose(store, artifact_id="n1", artifact_type=NOTE, parents=["src"], payload={"text": "hi"})
@@ -46,14 +60,11 @@ def test_well_formed_note_walks_to_accepted() -> None:
     assert {d.gate for d in store.decisions_for("n1")} == {"well-formed", "worth-keeping"}
 
 
-def test_note_marked_reject_is_rejected_at_cheap_gate() -> None:
+def test_note_marked_reject_is_rejected_at_the_cheap_check() -> None:
     store = make_store()
     propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
     propose(
-        store,
-        artifact_id="n1",
-        artifact_type=NOTE,
-        parents=["src"],
+        store, artifact_id="n1", artifact_type=NOTE, parents=["src"],
         payload={"text": "x", "reject": True},
     )
     result = _commit_note(store, "n1")
@@ -65,10 +76,7 @@ def test_note_marked_defect_is_revised_with_defects() -> None:
     store = make_store()
     propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
     propose(
-        store,
-        artifact_id="n1",
-        artifact_type=NOTE,
-        parents=["src"],
+        store, artifact_id="n1", artifact_type=NOTE, parents=["src"],
         payload={"text": "x", "defect": "tone"},
     )
     result = _commit_note(store, "n1")
@@ -78,14 +86,11 @@ def test_note_marked_defect_is_revised_with_defects() -> None:
     assert got is not None and got.status is ArtifactStatus.REVISED
 
 
-def test_note_failing_hard_gate_rejects_from_tentative() -> None:
+def test_note_failing_the_hard_check_is_rejected() -> None:
     store = make_store()
     propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
     propose(
-        store,
-        artifact_id="n1",
-        artifact_type=NOTE,
-        parents=["src"],
+        store, artifact_id="n1", artifact_type=NOTE, parents=["src"],
         payload={"text": "x", "keep": False},
     )
     result = _commit_note(store, "n1")
@@ -93,29 +98,17 @@ def test_note_failing_hard_gate_rejects_from_tentative() -> None:
     assert {d.gate for d in store.decisions_for("n1")} == {"well-formed", "worth-keeping"}
 
 
-def test_malformed_note_returns_shape_error() -> None:
-    store = make_store()
-    propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
-    # missing the required 'text' field
-    propose(store, artifact_id="n1", artifact_type=NOTE, parents=["src"], payload={"oops": 1})
-    result = _commit_note(store, "n1")
-    assert result.outcome is CommitOutcome.SHAPE_ERROR
-    assert store.decisions_for("n1") == []
+def test_malformed_note_fails_the_shape_check() -> None:
+    domain = build_fake_domain()
+    bad = Artifact("n1", NOTE, {"oops": 1}, ArtifactStatus.PROPOSED, "agent", "")
+    assert domain.shape_validator(bad) is not None  # missing 'text' → shape error, before any gate
 
 
 def test_gateless_type_cannot_be_committed() -> None:
     store = make_store()
     propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
     propose(store, artifact_id="orph", artifact_type=ORPHAN, parents=["src"], payload={"x": 1})
-    domain = build_fake_domain()
     with pytest.raises(NoImplicitAccept):
-        run_commit(
-            "orph",
-            store=store,
-            sink=store,
-            resolve_binding=domain.gates.resolve,
-            validate_shape=domain.shape_validator,
-            run_gate=domain.run_gate,
-        )
+        _commit_note(store, "orph")
     got = store.get_artifact("orph")
     assert got is not None and got.status is ArtifactStatus.PROPOSED

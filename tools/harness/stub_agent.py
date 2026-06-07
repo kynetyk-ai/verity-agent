@@ -5,7 +5,7 @@ NON-PRODUCT. Stands in for the real sandbox (spec §3.5): reads the served conte
 refine feedback — all deterministically, with no LLM. Used to exercise the control plane's
 propose → gate → commit cycle and the object harvest path.
 
-It implements :class:`~verity.control_plane.ports.SandboxPort` over a **real**
+It implements :class:`~verity.contracts.ports.SandboxPort` over a **real**
 :class:`~verity.control_plane.workspace.DefaultLayout` workspace on disk: each scripted step's
 object attachments are written to the ``outbox`` and carried out by reference in the envelope
 (§3.5), and :meth:`regenerate` discards the writable workspace, so ephemerality is physical. It
@@ -19,7 +19,7 @@ import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from verity.control_plane.ports import ProposalEnvelope, ServedContext
+from verity.contracts import ProposalEnvelope, ServedContext
 from verity.control_plane.workspace import (
     DefaultLayout,
     ProvisionedWorkspace,

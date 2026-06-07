@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from verity.control_plane.commit import GateBinding, GateSpec
+from verity.control_plane.independence import StoreInput
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
@@ -47,7 +47,7 @@ __all__ = [
     "ArtifactTypeDef",
     "OperationSignature",
     "SchemaRegistry",
-    "GateRegistry",
+    "GatedTypeRegistry",
     "RetrievalPolicy",
     "DefaultRetrievalPolicy",
     "RegistryError",
@@ -148,35 +148,34 @@ class SchemaRegistry:
 # ----------------------------------------------------------------------- gate registry (§8.3)
 
 
-class GateRegistry:
-    """Per-type gate **bindings** (§8.3); the plugins that judge live in the verifier (§3.6).
+class GatedTypeRegistry:
+    """The control plane's coverage + independence record per gated type (§8.3, ADR 0001).
 
-    A type with no binding resolves to ``None`` — the commit path turns that into a
-    ``NoImplicitAccept`` error (§5.7). This registry is exactly where "no implicit accept" is
-    satisfied or violated.
+    Under ADR 0001 the gate **pipeline** (which checks, in what order, cheap/hard) lives in the
+    verifier package; the control plane keeps only this: *which types are gated*, and *the exact
+    store-slice the verifier may see* for each (the §10 independence allowlist). A type with **no**
+    entry resolves to ``None`` — committing it is a ``NoImplicitAccept`` error (§5.7). A gated
+    type's declared inputs may be empty (it sees only the artifact under test); that is still gated.
     """
 
     def __init__(self) -> None:
-        self._bindings: dict[str, GateBinding] = {}
+        self._gated: dict[str, frozenset[StoreInput]] = {}
 
-    def bind(self, artifact_type: str, *gates: GateSpec) -> None:
-        """Bind an ordered (cheap-first, then hard) gate pipeline to a type (§8.3)."""
-        if artifact_type in self._bindings:
-            raise RegistryError(f"gate binding already registered for type: {artifact_type!r}")
-        if not gates:
-            raise RegistryError(
-                f"refusing to bind an empty pipeline to {artifact_type!r}: a binding must "
-                f"declare at least one gate, else it is an implicit accept (§5.7)"
-            )
-        self._bindings[artifact_type] = GateBinding(artifact_type=artifact_type, gates=gates)
-        log.debug("gate_bound", type=artifact_type, gates=[g.name for g in gates])
+    def gate(
+        self, artifact_type: str, *, declared_inputs: frozenset[StoreInput] = frozenset()
+    ) -> None:
+        """Register ``artifact_type`` as gated, with the store-inputs its verifier sees (§8.3)."""
+        if artifact_type in self._gated:
+            raise RegistryError(f"type already registered as gated: {artifact_type!r}")
+        self._gated[artifact_type] = declared_inputs
+        log.debug("type_gated", type=artifact_type, declared_inputs=sorted(declared_inputs))
 
-    def register_binding(self, binding: GateBinding) -> None:
-        self.bind(binding.artifact_type, *binding.gates)
+    def resolve(self, artifact_type: str) -> frozenset[StoreInput] | None:
+        """The type's declared store-inputs, or ``None`` if it is not gated (§5.7, §10)."""
+        return self._gated.get(artifact_type)
 
-    def resolve(self, artifact_type: str) -> GateBinding | None:
-        """The :class:`GateBindingResolver`: a type's pipeline, or ``None`` (§5.7, §8.3)."""
-        return self._bindings.get(artifact_type)
+    def is_gated(self, artifact_type: str) -> bool:
+        return artifact_type in self._gated
 
 
 # ------------------------------------------------------------------ retrieval policy (§8.4)
