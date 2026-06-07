@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Node (agent-loop tooling, if used)
+node_modules/
+npm-debug.log*
+
+# Env / secrets
+.env
+.env.*
+
+# Durable state (store / object-blobs) — not source
+*.sqlite
+*.sqlite3
+*.db
+/data/
+/store/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
