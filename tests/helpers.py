@@ -16,6 +16,7 @@ from verity.control_plane.commit import (
     GateVerdict,
     ShapeError,
 )
+from verity.control_plane.independence import StoreInput
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
@@ -78,8 +79,15 @@ def gate(
     identity: str = VERIFIER,
     is_hard: bool = False,
     requires_human: bool = False,
+    declared_inputs: frozenset[StoreInput] = frozenset(),
 ) -> GateSpec:
-    return GateSpec(name=name, identity=identity, is_hard=is_hard, requires_human=requires_human)
+    return GateSpec(
+        name=name,
+        identity=identity,
+        is_hard=is_hard,
+        requires_human=requires_human,
+        declared_inputs=declared_inputs,
+    )
 
 
 def binding(artifact_type: str, *gates: GateSpec) -> GateBinding:

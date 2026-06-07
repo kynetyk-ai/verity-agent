@@ -26,6 +26,7 @@ from typing import Protocol
 
 from verity.contracts.model import Artifact, ArtifactStatus, GateVerdict, VerdictKind
 from verity.control_plane import lifecycle
+from verity.control_plane.independence import StoreInput
 from verity.control_plane.store import (
     Clock,
     CommitSink,
@@ -71,13 +72,17 @@ class GateSpec:
     ``tentative``; clearing the hard gates earns ``accepted`` (§6). ``identity`` is the gate's
     distinct identity, used to enforce proposer ≠ gate (§7.2). ``requires_human`` marks a gate
     that must not auto-resolve (§8.3); when its runner returns no verdict the artifact rests
-    at ``tentative``.
+    at ``tentative``. ``declared_inputs`` is the independence allowlist (§8.3, §10): the exact set
+    of store-inputs this gate may see — the control plane assembles only these and withholds
+    everything else. The default is **empty**: a gate sees only the artifact under test unless it
+    declares otherwise.
     """
 
     name: str
     identity: str
     is_hard: bool = False
     requires_human: bool = False
+    declared_inputs: frozenset[StoreInput] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

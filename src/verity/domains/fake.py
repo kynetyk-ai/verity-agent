@@ -27,6 +27,7 @@ from verity.control_plane.commit import (
     ShapeError,
     ShapeValidator,
 )
+from verity.control_plane.independence import StoreInput
 from verity.control_plane.registries import (
     ArtifactTypeDef,
     GateRegistry,
@@ -73,10 +74,17 @@ def build_fake_domain() -> FakeDomain:
 
     gates = GateRegistry()
     # 'Note' has a cheap structural gate then a hard selection gate; 'Orphan' is left UNBOUND.
+    # The cheap gate is self-contained (declares no inputs → sees only the artifact); the hard
+    # selection gate declares the incumbents it must beat and the rejected-log (§8.3, §10).
     gates.bind(
         NOTE,
         GateSpec("well-formed", identity=_GATE_IDENTITY, is_hard=False),
-        GateSpec("worth-keeping", identity=_GATE_IDENTITY, is_hard=True),
+        GateSpec(
+            "worth-keeping",
+            identity=_GATE_IDENTITY,
+            is_hard=True,
+            declared_inputs=frozenset({StoreInput.INCUMBENTS, StoreInput.REJECTED_LOG}),
+        ),
     )
 
     return FakeDomain(

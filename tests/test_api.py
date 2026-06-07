@@ -213,6 +213,19 @@ def test_verifier_slice_excludes_rationale_and_sees_incumbents() -> None:
     assert saw_incumbent
 
 
+def test_per_gate_declared_inputs_scope_the_slice() -> None:
+    # Each gate sees only what it declared (§8.3, §10): the cheap structural gate declared no
+    # inputs, the hard selection gate declared the incumbents it must beat.
+    cp, _sandbox, verifier, _store = _setup()
+    asyncio.run(cp.submit_proposal("t1", _note("n1")))  # becomes the accepted incumbent
+    verifier.requests.clear()
+    asyncio.run(cp.submit_proposal("t1", _note("n2")))
+
+    by_gate = {req.gate: req for req in verifier.requests}
+    assert by_gate["well-formed"].store_slice == ()  # declared nothing → empty
+    assert any(a.id == "n1" for a in by_gate["worth-keeping"].store_slice)  # sees the incumbent
+
+
 def test_run_loop_drives_cycles_and_regenerates() -> None:
     proposals = [_note("n1"), _note("n2")]
     policy = OrchestrationPolicy(max_cycles=5, stop_on_accept=True)

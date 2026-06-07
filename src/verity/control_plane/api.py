@@ -45,6 +45,7 @@ from verity.control_plane.commit import (
 )
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.context import AssembledContext, ContextAssembler
+from verity.control_plane.independence import resolve_declared_slice
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
@@ -227,7 +228,7 @@ class ControlPlane:
             request = VerifierRequest(
                 proposal=artifact,
                 gate=gate.name,
-                store_slice=self._build_slice(artifact),
+                store_slice=resolve_declared_slice(self._store, artifact, gate.declared_inputs),
                 objects=objects,
             )
             future = asyncio.run_coroutine_threadsafe(task.verifier.dispatch(request), loop)
@@ -244,18 +245,6 @@ class ControlPlane:
             supersedes=supersedes,
             clock=self._clock,
         )
-
-    def _build_slice(self, artifact: Artifact) -> tuple[Artifact, ...]:
-        """The declared, control-plane-cut store-slice handed to a gate (spec §8.3, §10, §12).
-
-        Default slice: the accepted incumbents of the same type (to beat) plus the rejected-log
-        (the trial count, §12). It is a tuple of :class:`Artifact`, which carries no rationale, so
-        the proposer's reasoning cannot ride along — "no proposer rationale reaches a gate" holds
-        by construction. A per-gate declared allowlist can narrow this further later (§8.3).
-        """
-        accepted = self._store.query_artifacts(type=artifact.type, status=ArtifactStatus.ACCEPTED)
-        rejected = self._store.rejected_log(type=artifact.type)
-        return (*accepted, *rejected)
 
     def _link_revision_if_any(self, envelope: ProposalEnvelope) -> None:
         """A ``revises`` operation links the flagged artifact to its revision (spec §4.1, §7.5b).

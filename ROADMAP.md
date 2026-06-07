@@ -146,9 +146,15 @@ is realized, not just designed. Built in sub-phases, each a tested, gate-green c
   the structural enabler for the multi-verifier / multi-harness vision (a second verifier is an
   added adapter against a fixed contract); a wire serialization schema + a networked transport
   adapter remain later work. *(§3.3)*
-- **2.3 Independence boundary, made checkable ⬜** — each gate declares its store inputs
-  (`declared_inputs` on the binding); a static check confirms the resolved slice ⊆ the allowlist
-  *before* dispatch, so an over-broad gate fails before it runs (§10). Property test. *(§8.3, §10)*
+- **2.3 Independence boundary, made checkable ✅** — each gate declares its store inputs
+  (`declared_inputs: frozenset[StoreInput]` on `GateSpec`, default **empty** → the gate sees only
+  the artifact under test); the new `control_plane/independence.py` assembles exactly those via
+  per-input providers and asserts the resolved slice's sources ⊆ the declared allowlist *before*
+  dispatch (`IndependenceViolation` otherwise), so an over-broad gate fails before it runs (§10).
+  This complements the type-level no-rationale guarantee from `verity.contracts` (slice is
+  `Artifact`-only): that closes the rationale channel, this closes the over-broad-context channel.
+  The per-gate slice replaces the old one-size-fits-all `_build_slice`; the fake domain's selection
+  gate declares `{INCUMBENTS, REJECTED_LOG}`. Property-tested (Hypothesis). *(§8.3, §10)*
 - **2.4 Real artifacts through the loop ⬜** — enrich the stub agent to emit *genuine* code objects
   (a valid feature, one that raises, a borderline one) so the auto-code-runner earns its verdicts;
   drive accept/reject/refine end-to-end on real evaluation, not scripts.
