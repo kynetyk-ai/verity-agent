@@ -54,8 +54,21 @@ the `refine` verdict recovers a mostly-sound artifact with a localized defect.
 5. Feature-engineering domain (§12) — first real end-to-end run.
 6. v1 acceptance criteria (§13) — twelve runnable checks; v1 is not done until they pass.
 
+## Coding habits
+
+Non-negotiable working norms for this repo:
+
+- **Python**, managed with **uv**. All dependencies and runs go through `uv` (`uv add`, `uv sync`,
+  `uv run`). **No system-level or global `pip install`** — ever.
+- **Don't defer basic infrastructure to reach an MVP.** The plumbing that makes a system debuggable
+  and trustworthy is built from the start, not retrofitted:
+  - **Structured logging from day one** — every service logs; no `print`-and-hope.
+  - **Tests written alongside the code** — good coverage as we go, not bolted on at the end.
+- **Always work on a branch.** Never commit directly to `main`; branch, then open a PR.
+- **Never open a PR on buggy or embarrassing code.** It runs, it's tested, and it's clean before it
+  goes up for review. A PR is a finished thought, not a work-in-progress dump.
+
 ## Status
 
-Greenfield scaffold — no implementation code yet. Stack is not yet fixed; **Python** is the working
-assumption (given the v1 feature-engineering domain and the agent-loop tooling). Set conventions here
-as the first service lands.
+Greenfield scaffold — no implementation code yet. **Stack: Python, managed with uv** (see
+*Coding habits*). Set further conventions here as the first service lands.

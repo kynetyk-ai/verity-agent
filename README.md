@@ -9,7 +9,8 @@ The name carries the point: **verity** = truth, and *verify*. The system exists 
 question — *can you trust, and audit, what the system believes?*
 
 > **Status:** greenfield scaffold. No implementation code yet; this repo currently holds the vendored
-> specification and project orientation. Stack is not yet fixed (Python is the working assumption).
+> specification and project orientation. Stack: Python, managed with [uv](https://docs.astral.sh/uv/)
+> (see *Coding habits* in [CLAUDE.md](CLAUDE.md)).
 
 ## The specification (self-contained)
 
