@@ -1,6 +1,6 @@
 # ADR 0001 — Opaque verifier + the control-plane-never-parses boundary
 
-- **Status:** Proposed (awaiting sign-off)
+- **Status:** Accepted — implemented on `feat/verifier-service` (PR #7)
 - **Date:** 2026-06-07
 - **Affects spec:** §3.3, §3.4, §3.6, §7, §8.3, §10 (amendments below), §6 (one added edge)
 - **Supersedes implementation:** the per-gate dispatch + control-plane staging shipped in Phase 2

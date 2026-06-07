@@ -13,9 +13,7 @@ import json
 
 import pytest
 
-from verity.contracts import VerifierRequest
-from verity.control_plane.commit import GateVerdict
-from verity.control_plane.store import Artifact, ArtifactStatus, VerdictKind
+from verity.contracts import Artifact, ArtifactStatus, GateVerdict, VerdictKind, VerifierRequest
 from verity.verifier import (
     ContainerCodeRunner,
     FakeCodeRunner,
@@ -33,9 +31,9 @@ def docker_test(fn):
     return pytest.mark.docker(fn)
 
 
-def _request(*, objects=None, gate: str = "runs") -> VerifierRequest:
+def _request(*, objects=None) -> VerifierRequest:
     proposal = Artifact("a1", "Submission", {"v": 1}, ArtifactStatus.PROPOSED, "agent", "t1")
-    return VerifierRequest(proposal=proposal, gate=gate, objects=objects or {})
+    return VerifierRequest(proposal=proposal, objects=objects or {})
 
 
 def _run(primitive, request):

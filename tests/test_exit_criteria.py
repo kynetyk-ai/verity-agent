@@ -45,7 +45,7 @@ def _config(domain) -> TaskConfig:
         instructions="produce good notes",
         domain_instructions="a Note has a text field",
         schema=domain.schema,
-        gates=domain.gates,
+        gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
         sandbox_key="stub",

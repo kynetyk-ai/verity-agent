@@ -30,34 +30,36 @@ from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import SqliteStore
 from verity.domains.code import DATASET, ENTRYPOINT, SUBMISSION, build_code_domain
 from verity.domains.fake import NOTE, build_fake_verifier
-from verity.verifier import FakeCodeRunner, RunResult, SdkVerifier
+from verity.verifier import FakeCodeRunner, RunResult
 
 
 def _note(note_id: str, **markers) -> Artifact:
     return Artifact(note_id, NOTE, {"text": "x", **markers}, ArtifactStatus.PROPOSED, "agent", "t1")
 
 
-def _request(proposal: Artifact, gate: str) -> VerifierRequest:
-    return VerifierRequest(proposal=proposal, gate=gate)
+def _request(proposal: Artifact) -> VerifierRequest:
+    return VerifierRequest(proposal=proposal)
 
 
-# ----------------------------------------------------------------- verdict-level reproducibility
+# ----------------------------------------------------------------- bundle-level reproducibility
 
 
-def test_same_request_yields_an_identical_verdict_across_instances() -> None:
+def test_same_request_yields_an_identical_bundle_across_instances() -> None:
     # two independently constructed verifiers must rule identically on identical input (§5.8)
-    request = _request(_note("n1", defect="tone"), "well-formed")
-    v1 = asyncio.run(build_fake_verifier().dispatch(request))
-    v2 = asyncio.run(build_fake_verifier().dispatch(request))
-    assert v1 == v2  # GateVerdict is a frozen value — equality is structural
-    assert v1 is not None and v1.defects == ("tone",)
+    request = _request(_note("n1", defect="tone"))
+    b1 = asyncio.run(build_fake_verifier().dispatch(request))
+    b2 = asyncio.run(build_fake_verifier().dispatch(request))
+    assert b1 == b2  # VerdictBundle is a frozen value — equality is structural
+    assert b1.status is ArtifactStatus.REVISED
+    assert b1.decisions[0].defects == ("tone",)
 
 
 def test_repeated_dispatch_is_stable() -> None:
     verifier = build_fake_verifier()
-    request = _request(_note("n1", keep=False), "worth-keeping")
-    verdicts = [asyncio.run(verifier.dispatch(request)) for _ in range(5)]
-    assert len({(v.kind, v.rationale) for v in verdicts if v is not None}) == 1
+    request = _request(_note("n1", keep=False))  # clears the cheap check, fails worth-keeping
+    bundles = [asyncio.run(verifier.dispatch(request)) for _ in range(5)]
+    assert len({b.status for b in bundles}) == 1
+    assert bundles[0].status is ArtifactStatus.REJECTED
 
 
 # ----------------------------------------------------------------- end-to-end reproducibility
@@ -81,14 +83,14 @@ def _run_code_submission(tmp_path: Path, code: bytes) -> str:
     sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
     vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
     sp.register("stub", lambda: agent)
-    vp.register("stub", lambda: SdkVerifier(plugins=domain.plugins))
+    vp.register("stub", lambda: domain.verifier)
     cp = ControlPlane(
         store, policy=OrchestrationPolicy(stop_on_accept=True), sandbox_providers=sp,
         verifier_providers=vp,
     )
     config = TaskConfig(
         task_id="t1", instructions="submit", domain_instructions="entrypoint script",
-        schema=domain.schema, gates=domain.gates, retrieval=DefaultRetrievalPolicy(),
+        schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator, sandbox_key="stub", verifier_key="stub",
     )
     asyncio.run(cp.configure(config))

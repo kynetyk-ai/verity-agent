@@ -1,4 +1,9 @@
-"""Gate-primitive SDK + verifier-service tests (spec §3.6, §8.3, §11) — ROADMAP Phase 2.1."""
+"""Gate-primitive SDK + verifier-service tests (spec §3.6, §8.3, §11; ADR 0001).
+
+The primitives are unchanged (each returns one ``GateVerdict``); the :class:`SdkVerifier` now owns a
+per-type pipeline and returns a :class:`VerdictBundle` — the staging that used to live in the commit
+path lives here.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +11,17 @@ import asyncio
 
 import pytest
 
-from verity.contracts import VerifierPort, VerifierRequest
-from verity.control_plane.store import Artifact, ArtifactStatus, VerdictKind
+from verity.contracts import (
+    Artifact,
+    ArtifactStatus,
+    VerdictKind,
+    VerifierPort,
+    VerifierRequest,
+)
 from verity.verifier import (
     CheckOutcome,
     FakeModelClient,
+    GateStep,
     JudgeReply,
     SdkVerifier,
     VerifierError,
@@ -24,10 +35,12 @@ from verity.verifier.model_client import _parse_reply
 from verity.verifier.primitives import WEAK_JUDGE_LABEL
 
 
-def _artifact(artifact_id: str = "a1", *, payload=None, created_by: str = "agent") -> Artifact:
+def _artifact(
+    artifact_id: str = "a1", *, artifact_type: str = "Feature", payload=None, created_by: str = "a"
+) -> Artifact:
     return Artifact(
         id=artifact_id,
-        type="Feature",
+        type=artifact_type,
         payload=payload if payload is not None else {"v": 1},
         status=ArtifactStatus.PROPOSED,
         created_by=created_by,
@@ -35,12 +48,9 @@ def _artifact(artifact_id: str = "a1", *, payload=None, created_by: str = "agent
     )
 
 
-def _request(
-    *, proposal: Artifact | None = None, gate: str = "g", store_slice=(), objects=None
-) -> VerifierRequest:
+def _request(*, proposal: Artifact | None = None, store_slice=(), objects=None) -> VerifierRequest:
     return VerifierRequest(
         proposal=proposal if proposal is not None else _artifact(),
-        gate=gate,
         store_slice=tuple(store_slice),
         objects=objects or {},
     )
@@ -86,14 +96,12 @@ def test_numeric_scorer_accepts_when_it_beats_the_baseline() -> None:
 
 
 def test_numeric_scorer_rejects_when_it_does_not_beat_the_baseline() -> None:
-    # no incumbent → baseline 0; a non-positive net cannot earn its place
     primitive = numeric_scorer(lambda _r: 0.0)
     verdict = _run(primitive, _request())
     assert verdict is not None and verdict.kind is VerdictKind.REJECT
 
 
 def test_numeric_scorer_nets_out_cost() -> None:
-    # raw 0.5 minus cost 0.6 = -0.1 net, below the 0 baseline → reject (complexity not worth it)
     primitive = numeric_scorer(lambda _r: 0.5, cost=lambda _a: 0.6)
     verdict = _run(primitive, _request())
     assert verdict is not None and verdict.kind is VerdictKind.REJECT
@@ -102,14 +110,10 @@ def test_numeric_scorer_nets_out_cost() -> None:
 
 def test_numeric_scorer_must_beat_incumbent_by_margin() -> None:
     incumbents = (_artifact("inc"),)
-    primitive = numeric_scorer(
-        lambda _r: 0.80, incumbent=lambda _slice: 0.78, margin=0.05
-    )
-    # 0.80 does not exceed 0.78 + 0.05 = 0.83 → reject
+    primitive = numeric_scorer(lambda _r: 0.80, incumbent=lambda _slice: 0.78, margin=0.05)
     verdict = _run(primitive, _request(store_slice=incumbents))
     assert verdict is not None and verdict.kind is VerdictKind.REJECT
 
-    # a stronger candidate clears the margin
     primitive_ok = numeric_scorer(lambda _r: 0.90, incumbent=lambda _slice: 0.78, margin=0.05)
     verdict_ok = _run(primitive_ok, _request(store_slice=incumbents))
     assert verdict_ok is not None and verdict_ok.kind is VerdictKind.ACCEPT
@@ -119,11 +123,8 @@ def test_numeric_scorer_must_beat_incumbent_by_margin() -> None:
 
 
 def test_llm_judge_wraps_reply_and_labels_it_weak() -> None:
-    client = FakeModelClient(
-        reply=lambda _c, _a, _ctx: JudgeReply(VerdictKind.ACCEPT, "reads well")
-    )
-    primitive = llm_judge(client, criteria="is it insightful?")
-    verdict = _run(primitive, _request())
+    client = FakeModelClient(reply=lambda _c, _a, _x: JudgeReply(VerdictKind.ACCEPT, "reads ok"))
+    verdict = _run(llm_judge(client, criteria="is it insightful?"), _request())
     assert verdict is not None and verdict.kind is VerdictKind.ACCEPT
     assert verdict.rationale.startswith(WEAK_JUDGE_LABEL)  # never an unlabeled judged accept (§11)
     assert client.calls == [("is it insightful?", "a1")]
@@ -147,7 +148,6 @@ def test_llm_judge_sees_only_artifacts_in_context() -> None:
 
     incumbents = (_artifact("inc"),)
     _run(llm_judge(FakeModelClient(reply=spy), criteria="x"), _request(store_slice=incumbents))
-    # the judge's only window on prior state is Artifacts — which carry no proposer rationale (§10)
     assert all(isinstance(item, Artifact) for item in seen)
 
 
@@ -155,8 +155,7 @@ def test_llm_judge_sees_only_artifacts_in_context() -> None:
 
 
 def test_human_in_the_loop_defers_with_no_verdict() -> None:
-    verdict = _run(human_in_the_loop(), _request())
-    assert verdict is None  # ⇒ the artifact rests at tentative (§7.4, §8.3)
+    assert _run(human_in_the_loop(), _request()) is None  # ⇒ rest at tentative (§7.4, §8.3)
 
 
 def test_model_tester_is_a_loud_seam_until_phase_4() -> None:
@@ -174,23 +173,29 @@ def test_parse_reply_reads_a_structured_verdict() -> None:
 
 
 def test_parse_reply_raises_on_unparseable_reply() -> None:
-    # a non-JSON reply is an infra failure, not a judgment — it must not launder into a verdict
     with pytest.raises(VerifierError):
         _parse_reply("the artifact looks fine to me")
 
 
-# ----------------------------------------------------------------- the SdkVerifier service
+# ----------------------------------------------------------------- the SdkVerifier (bundles)
 
 
 def _verifier() -> SdkVerifier:
     return SdkVerifier(
-        plugins={
-            "well-formed": deterministic_check(
-                lambda _r: CheckOutcome(ok=True, rationale="ok")
+        identity="test-verifier",
+        pipelines={
+            "Feature": (
+                GateStep(
+                    "well-formed",
+                    deterministic_check(lambda _r: CheckOutcome(ok=True, rationale="ok")),
+                    is_hard=False,
+                ),
+                GateStep("worth-keeping", numeric_scorer(lambda _r: 0.9), is_hard=True),
             ),
-            "worth-keeping": numeric_scorer(lambda _r: 0.9),
-            "needs-human": human_in_the_loop(),
-        }
+            "Human": (
+                GateStep("needs-human", human_in_the_loop(), is_hard=True, requires_human=True),
+            ),
+        },
     )
 
 
@@ -198,22 +203,43 @@ def test_sdk_verifier_satisfies_the_port_protocol() -> None:
     assert isinstance(_verifier(), VerifierPort)
 
 
-def test_sdk_verifier_routes_by_gate_name_and_records_requests() -> None:
+def test_sdk_verifier_runs_its_pipeline_and_returns_an_accepted_bundle() -> None:
     verifier = _verifier()
-    accept = asyncio.run(verifier.dispatch(_request(gate="worth-keeping")))
-    assert accept is not None and accept.kind is VerdictKind.ACCEPT
-    assert [r.gate for r in verifier.requests] == ["worth-keeping"]
+    bundle = asyncio.run(verifier.dispatch(_request()))
+    assert bundle.status is ArtifactStatus.ACCEPTED
+    assert [d.gate for d in bundle.decisions] == ["well-formed", "worth-keeping"]
+    assert [r.proposal.type for r in verifier.requests] == ["Feature"]
 
 
-def test_sdk_verifier_relays_a_human_deferral_as_none() -> None:
+def test_sdk_verifier_rests_at_tentative_on_a_human_deferral() -> None:
     verifier = _verifier()
-    assert asyncio.run(verifier.dispatch(_request(gate="needs-human"))) is None
+    bundle = asyncio.run(verifier.dispatch(_request(proposal=_artifact(artifact_type="Human"))))
+    # the hard human check returned no verdict → cleared cheap (none), not hard → tentative
+    assert bundle.status is ArtifactStatus.TENTATIVE
 
 
-def test_sdk_verifier_unknown_gate_is_a_loud_error_not_a_silent_accept() -> None:
+def test_sdk_verifier_short_circuits_on_reject() -> None:
+    verifier = SdkVerifier(
+        identity="v",
+        pipelines={
+            "Feature": (
+                GateStep(
+                    "no",
+                    deterministic_check(lambda _r: CheckOutcome(ok=False, rationale="bad")),
+                ),
+                GateStep("never", numeric_scorer(lambda _r: 1.0), is_hard=True),
+            )
+        },
+    )
+    bundle = asyncio.run(verifier.dispatch(_request()))
+    assert bundle.status is ArtifactStatus.REJECTED
+    assert [d.gate for d in bundle.decisions] == ["no"]  # the hard check never ran
+
+
+def test_sdk_verifier_uncovered_type_is_a_loud_error_not_a_silent_pass() -> None:
     verifier = _verifier()
     with pytest.raises(VerifierError):
-        asyncio.run(verifier.dispatch(_request(gate="ungated")))
+        asyncio.run(verifier.dispatch(_request(proposal=_artifact(artifact_type="Unknown"))))
 
 
 def test_sdk_verifier_lifecycle_is_a_noop_surface() -> None:

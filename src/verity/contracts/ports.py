@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from verity.contracts.model import Artifact, GateVerdict, Operation
+from verity.contracts.model import Artifact, Operation, VerdictBundle
 from verity.logging import get_logger
 
 __all__ = [
@@ -69,31 +69,33 @@ class ServiceLifecycle(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class VerifierRequest:
-    """What the control plane hands the verifier — and nothing more (spec §3.6, §8.3, §10).
+    """The whole proposal, handed to the opaque verifier in **one** call (ADR 0001, amends §3.6).
 
-    ``store_slice`` is the declared, control-plane-cut slice (incumbents to beat, the
+    No gate name and no pipeline: the verifier owns which checks run, in what order. ``store_slice``
+    is the declared, control-plane-cut slice for this proposal's type (incumbents to beat, the
     rejected-log, …); it is a tuple of :class:`Artifact`, which has no rationale field, so the
-    proposer's reasoning cannot ride along. ``objects`` are the harvested object attachments the
-    gate may need to *execute* (e.g. submitted code), keyed by content hash (§3.4).
+    proposer's reasoning cannot ride along (§10). ``objects`` are the harvested attachments a check
+    may need to *execute* (e.g. submitted code), keyed by name (§3.4).
     """
 
     proposal: Artifact
-    gate: str
     store_slice: tuple[Artifact, ...] = ()
     objects: Mapping[str, bytes] = field(default_factory=dict)
 
 
 @runtime_checkable
 class VerifierPort(Protocol):
-    """The advisory verifier service, behind one async method plus the lifecycle (§3.6).
+    """The advisory, **opaque** verifier service (ADR 0001, amends §3.6).
 
-    ``dispatch`` is the **only** path to a gate verdict; the sandbox has none. It returns the same
-    :class:`GateVerdict` the commit path consumes — or ``None`` when the gate cannot auto-resolve
-    (a ``requires_human`` gate), so the artifact rests at ``tentative`` (§7.4, §8.3) — matching the
-    :class:`~verity.control_plane.commit.GateRunner` contract the dispatch adapter feeds (§1.4).
+    ``dispatch`` is the only path to a verdict; the sandbox has none. One proposal in, one
+    :class:`VerdictBundle` out — the recommended terminal status plus the per-check decisions. The
+    control plane records and enforces; it does not sequence the verifier's checks or parse the
+    proposal. The verifier carries an ``identity`` distinct from the proposer (Builder/Breaker).
     """
 
-    async def dispatch(self, request: VerifierRequest) -> GateVerdict | None: ...
+    identity: str
+
+    async def dispatch(self, request: VerifierRequest) -> VerdictBundle: ...
     async def provision(self) -> None: ...
     async def teardown(self) -> None: ...
     async def health(self) -> bool: ...

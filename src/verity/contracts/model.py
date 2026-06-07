@@ -26,6 +26,8 @@ __all__ = [
     "Artifact",
     "Operation",
     "GateVerdict",
+    "GateDecision",
+    "VerdictBundle",
 ]
 
 
@@ -99,6 +101,10 @@ class Artifact:
     superseded_by: str | None = None
     revised_by: str | None = None
     is_root: bool = False
+    # The harvested object attachments, recorded by the control plane at intake (name → ref). A
+    # control-plane-owned **sidecar**, distinct from the domain ``payload`` — the proposal's payload
+    # is stored verbatim; the control plane never reaches into it (§4.1, ADR 0001).
+    objects: tuple[tuple[str, ObjectRef], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,13 +125,46 @@ class Operation:
 
 @dataclass(frozen=True, slots=True)
 class GateVerdict:
-    """One gate's advisory verdict (spec §3.6, §7.3). ``defects`` localizes a ``refine``.
+    """One internal gate/check's verdict (spec §3.6, §7.3). ``defects`` localizes a ``refine``.
 
-    The verifier's reply across the service boundary: the control plane, not the verifier, acts
-    on it (§3.6). A ``score`` is present where the gate produced one (the numeric rung, §11).
+    A primitive returns this; the verifier composes the per-check verdicts into a
+    :class:`VerdictBundle`. A ``score`` is present where the check produced one (the numeric rung,
+    §11). ``supersedes`` lets a selection check name the incumbent it beats (ADR 0001, issue #8).
     """
 
     kind: VerdictKind
     rationale: str
     defects: tuple[str, ...] | None = None
     score: float | None = None
+    supersedes: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GateDecision:
+    """One recorded ruling inside a verdict bundle: which check ruled, and how (ADR 0001).
+
+    Self-contained (carries no artifact id) so it crosses the wire cleanly; the control plane turns
+    each into a durable :class:`~verity.control_plane.store.Decision` row at commit time (§4.1, §7).
+    """
+
+    gate: str
+    kind: VerdictKind
+    rationale: str
+    defects: tuple[str, ...] | None = None
+    score: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VerdictBundle:
+    """The opaque verifier's reply to a single dispatch (ADR 0001, amends §3.6, §7.3–4).
+
+    One handoff in, one bundle out: the verifier ran whatever checks it owns, in whatever order, and
+    reports the **terminal status it recommends** plus the per-check ``decisions`` it made. The
+    control plane records the decisions and sets the status — after validating the transition is
+    legal (§6) and the bundle is self-consistent — but never sequences or parses. ``supersedes``
+    names an incumbent this proposal beats, applied atomically with acceptance (§7.5a, issue #8).
+    """
+
+    status: ArtifactStatus
+    decisions: tuple[GateDecision, ...] = ()
+    supersedes: str | None = None

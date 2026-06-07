@@ -1,48 +1,51 @@
-"""Control-plane API tests (spec §3.4) — ROADMAP Phase 1.4.
+"""Control-plane API tests (spec §3.4; ADR 0001) — ROADMAP Phase 1.4/refactor.
 
-Exercises the async service boundary with minimal in-test doubles for the sandbox and verifier
-(the product stubs land in 1.5): configure-by-task, intake (shape-error / harvest / rationale
-segregation), verifier dispatch over a rationale-free slice, the cycle loop, and extraction.
+Exercises the async service boundary with in-test doubles: configure-by-task, intake (shape-error /
+harvest / rationale segregation / object sidecar), the single opaque-verifier handoff over a
+rationale-free declared slice, the cycle loop, and extraction.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-from tests.helpers import accept, reject
+from tests.helpers import bundle, decision
 from verity.contracts import (
-    ProposalEnvelope,
-    ProviderRegistry,
-    SandboxPort,
-    ServedContext,
-    VerifierPort,
-    VerifierRequest,
-)
-from verity.control_plane.api import ControlPlane, OrchestrationPolicy
-from verity.control_plane.commit import CommitOutcome, GateVerdict
-from verity.control_plane.config import TaskConfig
-from verity.control_plane.registries import DefaultRetrievalPolicy
-from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
     Operation,
     OperationStatus,
-    SqliteStore,
+    ProposalEnvelope,
+    ProviderRegistry,
+    SandboxPort,
+    ServedContext,
+    VerdictBundle,
+    VerdictKind,
+    VerifierPort,
+    VerifierRequest,
 )
+from verity.control_plane.api import ControlPlane, OrchestrationPolicy
+from verity.control_plane.commit import CommitOutcome
+from verity.control_plane.config import TaskConfig
+from verity.control_plane.registries import DefaultRetrievalPolicy
+from verity.control_plane.store import SqliteStore
 from verity.domains.fake import NOTE, SOURCE, build_fake_domain
+
+_ACCEPT = bundle(ArtifactStatus.ACCEPTED, decision("well-formed"), decision("worth-keeping"))
 
 
 class FakeVerifier:
-    """An in-test VerifierPort: scripted per-gate verdicts; records every request it is handed."""
+    """An in-test VerifierPort: returns a fixed bundle; records every request it is handed."""
 
-    def __init__(self, verdicts: dict[str, GateVerdict] | None = None) -> None:
-        self.verdicts = verdicts or {}
+    def __init__(self, result: VerdictBundle | None = None) -> None:
+        self.identity = "fake-verifier"
+        self.result = result if result is not None else _ACCEPT
         self.requests: list[VerifierRequest] = []
         self.provisioned = False
 
-    async def dispatch(self, request: VerifierRequest) -> GateVerdict:
+    async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         self.requests.append(request)
-        return self.verdicts.get(request.gate, accept())
+        return self.result
 
     async def provision(self) -> None:
         self.provisioned = True
@@ -81,14 +84,14 @@ class FakeSandbox:
         return True
 
 
-def _config(domain) -> TaskConfig:
+def _config(domain, *, retrieval=None) -> TaskConfig:
     return TaskConfig(
         task_id="t1",
         instructions="write notes",
         domain_instructions="a Note has a text field",
         schema=domain.schema,
-        gates=domain.gates,
-        retrieval=DefaultRetrievalPolicy(),
+        gated_types=domain.gated_types,
+        retrieval=retrieval if retrieval is not None else DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
         sandbox_key="stub",
         verifier_key="stub",
@@ -96,71 +99,52 @@ def _config(domain) -> TaskConfig:
 
 
 def _note(note_id: str, *, text: str = "hi", metadata: str = "", objects=None) -> ProposalEnvelope:
-    artifact = Artifact(
-        id=note_id,
-        type=NOTE,
-        payload={"text": text},
-        status=ArtifactStatus.PROPOSED,
-        created_by="agent",
-        created_at="",
-    )
-    op = Operation(
-        op_id=f"op-{note_id}",
-        op_name="author",
-        parents=("src",),
-        output_id=note_id,
-        status=OperationStatus.SUCCESS,
-        created_at="",
-    )
+    artifact = Artifact(note_id, NOTE, {"text": text}, ArtifactStatus.PROPOSED, "agent", "")
+    op = Operation(f"op-{note_id}", "author", ("src",), note_id, OperationStatus.SUCCESS, "")
     return ProposalEnvelope(
         artifact=artifact, operation=op, metadata=metadata, objects=objects or {}
     )
 
 
 def _setup(
-    *, verdicts=None, proposals=None
+    *, result=None, proposals=None, policy=None
 ) -> tuple[ControlPlane, FakeSandbox, FakeVerifier, SqliteStore]:
     store = SqliteStore()
-    # seed a root input the notes descend from
     store.propose(
         Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
         Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
     )
     sandbox = FakeSandbox(proposals)
-    verifier = FakeVerifier(verdicts)
-    sandbox_providers: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
-    verifier_providers: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
-    sandbox_providers.register("stub", lambda: sandbox)
-    verifier_providers.register("stub", lambda: verifier)
-    cp = ControlPlane(
-        store,
-        sandbox_providers=sandbox_providers,
-        verifier_providers=verifier_providers,
-    )
+    verifier = FakeVerifier(result)
+    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
+    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
+    sp.register("stub", lambda: sandbox)
+    vp.register("stub", lambda: verifier)
+    cp = ControlPlane(store, policy=policy, sandbox_providers=sp, verifier_providers=vp)
     asyncio.run(cp.configure(_config(build_fake_domain())))
     return cp, sandbox, verifier, store
 
 
 def test_configure_stamps_schema_and_provisions_services() -> None:
-    cp, sandbox, verifier, store = _setup()
+    _cp, _sandbox, verifier, store = _setup()
     assert verifier.provisioned is True
     current = store.current_schema_version()
     assert current is not None and NOTE in current.types
 
 
 def test_happy_path_accepts_and_commits() -> None:
-    cp, sandbox, verifier, store = _setup()
+    cp, _sandbox, verifier, store = _setup()
     result = asyncio.run(cp.submit_proposal("t1", _note("n1")))
     assert result.entered_protocol is True
     assert result.commit is not None and result.commit.outcome is CommitOutcome.ACCEPTED
     got = store.get_artifact("n1")
     assert got is not None and got.status is ArtifactStatus.ACCEPTED
-    # both gate decisions came from the verifier, not the in-process domain runner
-    assert len(verifier.requests) == 2
+    assert len(verifier.requests) == 1  # one opaque handoff, not per-gate dispatch (ADR 0001)
 
 
-def test_reject_verdict_is_recorded() -> None:
-    cp, _sandbox, _verifier, store = _setup(verdicts={"well-formed": reject("nope")})
+def test_reject_bundle_is_recorded() -> None:
+    rejected = bundle(ArtifactStatus.REJECTED, decision("well-formed", VerdictKind.REJECT, "nope"))
+    cp, _sandbox, _verifier, _store = _setup(result=rejected)
     result = asyncio.run(cp.submit_proposal("t1", _note("n1")))
     assert result.commit is not None and result.commit.outcome is CommitOutcome.REJECTED
     assert [a.id for a in cp.rejected_log(type=NOTE)] == ["n1"]
@@ -168,16 +152,15 @@ def test_reject_verdict_is_recorded() -> None:
 
 def test_malformed_proposal_records_nothing() -> None:
     cp, _sandbox, verifier, store = _setup()
-    bad = _note("n1")
     bad = ProposalEnvelope(
         artifact=Artifact("n1", NOTE, {"no_text": 1}, ArtifactStatus.PROPOSED, "agent", ""),
-        operation=bad.operation,
+        operation=Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, ""),
         objects={"leftover.py": b"print()"},
     )
     result = asyncio.run(cp.submit_proposal("t1", bad))
     assert result.entered_protocol is False
     assert result.shape_error is not None
-    # nothing recorded: no proposed row, no decision, no object harvested (§7.0)
+    # nothing recorded: no proposed row, no decision, no object harvested, no dispatch (§7.0)
     assert store.get_artifact("n1") is None
     assert result.harvested == {}
     assert verifier.requests == []
@@ -192,61 +175,41 @@ def test_object_is_harvested_and_content_addressed() -> None:
     assert store.get_object(ref.content_hash) == code  # round-trips by reference
 
 
-def test_harvested_objects_are_linked_into_the_artifact_payload() -> None:
-    # the durable artifact references its content-addressed objects (§4.1), so the link survives the
-    # run and "what code produced X" is answerable from the store, not just the transient intake.
+def test_harvested_objects_are_linked_as_an_artifact_sidecar() -> None:
+    # the object↔artifact link is recorded on the artifact's sidecar (§4.1, ADR 0001), durable and
+    # auditable — the domain payload is stored verbatim, the control plane never touches it.
     cp, _sandbox, _verifier, store = _setup()
     code = b"def feature(df):\n    return df['a']\n"
     asyncio.run(cp.submit_proposal("t1", _note("n1", objects={"submission.py": code})))
 
     art = store.get_artifact("n1")
-    assert art is not None and isinstance(art.payload, dict)
-    refs = art.payload["__objects__"]
-    content_hash = refs["submission.py"]["content_hash"]
-    assert store.get_object(content_hash) == code  # fetchable by the recorded hash
-    assert art.payload["text"] == "hi"  # the domain field survives the mechanical injection
+    assert art is not None
+    objects = dict(art.objects)
+    assert store.get_object(objects["submission.py"].content_hash) == code
+    assert art.payload == {"text": "hi"}  # payload untouched
 
 
-def test_objectless_proposal_payload_is_unchanged() -> None:
+def test_objectless_proposal_has_an_empty_sidecar_and_untouched_payload() -> None:
     cp, _sandbox, _verifier, store = _setup()
     asyncio.run(cp.submit_proposal("t1", _note("n1")))
     art = store.get_artifact("n1")
-    # no __objects__ key is added when nothing was harvested
-    assert art is not None and art.payload == {"text": "hi"}
+    assert art is not None and art.payload == {"text": "hi"} and art.objects == ()
 
 
-def test_verifier_slice_excludes_rationale_and_sees_incumbents() -> None:
-    cp, _sandbox, verifier, store = _setup()
-    # first submission accepts and becomes the incumbent
+def test_verifier_request_excludes_rationale_and_sees_the_declared_slice() -> None:
+    cp, _sandbox, verifier, _store = _setup()
     asyncio.run(cp.submit_proposal("t1", _note("n1", metadata="i tried hard")))
     # the rationale is stored on the provenance/context channel...
     assert cp.rationale_for("n1") == "i tried hard"
-    # ...but never reached the verifier: no request carried it (the slice is Artifacts only)
+    # ...but never reaches the verifier: the request carries no rationale, the slice is Artifacts
     for request in verifier.requests:
         assert not hasattr(request, "rationale")
-        for sliced in request.store_slice:
-            assert isinstance(sliced, Artifact)
+        assert all(isinstance(a, Artifact) for a in request.store_slice)
 
-    # a second submission's slice now includes the accepted incumbent n1
+    # a second submission's declared slice (Note → incumbents) now includes the accepted n1
     verifier.requests.clear()
     asyncio.run(cp.submit_proposal("t1", _note("n2")))
-    saw_incumbent = any(
-        any(a.id == "n1" for a in req.store_slice) for req in verifier.requests
-    )
-    assert saw_incumbent
-
-
-def test_per_gate_declared_inputs_scope_the_slice() -> None:
-    # Each gate sees only what it declared (§8.3, §10): the cheap structural gate declared no
-    # inputs, the hard selection gate declared the incumbents it must beat.
-    cp, _sandbox, verifier, _store = _setup()
-    asyncio.run(cp.submit_proposal("t1", _note("n1")))  # becomes the accepted incumbent
-    verifier.requests.clear()
-    asyncio.run(cp.submit_proposal("t1", _note("n2")))
-
-    by_gate = {req.gate: req for req in verifier.requests}
-    assert by_gate["well-formed"].store_slice == ()  # declared nothing → empty
-    assert any(a.id == "n1" for a in by_gate["worth-keeping"].store_slice)  # sees the incumbent
+    assert any(a.id == "n1" for a in verifier.requests[0].store_slice)
 
 
 def test_task_retrieval_policy_feeds_context_assembly() -> None:
@@ -272,19 +235,7 @@ def test_task_retrieval_policy_feeds_context_assembly() -> None:
     sp.register("stub", lambda: FakeSandbox())
     vp.register("stub", lambda: FakeVerifier())
     cp = ControlPlane(store, sandbox_providers=sp, verifier_providers=vp)
-    domain = build_fake_domain()
-    config = TaskConfig(
-        task_id="t1",
-        instructions="x",
-        domain_instructions="y",
-        schema=domain.schema,
-        gates=domain.gates,
-        retrieval=OnlySources(),
-        shape_validator=domain.shape_validator,
-        sandbox_key="stub",
-        verifier_key="stub",
-    )
-    asyncio.run(cp.configure(config))
+    asyncio.run(cp.configure(_config(build_fake_domain(), retrieval=OnlySources())))
 
     served = asyncio.run(cp.serve_context("t1", goal="find roots"))
     assert consulted == ["find roots"]  # the task's policy was the one consulted
@@ -293,22 +244,10 @@ def test_task_retrieval_policy_feeds_context_assembly() -> None:
 
 
 def test_run_loop_drives_cycles_and_regenerates() -> None:
-    proposals = [_note("n1"), _note("n2")]
-    policy = OrchestrationPolicy(max_cycles=5, stop_on_accept=True)
-    store = SqliteStore()
-    store.propose(
-        Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
-        Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
+    cp, sandbox, _verifier, store = _setup(
+        proposals=[_note("n1"), _note("n2")],
+        policy=OrchestrationPolicy(max_cycles=5, stop_on_accept=True),
     )
-    sandbox = FakeSandbox(proposals)
-    verifier = FakeVerifier()
-    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
-    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
-    sp.register("stub", lambda: sandbox)
-    vp.register("stub", lambda: verifier)
-    cp = ControlPlane(store, policy=policy, sandbox_providers=sp, verifier_providers=vp)
-    asyncio.run(cp.configure(_config(build_fake_domain())))
-
     results = asyncio.run(cp.run("t1", goal="make a good note"))
     assert len(results) == 1  # stop_on_accept ended after the first accept
     assert sandbox.regenerated == 1  # workspace regenerated each cycle
@@ -316,7 +255,7 @@ def test_run_loop_drives_cycles_and_regenerates() -> None:
 
 
 def test_extraction_answers_why_from_provenance() -> None:
-    cp, _sandbox, _verifier, store = _setup()
+    cp, _sandbox, _verifier, _store = _setup()
     asyncio.run(cp.submit_proposal("t1", _note("n1")))
     prov = cp.provenance("n1")
     assert prov.artifact.id == "n1"

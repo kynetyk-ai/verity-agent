@@ -205,7 +205,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     created_at    TEXT NOT NULL,
     superseded_by TEXT,
     revised_by    TEXT,
-    is_root       INTEGER NOT NULL DEFAULT 0
+    is_root       INTEGER NOT NULL DEFAULT 0,
+    objects       TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS operations (
     op_id      TEXT PRIMARY KEY,
@@ -236,6 +237,18 @@ CREATE INDEX IF NOT EXISTS idx_decisions_artifact ON decisions(artifact_id);
 """
 
 _OBJECT_MARKER = "__object_ref__"
+
+
+def _dump_objects(objects: tuple[tuple[str, ObjectRef], ...]) -> str:
+    """Serialize an artifact's object sidecar (name → ref) for the ``objects`` column (§4.1)."""
+    return json.dumps([[name, ref.blob_ref, ref.content_hash] for name, ref in objects])
+
+
+def _load_objects(raw: str) -> tuple[tuple[str, ObjectRef], ...]:
+    return tuple(
+        (name, ObjectRef(blob_ref=blob_ref, content_hash=content_hash))
+        for name, blob_ref, content_hash in json.loads(raw)
+    )
 
 
 @dataclass
@@ -311,6 +324,7 @@ class SqliteStore:
             superseded_by=row["superseded_by"],
             revised_by=row["revised_by"],
             is_root=bool(row["is_root"]),
+            objects=_load_objects(row["objects"]),
         )
 
     @staticmethod
@@ -555,8 +569,8 @@ class SqliteStore:
         conn.execute(
             "INSERT INTO artifacts "
             "(id, type, payload, status, created_by, created_at, superseded_by, revised_by, "
-            "is_root) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "is_root, objects) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 artifact.id,
                 artifact.type,
@@ -567,6 +581,7 @@ class SqliteStore:
                 artifact.superseded_by,
                 artifact.revised_by,
                 int(artifact.is_root),
+                _dump_objects(artifact.objects),
             ),
         )
 

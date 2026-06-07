@@ -48,7 +48,7 @@ def test_task_config_system_prompt_uses_its_layers() -> None:
         instructions="Write a tidy note.",
         domain_instructions="A Note has a text field.",
         schema=domain.schema,
-        gates=domain.gates,
+        gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
         sandbox_key="stub",

@@ -15,12 +15,14 @@ from __future__ import annotations
 from verity.contracts.model import (
     Artifact,
     ArtifactStatus,
+    GateDecision,
     GateVerdict,
     JSONValue,
     ObjectRef,
     Operation,
     OperationStatus,
     Payload,
+    VerdictBundle,
     VerdictKind,
 )
 from verity.contracts.ports import (
@@ -47,6 +49,8 @@ __all__ = [
     "Artifact",
     "Operation",
     "GateVerdict",
+    "GateDecision",
+    "VerdictBundle",
     # ports
     "ServiceLifecycle",
     "VerifierRequest",

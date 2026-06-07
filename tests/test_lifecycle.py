@@ -18,6 +18,7 @@ from verity.control_plane.store import ArtifactStatus as S
 
 LEGAL_EDGES = {
     (S.PROPOSED, S.TENTATIVE),
+    (S.PROPOSED, S.ACCEPTED),  # the verifier owns staging, may report 'accepted' (ADR 0001)
     (S.PROPOSED, S.REJECTED),
     (S.PROPOSED, S.REVISED),
     (S.TENTATIVE, S.ACCEPTED),
@@ -47,9 +48,9 @@ def test_illegal_edges_are_rejected(frm: S, to: S) -> None:
         assert_transition(frm, to)
 
 
-def test_proposed_cannot_jump_straight_to_accepted() -> None:
-    # Acceptance always routes through 'tentative' (§6).
-    assert not is_legal_transition(S.PROPOSED, S.ACCEPTED)
+def test_proposed_may_go_straight_to_accepted() -> None:
+    # The opaque verifier owns staging and may report 'accepted' directly (ADR 0001, §6 prose).
+    assert is_legal_transition(S.PROPOSED, S.ACCEPTED)
 
 
 def test_terminal_statuses_have_no_outgoing_edges() -> None:

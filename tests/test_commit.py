@@ -1,291 +1,160 @@
-"""Commit-path protocol tests (spec §7) — ROADMAP Phase 1.1.
+"""Commit-path tests for the opaque-verifier model (spec §7; ADR 0001) — ROADMAP Phase 1.1/refactor.
 
-Exercises every branch of the §7 protocol against scripted collaborators: shape-error,
-no-implicit-accept, proposer≠gate, the cheap→tentative / hard→accepted walk, reject, refine,
-supersession, and the requires-human rest-at-tentative case.
+The commit path takes one verdict bundle and records + enforces: coverage (no implicit accept),
+proposer ≠ gate, decision recording, transition legality, bundle self-consistency, and supersession.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from tests.helpers import (
-    AGENT,
-    accept,
-    binding,
-    gate,
-    make_store,
-    propose,
-    refine,
-    reject,
-    resolver,
-    runner,
-    shape_fail,
-    shape_ok,
-)
+from tests.helpers import AGENT, VERIFIER, bundle, coverage, decision, make_store, propose, returns
+from verity.contracts import ArtifactStatus, VerdictKind
 from verity.control_plane.commit import (
+    BundleInconsistent,
     CommitError,
     CommitOutcome,
     NoImplicitAccept,
     ProposerIsGate,
     run_commit,
 )
-from verity.control_plane.store import ArtifactStatus, VerdictKind
+
+T = "Thing"
 
 
-def test_cheap_only_pipeline_accepts_through_tentative() -> None:
-    store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    result = run_commit(
-        "a1",
+def _commit(store, artifact_id, *, result, gated=(T,), identity=VERIFIER):
+    return run_commit(
+        artifact_id,
         store=store,
         sink=store,
-        resolve_binding=resolver(binding("Thing", gate("cheap"))),
-        validate_shape=shape_ok(),
-        run_gate=runner({"cheap": accept()}),
+        resolve_coverage=coverage(*gated),
+        dispatch=returns(result),
+        verifier_identity=identity,
+    )
+
+
+# --------------------------------------------------------------------------- misuse
+
+
+def test_unknown_artifact_is_an_error() -> None:
+    store = make_store()
+    with pytest.raises(CommitError):
+        _commit(store, "nope", result=bundle(ArtifactStatus.ACCEPTED))
+
+
+def test_non_proposed_artifact_is_an_error() -> None:
+    store = make_store()
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
+    store.set_status("a", ArtifactStatus.ACCEPTED)
+    with pytest.raises(CommitError):
+        _commit(store, "a", result=bundle(ArtifactStatus.ACCEPTED))
+
+
+# --------------------------------------------------------------------------- invariants
+
+
+def test_uncovered_type_is_no_implicit_accept() -> None:
+    store = make_store()
+    propose(store, artifact_id="a", artifact_type="Orphan", is_root=True)
+    with pytest.raises(NoImplicitAccept):
+        _commit(store, "a", result=bundle(ArtifactStatus.ACCEPTED), gated=(T,))
+
+
+def test_verifier_sharing_proposer_identity_is_refused() -> None:
+    store = make_store()
+    propose(store, artifact_id="a", artifact_type=T, created_by="same", is_root=True)
+    with pytest.raises(ProposerIsGate):
+        _commit(store, "a", result=bundle(ArtifactStatus.ACCEPTED), identity="same")
+
+
+# --------------------------------------------------------------------------- outcomes
+
+
+def test_accept_sets_accepted_and_records_decisions() -> None:
+    store = make_store()
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
+    result = _commit(
+        store, "a", result=bundle(ArtifactStatus.ACCEPTED, decision("worth-keeping", score=0.9))
     )
     assert result.outcome is CommitOutcome.ACCEPTED
-    got = store.get_artifact("a1")
-    assert got is not None and got.status is ArtifactStatus.ACCEPTED
-    assert [d.gate for d in store.decisions_for("a1")] == ["cheap"]
+    assert store.get_artifact("a").status is ArtifactStatus.ACCEPTED
+    assert [d.gate for d in store.decisions_for("a")] == ["worth-keeping"]
 
 
-def test_cheap_then_hard_pipeline_accepts() -> None:
+def test_tentative_rests_at_tentative() -> None:
     store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    result = run_commit(
-        "a1",
-        store=store,
-        sink=store,
-        resolve_binding=resolver(
-            binding("Thing", gate("cheap"), gate("hard", is_hard=True))
-        ),
-        validate_shape=shape_ok(),
-        run_gate=runner({"cheap": accept(), "hard": accept(score=0.7)}),
-    )
-    assert result.outcome is CommitOutcome.ACCEPTED
-    assert {d.gate for d in store.decisions_for("a1")} == {"cheap", "hard"}
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
+    result = _commit(store, "a", result=bundle(ArtifactStatus.TENTATIVE, decision("cheap")))
+    assert result.outcome is CommitOutcome.TENTATIVE
+    assert store.get_artifact("a").status is ArtifactStatus.TENTATIVE
 
 
-def test_reject_at_cheap_gate_stops_and_records() -> None:
+def test_reject_is_recorded_and_terminal() -> None:
     store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    result = run_commit(
-        "a1",
-        store=store,
-        sink=store,
-        resolve_binding=resolver(
-            binding("Thing", gate("cheap"), gate("hard", is_hard=True))
-        ),
-        validate_shape=shape_ok(),
-        run_gate=runner({"cheap": reject("bad"), "hard": accept()}),
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
+    result = _commit(
+        store, "a", result=bundle(ArtifactStatus.REJECTED, decision("g", VerdictKind.REJECT, "no"))
     )
     assert result.outcome is CommitOutcome.REJECTED
-    got = store.get_artifact("a1")
-    assert got is not None and got.status is ArtifactStatus.REJECTED
-    # the hard gate never ran — only the cheap decision is recorded
-    assert [d.gate for d in store.decisions_for("a1")] == ["cheap"]
-    assert [a.id for a in store.rejected_log()] == ["a1"]
+    assert store.get_artifact("a").status is ArtifactStatus.REJECTED
 
 
-def test_reject_at_hard_gate_rejects_from_tentative() -> None:
+def test_refine_carries_defects() -> None:
     store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    result = run_commit(
-        "a1",
-        store=store,
-        sink=store,
-        resolve_binding=resolver(
-            binding("Thing", gate("cheap"), gate("hard", is_hard=True))
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
+    result = _commit(
+        store,
+        "a",
+        result=bundle(
+            ArtifactStatus.REVISED, decision("g", VerdictKind.REFINE, "fix", defects=("tone",))
         ),
-        validate_shape=shape_ok(),
-        run_gate=runner({"cheap": accept(), "hard": reject()}),
-    )
-    assert result.outcome is CommitOutcome.REJECTED
-    assert {d.gate for d in store.decisions_for("a1")} == {"cheap", "hard"}
-
-
-def test_refine_marks_revised_with_defects() -> None:
-    store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    result = run_commit(
-        "a1",
-        store=store,
-        sink=store,
-        resolve_binding=resolver(binding("Thing", gate("cheap"))),
-        validate_shape=shape_ok(),
-        run_gate=runner({"cheap": refine("feature-3")}),
     )
     assert result.outcome is CommitOutcome.REVISED
-    assert result.defects == ("feature-3",)
-    got = store.get_artifact("a1")
-    assert got is not None and got.status is ArtifactStatus.REVISED
-    decision = store.decisions_for("a1")[0]
-    assert decision.verdict is VerdictKind.REFINE
-    assert decision.defects == ("feature-3",)
+    assert result.defects == ("tone",)
+    assert store.get_artifact("a").status is ArtifactStatus.REVISED
 
 
-def test_no_binding_is_no_implicit_accept() -> None:
+# --------------------------------------------------------------------------- supersession
+
+
+def test_accept_supersedes_the_named_incumbent() -> None:
     store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Gateless")
-    with pytest.raises(NoImplicitAccept):
-        run_commit(
-            "a1",
-            store=store,
-            sink=store,
-            resolve_binding=resolver(),  # no binding for 'Gateless'
-            validate_shape=shape_ok(),
-            run_gate=runner({}),
-        )
-    # nothing was recorded and nothing accepted
-    assert store.decisions_for("a1") == []
-    got = store.get_artifact("a1")
-    assert got is not None and got.status is ArtifactStatus.PROPOSED
-
-
-def test_empty_pipeline_is_no_implicit_accept() -> None:
-    store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    with pytest.raises(NoImplicitAccept):
-        run_commit(
-            "a1",
-            store=store,
-            sink=store,
-            resolve_binding=resolver(binding("Thing")),  # bound, but zero gates
-            validate_shape=shape_ok(),
-            run_gate=runner({}),
-        )
-
-
-def test_proposer_cannot_be_its_own_gate() -> None:
-    store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing", created_by="same-id")
-    with pytest.raises(ProposerIsGate):
-        run_commit(
-            "a1",
-            store=store,
-            sink=store,
-            resolve_binding=resolver(binding("Thing", gate("g", identity="same-id"))),
-            validate_shape=shape_ok(),
-            run_gate=runner({"g": accept()}),
-        )
-
-
-def test_shape_error_is_correctable_and_records_nothing() -> None:
-    store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    result = run_commit(
-        "a1",
-        store=store,
-        sink=store,
-        resolve_binding=resolver(binding("Thing", gate("cheap"))),
-        validate_shape=shape_fail("missing description"),
-        run_gate=runner({"cheap": accept()}),
-    )
-    assert result.outcome is CommitOutcome.SHAPE_ERROR
-    assert result.shape_error is not None
-    assert result.status is None
-    # §7.0: no decision row, no status change — still proposed
-    assert store.decisions_for("a1") == []
-    got = store.get_artifact("a1")
-    assert got is not None and got.status is ArtifactStatus.PROPOSED
-    assert store.rejected_log() == []
-
-
-def test_requires_human_hard_gate_rests_at_tentative() -> None:
-    store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    result = run_commit(
-        "a1",
-        store=store,
-        sink=store,
-        resolve_binding=resolver(
-            binding("Thing", gate("cheap"), gate("human", is_hard=True, requires_human=True))
-        ),
-        validate_shape=shape_ok(),
-        run_gate=runner({"cheap": accept(), "human": None}),  # human can't auto-resolve
-    )
-    assert result.outcome is CommitOutcome.TENTATIVE
-    got = store.get_artifact("a1")
-    assert got is not None and got.status is ArtifactStatus.TENTATIVE
-    assert [d.gate for d in store.decisions_for("a1")] == ["cheap"]
-
-
-def test_acceptance_can_supersede_an_incumbent_atomically() -> None:
-    store = make_store()
-    # an accepted incumbent
-    propose(store, artifact_id="old", artifact_type="Thing")
-    store.set_status("old", ArtifactStatus.TENTATIVE)
+    propose(store, artifact_id="old", artifact_type=T, is_root=True)
     store.set_status("old", ArtifactStatus.ACCEPTED)
-    # a better submission supersedes it
-    propose(store, artifact_id="new", artifact_type="Thing")
-    result = run_commit(
-        "new",
-        store=store,
-        sink=store,
-        resolve_binding=resolver(binding("Thing", gate("hard", is_hard=True))),
-        validate_shape=shape_ok(),
-        run_gate=runner({"hard": accept(score=0.9)}),
-        supersedes="old",
-    )
+    propose(store, artifact_id="new", artifact_type=T, is_root=True)
+    result = _commit(store, "new", result=bundle(ArtifactStatus.ACCEPTED, supersedes="old"))
     assert result.outcome is CommitOutcome.ACCEPTED
+    assert store.get_artifact("new").status is ArtifactStatus.ACCEPTED
     old = store.get_artifact("old")
-    new = store.get_artifact("new")
-    assert old is not None and new is not None
     assert old.status is ArtifactStatus.SUPERSEDED and old.superseded_by == "new"
-    assert new.status is ArtifactStatus.ACCEPTED
 
 
-def test_commit_requires_proposed_status() -> None:
+def test_superseding_an_unknown_incumbent_errors() -> None:
     store = make_store()
-    propose(store, artifact_id="a1", artifact_type="Thing")
-    store.set_status("a1", ArtifactStatus.TENTATIVE)
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
     with pytest.raises(CommitError):
-        run_commit(
-            "a1",
-            store=store,
-            sink=store,
-            resolve_binding=resolver(binding("Thing", gate("g"))),
-            validate_shape=shape_ok(),
-            run_gate=runner({"g": accept()}),
-        )
+        _commit(store, "a", result=bundle(ArtifactStatus.ACCEPTED, supersedes="ghost"))
 
 
-def test_refine_then_revision_keeps_intact_lineage() -> None:
-    """refine → revised → revises op → re-commit; provenance spans the revision (§6, §7)."""
+# --------------------------------------------------------------------------- coherence
+
+
+def test_a_reject_decision_under_an_accept_status_is_inconsistent() -> None:
     store = make_store()
-    propose(store, artifact_id="v1", artifact_type="Thing")
-    bound = resolver(binding("Thing", gate("cheap")))
-    first = run_commit(
-        "v1",
-        store=store,
-        sink=store,
-        resolve_binding=bound,
-        validate_shape=shape_ok(),
-        run_gate=runner({"cheap": refine("bad-part")}),
-    )
-    assert first.outcome is CommitOutcome.REVISED
-
-    # the agent re-proposes a revision via a 'revises' operation
-    propose(store, artifact_id="v2", artifact_type="Thing", parents=["v1"], op_name="revises")
-    store.link_revision("v1", "v2")
-    second = run_commit(
-        "v2",
-        store=store,
-        sink=store,
-        resolve_binding=bound,
-        validate_shape=shape_ok(),
-        run_gate=runner({"cheap": accept()}),
-    )
-    assert second.outcome is CommitOutcome.ACCEPTED
-
-    v1 = store.get_artifact("v1")
-    assert v1 is not None and v1.revised_by == "v2"
-    prov = store.get_provenance("v2")
-    assert "v1" in {a.id for a in prov.ancestors}
-    assert any(op.op_name == "revises" for op in prov.operations)
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
+    inconsistent = bundle(ArtifactStatus.ACCEPTED, decision("g", VerdictKind.REJECT, "no"))
+    with pytest.raises(BundleInconsistent):
+        _commit(store, "a", result=inconsistent)
 
 
-def test_proposer_identity_default_differs_from_gate() -> None:
-    # sanity: the helper proposer (AGENT) and gate identity (VERIFIER) differ by default
-    assert AGENT != "verifier"
+def test_non_root_artifact_keeps_provenance_to_accept() -> None:
+    store = make_store()
+    propose(store, artifact_id="root", artifact_type=T, is_root=True)
+    propose(store, artifact_id="child", artifact_type=T, parents=("root",))
+    result = _commit(store, "child", result=bundle(ArtifactStatus.ACCEPTED))
+    assert result.outcome is CommitOutcome.ACCEPTED
+    assert any(op.op_name == "produce" for op in store.operations_into("child"))
+
+
+def test_proposer_constant_distinct_from_verifier() -> None:
+    assert AGENT != VERIFIER

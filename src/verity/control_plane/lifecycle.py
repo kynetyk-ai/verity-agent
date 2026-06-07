@@ -1,14 +1,11 @@
 """The lifecycle state machine — legal status transitions and who may trigger them (spec §6).
 
-``proposed → {tentative | rejected | revised}``; ``tentative → {accepted | rejected |
-revised | superseded}``; ``accepted → superseded``. Only the commit path triggers
+``proposed → {tentative | accepted | rejected | revised}``; ``tentative → {accepted |
+rejected | revised | superseded}``; ``accepted → superseded``. Only the commit path triggers
 transitions out of ``proposed`` (§6, §7); that rule is enforced structurally by who holds
 the :class:`~verity.control_plane.store.CommitSink` (§4.2), and the legality of each
-*atomic* transition is enforced here, by the table below.
-
-A single commit may apply several atomic transitions in sequence — an entirely-cheap
-pipeline walks ``proposed → tentative → accepted`` within one commit (§6) — but every step
-it takes must be a legal edge in this table.
+transition is enforced here, by the table below. Under ADR 0001 the opaque verifier reports the
+terminal status it recommends, and the commit path validates it against this table before writing.
 """
 
 from __future__ import annotations
@@ -26,14 +23,14 @@ __all__ = [
 
 _S = ArtifactStatus
 
-# The transition table (spec §6). Each key may move only to the states in its value set.
-# Note there is **no** direct ``proposed → accepted`` edge: acceptance always routes through
-# ``tentative`` (§6). An entirely-cheap pipeline still walks ``proposed → tentative →
-# accepted`` inside one commit — the cheap stage earns ``tentative``, then the (empty) hard
-# stage earns ``accepted`` — so "proposed → accepted in one commit" (§6 prose) is honored as
-# two legal atomic edges, not a new one.
+# The transition table (spec §6, with the §6-prose edge made explicit per ADR 0001). Each key may
+# move only to the states in its value set. ``proposed → accepted`` is a legal edge: the opaque
+# verifier now owns staging and reports the terminal status directly, so an all-cheap (or
+# fully-cleared) proposal is accepted in one transition. The control plane validates the verifier's
+# reported status against this table before writing it — an illegal edge is refused even on the
+# verifier's say-so.
 LEGAL_TRANSITIONS: dict[ArtifactStatus, frozenset[ArtifactStatus]] = {
-    _S.PROPOSED: frozenset({_S.TENTATIVE, _S.REJECTED, _S.REVISED}),
+    _S.PROPOSED: frozenset({_S.TENTATIVE, _S.ACCEPTED, _S.REJECTED, _S.REVISED}),
     _S.TENTATIVE: frozenset({_S.ACCEPTED, _S.REJECTED, _S.REVISED, _S.SUPERSEDED}),
     _S.ACCEPTED: frozenset({_S.SUPERSEDED}),
     _S.REJECTED: frozenset(),

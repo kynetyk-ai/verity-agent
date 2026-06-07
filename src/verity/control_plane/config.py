@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 from verity.control_plane.commit import ShapeValidator
 from verity.control_plane.registries import (
-    GateRegistry,
+    GatedTypeRegistry,
     RetrievalPolicy,
     SchemaRegistry,
 )
@@ -53,7 +53,7 @@ class TaskConfig:
     instructions: str
     domain_instructions: str
     schema: SchemaRegistry
-    gates: GateRegistry
+    gated_types: GatedTypeRegistry
     retrieval: RetrievalPolicy
     shape_validator: ShapeValidator
     sandbox_key: str

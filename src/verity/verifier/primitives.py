@@ -226,7 +226,7 @@ def human_in_the_loop() -> GatePrimitive:
     """Build a rung-5 gate that never auto-resolves: ``None`` ⇒ rest at ``tentative`` (§8.3)."""
 
     async def primitive(request: VerifierRequest) -> GateVerdict | None:
-        log.info("human_gate_deferred", gate=request.gate, proposal=request.proposal.id)
+        log.info("human_gate_deferred", proposal=request.proposal.id, type=request.proposal.type)
         return None
 
     return primitive

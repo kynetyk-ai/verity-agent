@@ -33,7 +33,7 @@ from verity.verifier.primitives import (
     model_tester,
     numeric_scorer,
 )
-from verity.verifier.service import SdkVerifier
+from verity.verifier.service import GateStep, SdkVerifier
 
 __all__ = [
     "VerifierError",
@@ -55,5 +55,6 @@ __all__ = [
     "RunRequest",
     "RunResult",
     "docker_available",
+    "GateStep",
     "SdkVerifier",
 ]

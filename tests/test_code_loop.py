@@ -65,7 +65,7 @@ def _build(
         Operation("op-ds", "load", (), "ds", OperationStatus.SUCCESS, "t0"),
     )
     agent = StubAgent(root=tmp_path / "ws", steps=steps)
-    verifier = SdkVerifier(plugins=domain.plugins)
+    verifier = domain.verifier  # the opaque verifier package (built over the injected runner)
     sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
     vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
     sp.register("stub", lambda: agent)
@@ -81,7 +81,7 @@ def _build(
         instructions="submit a feature as code",
         domain_instructions="a Submission names an entrypoint script written to outbox/",
         schema=domain.schema,
-        gates=domain.gates,
+        gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
         sandbox_key="stub",

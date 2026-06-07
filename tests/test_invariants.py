@@ -11,39 +11,48 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from tests.helpers import (
-    accept,
-    binding,
-    gate,
+    VERIFIER,
+    bundle,
+    coverage,
+    decision,
     make_store,
     propose,
-    refine,
-    reject,
-    resolver,
-    runner,
-    shape_ok,
+    returns,
 )
+from verity.contracts import ArtifactStatus, VerdictKind
 from verity.control_plane.commit import NoImplicitAccept, run_commit
 from verity.control_plane.invariants import (
     audit,
     check_provenance,
     check_unique_ids,
 )
-from verity.control_plane.store import ArtifactStatus
 
-# A verdict drawn at random for each artifact in a randomized commit sequence.
-_VERDICTS = {
-    "accept": accept(),
-    "reject": reject(),
-    "refine": refine("defect"),
+# A verdict bundle drawn at random for each artifact in a randomized commit sequence.
+_BUNDLES = {
+    "accept": bundle(ArtifactStatus.ACCEPTED, decision("g", VerdictKind.ACCEPT)),
+    "reject": bundle(ArtifactStatus.REJECTED, decision("g", VerdictKind.REJECT)),
+    "refine": bundle(
+        ArtifactStatus.REVISED, decision("g", VerdictKind.REFINE, defects=("defect",))
+    ),
 }
-verdict_keys = st.lists(st.sampled_from(sorted(_VERDICTS)), min_size=0, max_size=25)
+verdict_keys = st.lists(st.sampled_from(sorted(_BUNDLES)), min_size=0, max_size=25)
+
+
+def _commit(store, artifact_id: str, key: str) -> None:
+    run_commit(
+        artifact_id,
+        store=store,
+        sink=store,
+        resolve_coverage=coverage("Thing"),
+        dispatch=returns(_BUNDLES[key]),
+        verifier_identity=VERIFIER,
+    )
 
 
 @given(choices=verdict_keys)
 def test_audit_is_clean_after_any_commit_sequence(choices: list[str]) -> None:
     """Whatever verdicts arrive, the store never violates a state-checkable invariant (§5)."""
     store = make_store()
-    bound = resolver(binding("Thing", gate("cheap"), gate("hard", is_hard=True)))
     payloads: dict[str, object] = {}
 
     for i, key in enumerate(choices):
@@ -51,14 +60,7 @@ def test_audit_is_clean_after_any_commit_sequence(choices: list[str]) -> None:
         payload = {"i": i, "tag": key}
         payloads[artifact_id] = payload
         propose(store, artifact_id=artifact_id, artifact_type="Thing", payload=payload)
-        run_commit(
-            artifact_id,
-            store=store,
-            sink=store,
-            resolve_binding=bound,
-            validate_shape=shape_ok(),
-            run_gate=runner({"cheap": _VERDICTS[key], "hard": _VERDICTS[key]}),
-        )
+        _commit(store, artifact_id, key)
 
     assert audit(store) == []
 
@@ -73,21 +75,13 @@ def test_audit_is_clean_after_any_commit_sequence(choices: list[str]) -> None:
 def test_rejections_are_retained_and_queryable(choices: list[str]) -> None:
     """§5.3/§5.5 — every rejected artifact remains in the store and in the rejected-log."""
     store = make_store()
-    bound = resolver(binding("Thing", gate("cheap")))
     expected_rejected: set[str] = set()
 
     for i, key in enumerate(choices):
         artifact_id = f"a{i}"
         propose(store, artifact_id=artifact_id, artifact_type="Thing")
-        result = run_commit(
-            artifact_id,
-            store=store,
-            sink=store,
-            resolve_binding=bound,
-            validate_shape=shape_ok(),
-            run_gate=runner({"cheap": _VERDICTS[key]}),
-        )
-        if result.status is ArtifactStatus.REJECTED:
+        _commit(store, artifact_id, key)
+        if key == "reject":
             expected_rejected.add(artifact_id)
 
     assert {a.id for a in store.rejected_log()} == expected_rejected
@@ -97,7 +91,7 @@ def test_rejections_are_retained_and_queryable(choices: list[str]) -> None:
 
 @given(payload=st.dictionaries(st.text(min_size=1, max_size=8), st.integers(), max_size=5))
 def test_no_implicit_accept_for_gateless_type(payload: dict[str, int]) -> None:
-    """§5.7 — committing a type with no binding always errors, never default-accepts."""
+    """§5.7 — committing a type with no coverage always errors, never default-accepts."""
     store = make_store()
     propose(store, artifact_id="a1", artifact_type="Gateless", payload=payload)
     try:
@@ -105,9 +99,9 @@ def test_no_implicit_accept_for_gateless_type(payload: dict[str, int]) -> None:
             "a1",
             store=store,
             sink=store,
-            resolve_binding=resolver(),  # no binding registered
-            validate_shape=shape_ok(),
-            run_gate=runner({}),
+            resolve_coverage=coverage(),  # no type registered as gated
+            dispatch=returns(bundle(ArtifactStatus.ACCEPTED)),
+            verifier_identity=VERIFIER,
         )
         raise AssertionError("expected NoImplicitAccept")
     except NoImplicitAccept:

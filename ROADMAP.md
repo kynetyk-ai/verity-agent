@@ -173,6 +173,15 @@ is realized, not just designed. Built in sub-phases, each a tested, gate-green c
   through two independent stacks.
 - **Exit ✅:** the real verifier renders **reproducible** verdicts on (still-simple) artifacts; the
   stub verifier is retired from the happy path.
+- **Correction — opaque verifier (ADR 0001).** After Phase 2 landed, the verifier seam was reworked
+  to match the product vision: the verifier is an **opaque, user-selected package** that returns a
+  **verdict bundle** (status + decisions) from one handoff — the control plane no longer sequences
+  gates or parses the proposal. The gate pipeline + cheap/hard staging moved into the verifier; the
+  control plane keeps coverage (no-implicit-accept), the per-type declared slice (§10), proposer ≠
+  gate, and lifecycle validation. Also: the proposal-shape check is a presence-only pre-gate filter,
+  and harvested objects are recorded as an artifact **sidecar** (payload untouched). This amends
+  spec §3.3/§3.6/§7/§8.3/§10 and adds the `proposed → accepted` edge (§6); see
+  [docs/adr/0001](docs/adr/0001-opaque-verifier-and-control-plane-boundary.md). Folds in #8.
 
 *Decisions taken entering Phase 2:* container isolation is built **now** (not deferred) for the code
 runner; the LLM client is `anthropic` behind a `ModelClient` seam (suite uses a deterministic fake);

@@ -24,6 +24,7 @@ What it does (the §3.4 API contract):
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
 from verity.contracts import (
@@ -33,13 +34,12 @@ from verity.contracts import (
     ProviderRegistry,
     SandboxPort,
     ServedContext,
+    VerdictBundle,
     VerifierPort,
     VerifierRequest,
 )
 from verity.control_plane.commit import (
     CommitResult,
-    GateSpec,
-    GateVerdict,
     ShapeError,
     run_commit,
 )
@@ -50,7 +50,6 @@ from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
     Clock,
-    JSONValue,
     ObjectRef,
     Provenance,
     SqliteStore,
@@ -194,12 +193,13 @@ class ControlPlane:
     # -- proposal intake (§3.4, §7) -----------------------------------------------
 
     async def submit_proposal(
-        self, task_id: str, envelope: ProposalEnvelope, *, supersedes: str | None = None
+        self, task_id: str, envelope: ProposalEnvelope
     ) -> IntakeResult:
-        """Validate shape, harvest objects before teardown, then propose and commit (§3.4, §7)."""
+        """Shape-check, harvest objects before teardown, then propose and commit (§3.4, §7)."""
         task = self._task(task_id)
 
-        # §7.0 — a malformed proposal is corrected and records NOTHING (no harvest, no row).
+        # §7.0 — a malformed proposal is corrected and records NOTHING (no harvest, no row). The
+        # shape check is a presence/type filter only; if it fails the verifier is never triggered.
         shape_error = task.config.shape_validator(envelope.artifact)
         if shape_error is not None:
             log.info("intake_shape_error", task_id=task_id, artifact_id=envelope.artifact.id)
@@ -209,10 +209,13 @@ class ControlPlane:
         # into the object store (§3.4). Harvest-before-teardown is the hard ordering constraint.
         harvested = {name: self._store.put_object(data) for name, data in envelope.objects.items()}
 
-        # Stitch the harvested refs into the artifact payload, so the durable artifact references
-        # its content-addressed objects (§4.1, §12): the agent could not supply the hashes (the
-        # control plane assigns them at harvest), so the object↔artifact link is recorded here.
-        artifact = _attach_objects(envelope.artifact, harvested)
+        # Record the object refs as a control-plane-owned **sidecar** on the artifact (§4.1, ADR
+        # 0001) — the domain payload is stored verbatim; the control plane never reaches into it.
+        artifact = (
+            replace(envelope.artifact, objects=tuple(harvested.items()))
+            if harvested
+            else envelope.artifact
+        )
 
         # The agent's rationale is provenance/context — stored here, NEVER sent to a gate (§10).
         if envelope.metadata:
@@ -220,36 +223,39 @@ class ControlPlane:
 
         self._store.propose(artifact, envelope.operation)
         self._link_revision_if_any(envelope)
-        result = await self._run_commit(task, envelope, supersedes=supersedes)
+        result = await self._run_commit(task, artifact.id, envelope.objects)
         log.info("proposal_committed", task_id=task_id, outcome=result.outcome.value)
         return IntakeResult(entered_protocol=True, commit=result, harvested=harvested)
 
     async def _run_commit(
-        self, task: TaskState, envelope: ProposalEnvelope, *, supersedes: str | None
+        self, task: TaskState, artifact_id: str, objects: Mapping[str, bytes]
     ) -> CommitResult:
-        """Run the sync §7 commit path in a worker thread, bridging to the async verifier."""
-        loop = asyncio.get_running_loop()
-        objects = dict(envelope.objects)
+        """Run the sync §7 commit path in a worker thread, bridging the one opaque verifier handoff.
 
-        def run_gate(gate: GateSpec, artifact: Artifact) -> GateVerdict | None:
+        The ``dispatch`` closure cuts the proposal's declared store-slice (§10) and hands the whole
+        proposal to the verifier in a single call; the commit path records the bundle it returns.
+        """
+        loop = asyncio.get_running_loop()
+        bound_objects = dict(objects)
+
+        def dispatch(artifact: Artifact) -> VerdictBundle:
+            declared = task.config.gated_types.resolve(artifact.type) or frozenset()
             request = VerifierRequest(
                 proposal=artifact,
-                gate=gate.name,
-                store_slice=resolve_declared_slice(self._store, artifact, gate.declared_inputs),
-                objects=objects,
+                store_slice=resolve_declared_slice(self._store, artifact, declared),
+                objects=bound_objects,
             )
             future = asyncio.run_coroutine_threadsafe(task.verifier.dispatch(request), loop)
             return future.result()
 
         return await asyncio.to_thread(
             run_commit,
-            envelope.artifact.id,
+            artifact_id,
             store=self._store,
             sink=self._store,
-            resolve_binding=task.config.gates.resolve,
-            validate_shape=task.config.shape_validator,
-            run_gate=run_gate,
-            supersedes=supersedes,
+            resolve_coverage=task.config.gated_types.resolve,
+            dispatch=dispatch,
+            verifier_identity=task.verifier.identity,
             clock=self._clock,
         )
 
@@ -325,28 +331,6 @@ class ControlPlane:
             if artifact_id in task.rationale:
                 return task.rationale[artifact_id]
         return None
-
-
-# The reserved payload key under which the control plane records an artifact's harvested object
-# references (name → {blob_ref, content_hash}) so the durable artifact points at its objects (§4.1).
-_OBJECTS_KEY = "__objects__"
-
-
-def _attach_objects(artifact: Artifact, harvested: dict[str, ObjectRef]) -> Artifact:
-    """Record the harvested object refs in the artifact payload (spec §4.1, §12).
-
-    Mechanical, not interpretive: when the proposal carried objects and its payload is an object
-    (a dict), a reserved ``__objects__`` key is added mapping each attachment name to its
-    content-addressed ref. The link is then durable and auditable — ``get_provenance`` returns the
-    artifact, and the bytes are fetchable via :meth:`Store.get_object` by the recorded hash.
-    """
-    if not harvested or not isinstance(artifact.payload, dict):
-        return artifact
-    refs: dict[str, JSONValue] = {}
-    for name, ref in harvested.items():
-        refs[name] = {"blob_ref": ref.blob_ref, "content_hash": ref.content_hash}
-    merged: dict[str, JSONValue] = {**artifact.payload, _OBJECTS_KEY: refs}
-    return replace(artifact, payload=merged)
 
 
 def _feedback_from(result: IntakeResult) -> str:
