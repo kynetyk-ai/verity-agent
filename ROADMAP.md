@@ -49,43 +49,71 @@ These hold in every phase (see `CLAUDE.md` → *Coding habits*):
 
 ## Phases
 
-### Phase 0 — Bootstrap 🚧
+### Phase 0 — Bootstrap ✅
 
 Working day-one infrastructure so everything after this is built on solid ground.
 
 - uv project, `src/` package layout, structured logging, green test harness, lint/format/type config,
   a `justfile` for the common commands.
-- **Exit:** `just check` (lint + type + test) is green on the skeleton.
+- **Exit:** lint + type + test green on the skeleton; minimal CI runs them on every push.
 
-*(Mostly delivered by the initial scaffold; closes when CI runs `just check` on every push.)*
+*(Delivered by the initial scaffold; CI added in `feat/kernel-contracts` — a small GitHub Actions
+workflow calling `uv run` directly, no `just` in CI. CI is intentionally not a focus this early.)*
 
-### Phase 1 — Control plane + integration doubles ⬜
+### Phase 1 — Control plane + integration doubles ✅
 
 A configurable control plane, proven end-to-end against bespoke stand-ins for the agent/workspace and
 the verifier (test tooling in `tools/harness/`, **not** product).
 
-- **1.1 Kernel contracts** — Store interface + data model (artifacts / operations / decisions /
+- **1.1 Kernel contracts ✅** — Store interface + data model (artifacts / operations / decisions /
   schema_versions + object store), audit-contract invariants as property tests, the lifecycle state
-  machine, the commit path. *(spec §4–§7)*
-- **1.2 Extension-point interfaces** — schema / tool / gate registries (+ bindings) and the
+  machine, the commit path. Landed in `feat/kernel-contracts`: SQLite reference backend behind a
+  `Store`/`CommitSink` split (privileged writes unreachable from the read+propose surface); the §6
+  transition table; §5 invariants as Hypothesis property tests; the §7 commit protocol (shape-error,
+  no-implicit-accept, proposer≠gate, cheap→tentative→accepted, reject, refine, supersede). *(§4–§7)*
+- **1.2 Extension-point interfaces ✅** — schema / gate registries (+ bindings) and the
   retrieval/planner policy; the invariant workspace contract + composed 3-layer prompt; per-task
-  config; a trivial fake domain including a **gateless type** to prove "no implicit accept." *(§8,
-  §3.4)*
-- **1.3 Context assembly** — stable-prefix / volatile-tail split, regenerate-per-turn, the manifest,
-  and the bounded-context test. *(§9)*
-- **1.4 Service boundary + async API** — configure-by-task; proposal intake + shape validation +
-  object harvest; verifier dispatch; cycle control; extraction. *(§3.4)*
-- **1.5 Integration doubles** (`tools/harness/`, non-product) — a **stub agent/workspace** (reads the
-  served context, emits scripted proposals, writes object attachments to the outbox, handles
-  shape-error and refine feedback) and a **stub verifier** (returns scripted verdicts, consumes the
-  object attachments it's handed).
-- **Exit:** the control-plane subset of the §13 criteria demonstrated via the doubles —
-  propose→gate→commit; shape-error returns correctable with **no** decision row; refine →
-  `revised`/`revised_by` → `revises` with intact lineage; object **harvest-before-teardown**;
-  no-implicit-accept refusal; the privileged-mutator boundary holds; bounded context across a large
-  store; "why do we believe X" answerable from provenance.
+  config; a trivial fake domain including a **gateless type** to prove "no implicit accept." Landed:
+  `registries.py` (typed schema + gate registries; the gate registry *is* the commit path's
+  binding resolver, so a gateless type resolves to `None` → `NoImplicitAccept`). **The §8.2 tool
+  registry was intentionally collapsed** — a tool's harness-agnostic content is just its typed
+  signature (= an `OperationSignature` in the schema registry), and its executable form is
+  harness-specific, so it belongs to the Phase-3 sandbox adapter (parallel to `WorkspaceLayout`),
+  not the control plane. Divergence from §8.2 to sync back to the spec. Also: `ports.py`
+  (`SandboxPort`/`VerifierPort` behind a config-keyed `ProviderRegistry`, async + no-op lifecycle
+  hooks — the multi-harness/multi-verifier seam; the verifier request carries no rationale field by
+  construction); `workspace.py` (invariant `WorkspaceContract` + pluggable `WorkspaceLayout` + a
+  default spec-role layout + outbox harvest); `config.py` (`TaskConfig` + deterministic 3-layer
+  prompt); `domains/fake.py`. *(§8, §3.4)*
+- **1.3 Context assembly ✅** — stable-prefix / volatile-tail split, regenerate-per-turn, the
+  manifest, and the bounded-context test. Landed in `context.py`: a `ContextAssembler` that
+  regenerates the two-part context from the store each turn (stable prefix = system prompt +
+  capped, payload-free, ranked manifest; volatile tail = retrieved artifacts + goal + scratch).
+  The **bounded-context guarantee (§13.5)** is structural — manifest/tail caps + per-item
+  truncation — and proven by a test: 40× the artifacts assembles to the same size. *(§9)*
+- **1.4 Service boundary + async API ✅** — configure-by-task; proposal intake + shape validation +
+  object harvest; verifier dispatch; cycle control; extraction. Landed in `api.py`: an async
+  `ControlPlane` (the sole mutator) that stamps the schema version + resolves/provisions services
+  on configure; at intake validates shape first (malformed → records **nothing**), harvests outbox
+  objects before teardown (content-addressed), segregates the agent rationale onto a side channel,
+  then proposes and runs the §7 commit path; dispatches to the async verifier over the
+  rationale-free declared slice (incumbents + rejected-log) by running the sync commit in a worker
+  thread; an `OrchestrationPolicy` (max-cycles, refine cap, stop-on-accept) drives the
+  serve→collect→commit→regenerate loop; extraction reads accepted artifacts, provenance, and the
+  rejected/superseded/revised logs. *(§3.4)*
+- **1.5 Integration doubles ✅** (`tools/harness/`, non-product) — a **stub agent/workspace** (reads
+  the served context, emits scripted proposals, writes object attachments to a real
+  `DefaultLayout` outbox, handles shape-error and refine feedback, regenerates to discard the
+  writable workspace) and a **stub verifier** (returns scripted verdicts, consumes the object
+  attachments it's handed). Both implement their ports and hold no path to the store or each other.
+- **Exit ✅:** the control-plane subset of the §13 criteria demonstrated via the doubles
+  (`tests/test_exit_criteria.py`) — propose→gate→commit; shape-error returns correctable with **no**
+  decision row / trial-count entry; refine → `revised`/`revised_by` → `revises` with intact
+  lineage; object **harvest-before-teardown** round-trip; no-implicit-accept refusal; the
+  privileged-mutator boundary holds; bounded context across a large store; "why do we believe X"
+  answerable from provenance.
 
-### Phase 2 — Verifier service + gate-primitive SDK ⬜
+### Phase 2 — Verifier service + gate-primitive SDK 🚧
 
 Replace the stub verifier with the real, advisory verifier.
 
@@ -102,6 +130,9 @@ Replace the stub agent with the real sandbox.
 - Open-source agent loop + LLM client; ephemeral workspace provisioned to the workspace contract;
   the outbox; per-cycle workspace regeneration + chat flush; read-only data/context mounts; never
   contacts the verifier. *(§3.5, §10)*
+- **Harness-bound tools.** This is where the executable form of a tool lands — the sandbox adapter
+  binds each domain operation (typed in the schema registry, §8.1) to its framework's native tool
+  model (the control plane carries no tool registry; see Phase 1.2). Parallel to `WorkspaceLayout`.
 - **Exit:** a real agent drives read→propose→gate→commit against the control plane; ephemerality and
   gold-data isolation hold across cycles.
 

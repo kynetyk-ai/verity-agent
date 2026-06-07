@@ -1,0 +1,27 @@
+name: ci
+
+# Minimal gate: lint + type-check + test on every push and PR. Calls uv directly — no `just`
+# in CI (the justfile is the local dev shortcut). Kept deliberately small; CI is not a focus
+# this early (ROADMAP cross-cutting principles).
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync dependencies
+        run: uv sync
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type-check
+        run: uv run mypy src
+      - name: Test
+        run: uv run pytest -q
