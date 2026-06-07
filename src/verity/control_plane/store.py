@@ -329,7 +329,10 @@ class SqliteStore:
     _conn: sqlite3.Connection = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._conn = sqlite3.connect(self.path)
+        # check_same_thread=False: the control plane runs the (sync) commit path in a worker
+        # thread while it awaits the async verifier (§3.4). It is the sole, serialized mutator
+        # (Principle 9), so the connection is never touched concurrently — cross-thread use is safe.
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()

@@ -91,8 +91,16 @@ the verifier (test tooling in `tools/harness/`, **not** product).
   capped, payload-free, ranked manifest; volatile tail = retrieved artifacts + goal + scratch).
   The **bounded-context guarantee (§13.5)** is structural — manifest/tail caps + per-item
   truncation — and proven by a test: 40× the artifacts assembles to the same size. *(§9)*
-- **1.4 Service boundary + async API** — configure-by-task; proposal intake + shape validation +
-  object harvest; verifier dispatch; cycle control; extraction. *(§3.4)*
+- **1.4 Service boundary + async API ✅** — configure-by-task; proposal intake + shape validation +
+  object harvest; verifier dispatch; cycle control; extraction. Landed in `api.py`: an async
+  `ControlPlane` (the sole mutator) that stamps the schema version + resolves/provisions services
+  on configure; at intake validates shape first (malformed → records **nothing**), harvests outbox
+  objects before teardown (content-addressed), segregates the agent rationale onto a side channel,
+  then proposes and runs the §7 commit path; dispatches to the async verifier over the
+  rationale-free declared slice (incumbents + rejected-log) by running the sync commit in a worker
+  thread; an `OrchestrationPolicy` (max-cycles, refine cap, stop-on-accept) drives the
+  serve→collect→commit→regenerate loop; extraction reads accepted artifacts, provenance, and the
+  rejected/superseded/revised logs. *(§3.4)*
 - **1.5 Integration doubles** (`tools/harness/`, non-product) — a **stub agent/workspace** (reads the
   served context, emits scripted proposals, writes object attachments to the outbox, handles
   shape-error and refine feedback) and a **stub verifier** (returns scripted verdicts, consumes the
