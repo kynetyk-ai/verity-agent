@@ -48,22 +48,31 @@ proposer is never its own gate, a status richer than accept/reject
 (`proposed → tentative → accepted`, plus `rejected` / `superseded` / `revised`), and the `refine`
 verdict for recovering a mostly-sound artifact with a localized defect.
 
-## Build order (spec §17)
+## Roadmap
 
-1. Kernel contracts — Store interface + data model, audit-contract invariants (as property tests),
-   the lifecycle state machine, the commit path.
-2. Extension-point interfaces — schema / tool / gate registries + retrieval policy.
-3. Context assembly — stable-prefix / volatile-tail split; bounded-context test.
-4. Service scaffolding — the three services; prove the shape-error, advisory-verifier, `refine`, and
-   object-harvest round-trips.
-5. Feature-engineering domain (spec §12) — first real end-to-end run.
-6. v1 acceptance criteria (spec §13) — twelve runnable checks.
+The path to MVP lives in **[ROADMAP.md](ROADMAP.md)** — it is the canonical "where are we, what's
+next." In short: build the **control plane** first and prove it against bespoke test doubles
+(Phase 1), then swap in the real **verifier** (Phase 2) and **sandbox** (Phase 3), and reach **MVP**
+with the feature-engineering domain passing the spec §13 acceptance criteria (Phase 4).
+
+## Develop
+
+```
+just install     # uv sync
+just check       # lint + type-check + test (must be green before any PR)
+just test        # pytest
+```
 
 ## Repo layout
 
 ```
 README.md     this file
 CLAUDE.md     orientation for coding agents working in this repo
+ROADMAP.md    the living path to MVP
+pyproject.toml / justfile   uv project + dev commands
+src/verity/   the package (control_plane/ is the Phase 1 deliverable; mostly stubs today)
+tools/harness/  non-product integration doubles (stub agent + stub verifier)
+tests/        test suite
 spec/         vendored specification + references (see above)
 ```
 
