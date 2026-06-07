@@ -155,9 +155,15 @@ is realized, not just designed. Built in sub-phases, each a tested, gate-green c
   `Artifact`-only): that closes the rationale channel, this closes the over-broad-context channel.
   The per-gate slice replaces the old one-size-fits-all `_build_slice`; the fake domain's selection
   gate declares `{INCUMBENTS, REJECTED_LOG}`. Property-tested (Hypothesis). *(§8.3, §10)*
-- **2.4 Real artifacts through the loop ⬜** — enrich the stub agent to emit *genuine* code objects
-  (a valid feature, one that raises, a borderline one) so the auto-code-runner earns its verdicts;
-  drive accept/reject/refine end-to-end on real evaluation, not scripts.
+- **2.4 Real artifacts through the loop ✅** — a minimal **code-execution domain**
+  (`domains/code.py`: a `Submission` type gated by a cheap `parses` check (real `ast.parse`) then a
+  hard `runs-clean` execution gate over the auto-code-runner) plus reusable *genuine* sample scripts
+  (`tools/harness/sample_code.py`: `CLEAN` / `RAISES` / `SYNTAX_ERROR`). The stub agent emits real
+  Python; the `SdkVerifier` parses and executes it, so verdicts are **earned**, not scripted.
+  `test_code_loop.py` drives it end-to-end: offline, a syntax error is localized to a `refine`
+  before any run and a clean submission commits through the fake runner; under Docker, a clean
+  script *executes* in a container → accepted and a raising script → rejected — accept/refine/reject
+  all on real evaluation.
 - **2.5 Integration + exit ⬜** — retire the stub verifier from the happy path (kept as a unit-test
   double); a reproducibility test (same inputs → same verdict).
 - **Exit:** the real verifier renders **reproducible** verdicts on (still-simple) artifacts; the stub
