@@ -121,14 +121,14 @@ by gate name); the control plane keeps only the **binding** — pipeline positio
 declared-inputs allowlist — so §8.3's split (bindings in the control plane, plugins in the verifier)
 is realized, not just designed. Built in sub-phases, each a tested, gate-green commit:
 
-- **2.1 SDK primitives + the verifier service ⬜** — a `GatePrimitive` contract and the rungs of the
+- **2.1 SDK primitives + the verifier service ✅** — a `GatePrimitive` contract and the rungs of the
   reliability ladder (§11) that need no container: **deterministic-check** (rung 2, free → earns
   `tentative`), **numeric-scorer** (rung 1, improve-score-net-of-cost), **llm-judge** (rung 4,
   *labeled-weak*, behind a `ModelClient` seam with a deterministic fake so the suite stays offline),
   plus *human-in-the-loop* (returns no verdict → rests `tentative`) and *model-tester* as seams. An
   `SdkVerifier` implementing `VerifierPort`, keyed by gate name, registered as a provider. *(§3.6,
   §8.3, §11)*
-- **2.2 Container-isolated auto-code-runner ⬜** — a `CodeRunner` seam with a real
+- **2.2 Container-isolated auto-code-runner ✅** — a `CodeRunner` seam with a real
   **`ContainerCodeRunner`** (`docker run` with a hostile-input posture: `--network=none`, read-only
   mounts, writable `tmpfs`, non-root, memory/cpu/pids limits, dropped caps, hard timeout; result read
   from a captured output file — a concrete data-plane in/out, feeds #3) and a deterministic
