@@ -143,12 +143,19 @@ class ContextAssembler:
         system_prompt: str,
         goal: str,
         scratch: str = "",
+        retrieval: RetrievalPolicy | None = None,
     ) -> AssembledContext:
-        """Regenerate the full context for one turn — a pure function of the store + goal (§9)."""
+        """Regenerate the full context for one turn — a pure function of the store + goal (§9).
+
+        ``retrieval`` is the task's policy (§8.4); when given it drives the tail instead of this
+        assembler's default, so a domain-supplied policy actually feeds context assembly. The
+        bounded-context caps are the assembler's regardless, so the guarantee is unaffected.
+        """
         manifest = self.manifest(store)
         stable_prefix = f"{system_prompt}\n\n{manifest.render()}"
 
-        retrieved = self.retrieval.select(goal, store, limit=self.tail_limit)
+        policy = retrieval if retrieval is not None else self.retrieval
+        retrieved = policy.select(goal, store, limit=self.tail_limit)
         tail_sections = [
             "# Current goal",
             goal.strip() or "(none)",

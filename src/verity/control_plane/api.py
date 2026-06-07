@@ -24,7 +24,7 @@ What it does (the §3.4 API contract):
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from verity.contracts import (
     SANDBOX_PROVIDERS,
@@ -50,6 +50,7 @@ from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
     Clock,
+    JSONValue,
     ObjectRef,
     Provenance,
     SqliteStore,
@@ -180,6 +181,7 @@ class ControlPlane:
             system_prompt=task.config.system_prompt(),
             goal=goal,
             scratch=scratch,
+            retrieval=task.config.retrieval,  # the task's policy drives the tail (§8.4)
         )
         served = ServedContext(
             system_prompt=assembled.stable_prefix,
@@ -207,11 +209,16 @@ class ControlPlane:
         # into the object store (§3.4). Harvest-before-teardown is the hard ordering constraint.
         harvested = {name: self._store.put_object(data) for name, data in envelope.objects.items()}
 
+        # Stitch the harvested refs into the artifact payload, so the durable artifact references
+        # its content-addressed objects (§4.1, §12): the agent could not supply the hashes (the
+        # control plane assigns them at harvest), so the object↔artifact link is recorded here.
+        artifact = _attach_objects(envelope.artifact, harvested)
+
         # The agent's rationale is provenance/context — stored here, NEVER sent to a gate (§10).
         if envelope.metadata:
-            task.rationale[envelope.artifact.id] = envelope.metadata
+            task.rationale[artifact.id] = envelope.metadata
 
-        self._store.propose(envelope.artifact, envelope.operation)
+        self._store.propose(artifact, envelope.operation)
         self._link_revision_if_any(envelope)
         result = await self._run_commit(task, envelope, supersedes=supersedes)
         log.info("proposal_committed", task_id=task_id, outcome=result.outcome.value)
@@ -318,6 +325,28 @@ class ControlPlane:
             if artifact_id in task.rationale:
                 return task.rationale[artifact_id]
         return None
+
+
+# The reserved payload key under which the control plane records an artifact's harvested object
+# references (name → {blob_ref, content_hash}) so the durable artifact points at its objects (§4.1).
+_OBJECTS_KEY = "__objects__"
+
+
+def _attach_objects(artifact: Artifact, harvested: dict[str, ObjectRef]) -> Artifact:
+    """Record the harvested object refs in the artifact payload (spec §4.1, §12).
+
+    Mechanical, not interpretive: when the proposal carried objects and its payload is an object
+    (a dict), a reserved ``__objects__`` key is added mapping each attachment name to its
+    content-addressed ref. The link is then durable and auditable — ``get_provenance`` returns the
+    artifact, and the bytes are fetchable via :meth:`Store.get_object` by the recorded hash.
+    """
+    if not harvested or not isinstance(artifact.payload, dict):
+        return artifact
+    refs: dict[str, JSONValue] = {}
+    for name, ref in harvested.items():
+        refs[name] = {"blob_ref": ref.blob_ref, "content_hash": ref.content_hash}
+    merged: dict[str, JSONValue] = {**artifact.payload, _OBJECTS_KEY: refs}
+    return replace(artifact, payload=merged)
 
 
 def _feedback_from(result: IntakeResult) -> str:

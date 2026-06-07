@@ -192,6 +192,29 @@ def test_object_is_harvested_and_content_addressed() -> None:
     assert store.get_object(ref.content_hash) == code  # round-trips by reference
 
 
+def test_harvested_objects_are_linked_into_the_artifact_payload() -> None:
+    # the durable artifact references its content-addressed objects (§4.1), so the link survives the
+    # run and "what code produced X" is answerable from the store, not just the transient intake.
+    cp, _sandbox, _verifier, store = _setup()
+    code = b"def feature(df):\n    return df['a']\n"
+    asyncio.run(cp.submit_proposal("t1", _note("n1", objects={"submission.py": code})))
+
+    art = store.get_artifact("n1")
+    assert art is not None and isinstance(art.payload, dict)
+    refs = art.payload["__objects__"]
+    content_hash = refs["submission.py"]["content_hash"]
+    assert store.get_object(content_hash) == code  # fetchable by the recorded hash
+    assert art.payload["text"] == "hi"  # the domain field survives the mechanical injection
+
+
+def test_objectless_proposal_payload_is_unchanged() -> None:
+    cp, _sandbox, _verifier, store = _setup()
+    asyncio.run(cp.submit_proposal("t1", _note("n1")))
+    art = store.get_artifact("n1")
+    # no __objects__ key is added when nothing was harvested
+    assert art is not None and art.payload == {"text": "hi"}
+
+
 def test_verifier_slice_excludes_rationale_and_sees_incumbents() -> None:
     cp, _sandbox, verifier, store = _setup()
     # first submission accepts and becomes the incumbent
@@ -224,6 +247,49 @@ def test_per_gate_declared_inputs_scope_the_slice() -> None:
     by_gate = {req.gate: req for req in verifier.requests}
     assert by_gate["well-formed"].store_slice == ()  # declared nothing → empty
     assert any(a.id == "n1" for a in by_gate["worth-keeping"].store_slice)  # sees the incumbent
+
+
+def test_task_retrieval_policy_feeds_context_assembly() -> None:
+    # a domain-supplied retrieval policy (§8.4) must drive the served tail, not the kernel default
+    consulted: list[str] = []
+
+    class OnlySources:
+        def select(self, goal: str, store, *, limit: int) -> list[Artifact]:
+            consulted.append(goal)
+            return [a for a in store.query_artifacts() if a.type == SOURCE]
+
+    store = SqliteStore()
+    store.propose(
+        Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
+        Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
+    )
+    store.propose(  # a Note the default policy would surface but this one excludes from the tail
+        Artifact("n1", NOTE, {"text": "hi"}, ArtifactStatus.PROPOSED, "agent", "t1"),
+        Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, "t1"),
+    )
+    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
+    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
+    sp.register("stub", lambda: FakeSandbox())
+    vp.register("stub", lambda: FakeVerifier())
+    cp = ControlPlane(store, sandbox_providers=sp, verifier_providers=vp)
+    domain = build_fake_domain()
+    config = TaskConfig(
+        task_id="t1",
+        instructions="x",
+        domain_instructions="y",
+        schema=domain.schema,
+        gates=domain.gates,
+        retrieval=OnlySources(),
+        shape_validator=domain.shape_validator,
+        sandbox_key="stub",
+        verifier_key="stub",
+    )
+    asyncio.run(cp.configure(config))
+
+    served = asyncio.run(cp.serve_context("t1", goal="find roots"))
+    assert consulted == ["find roots"]  # the task's policy was the one consulted
+    assert "Source/src" in served.tail  # its selection drives the tail
+    assert "Note/n1" not in served.tail  # the Note it excluded is absent from the tail
 
 
 def test_run_loop_drives_cycles_and_regenerates() -> None:
