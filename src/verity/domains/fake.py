@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from verity.contracts import JSONValue, VerifierRequest
 from verity.control_plane.commit import (
     GateRunner,
     GateSpec,
@@ -35,6 +36,7 @@ from verity.control_plane.registries import (
     SchemaRegistry,
 )
 from verity.control_plane.store import Artifact, VerdictKind
+from verity.verifier import CheckOutcome, SdkVerifier, deterministic_check
 
 __all__ = [
     "SOURCE",
@@ -42,6 +44,7 @@ __all__ = [
     "ORPHAN",
     "FakeDomain",
     "build_fake_domain",
+    "build_fake_verifier",
 ]
 
 SOURCE = "Source"
@@ -127,3 +130,41 @@ def _run_gate(gate: GateSpec, artifact: Artifact) -> GateVerdict | None:
         return GateVerdict(VerdictKind.ACCEPT, "worth keeping", score=1.0)
 
     return GateVerdict(VerdictKind.ACCEPT, f"unknown gate {gate.name!r} default-accepts in fake")
+
+
+# -- the same marker logic as gate *plugins*, so the fake domain runs on the real verifier (§3.6) --
+
+
+def build_fake_verifier() -> SdkVerifier:
+    """An :class:`SdkVerifier` whose plugins reproduce :func:`_run_gate`'s marker semantics.
+
+    Lets the deterministic fake domain drive the **real** verifier (not the stub) end-to-end, so the
+    control-plane §13 demonstrations run against the product path while staying fully deterministic.
+    """
+    return SdkVerifier(
+        plugins={
+            "well-formed": deterministic_check(_well_formed_check),
+            "worth-keeping": deterministic_check(_worth_keeping_check),
+        }
+    )
+
+
+def _markers(request: VerifierRequest) -> dict[str, JSONValue]:
+    payload = request.proposal.payload
+    return payload if isinstance(payload, dict) else {}
+
+
+def _well_formed_check(request: VerifierRequest) -> CheckOutcome:
+    payload = _markers(request)
+    if payload.get("reject"):
+        return CheckOutcome(ok=False, rationale="marked reject")
+    defect = payload.get("defect")
+    if defect:
+        return CheckOutcome(ok=False, rationale="marked defect", defects=(str(defect),))
+    return CheckOutcome(ok=True, rationale="well-formed")
+
+
+def _worth_keeping_check(request: VerifierRequest) -> CheckOutcome:
+    if _markers(request).get("keep", True) is False:
+        return CheckOutcome(ok=False, rationale="not worth keeping")
+    return CheckOutcome(ok=True, rationale="worth keeping")

@@ -113,7 +113,7 @@ the verifier (test tooling in `tools/harness/`, **not** product).
   privileged-mutator boundary holds; bounded context across a large store; "why do we believe X"
   answerable from provenance.
 
-### Phase 2 — Verifier service + gate-primitive SDK 🚧
+### Phase 2 — Verifier service + gate-primitive SDK ✅
 
 Replace the stub verifier with the real, advisory verifier (spec §3.6): an **SDK of composable gate
 primitives** behind the existing `VerifierPort` seam. The verifier holds the gate **plugins** (keyed
@@ -164,10 +164,15 @@ is realized, not just designed. Built in sub-phases, each a tested, gate-green c
   before any run and a clean submission commits through the fake runner; under Docker, a clean
   script *executes* in a container → accepted and a raising script → rejected — accept/refine/reject
   all on real evaluation.
-- **2.5 Integration + exit ⬜** — retire the stub verifier from the happy path (kept as a unit-test
-  double); a reproducibility test (same inputs → same verdict).
-- **Exit:** the real verifier renders **reproducible** verdicts on (still-simple) artifacts; the stub
-  verifier is retired from the happy path.
+- **2.5 Integration + exit ✅** — the deterministic fake domain gained real `SdkVerifier` plugins
+  (`build_fake_verifier`, marker semantics as `deterministic_check`s), and `test_exit_criteria`
+  (the control-plane §13 demonstrations) was migrated onto the **real verifier** — the stub verifier
+  now survives only as a port-protocol double (`isinstance(StubVerifier(), VerifierPort)`).
+  `test_reproducibility.py` pins the exit bar: identical inputs → identical verdicts across
+  independent verifier instances, and the same code submission reaches the same committed outcome
+  through two independent stacks.
+- **Exit ✅:** the real verifier renders **reproducible** verdicts on (still-simple) artifacts; the
+  stub verifier is retired from the happy path.
 
 *Decisions taken entering Phase 2:* container isolation is built **now** (not deferred) for the code
 runner; the LLM client is `anthropic` behind a `ModelClient` seam (suite uses a deterministic fake);
