@@ -11,14 +11,18 @@ agent believes trustworthy and auditable.
 
 ## The spec is the source of truth
 
-This repo implements a finalized natural-language specification that lives in the sibling repo:
+This repo implements a finalized natural-language specification, **vendored locally** so the repo is
+self-contained (it may be worked on on a different machine):
 
 ```
-../NL-specs/agents-and-harnesses/self-revising-discovery/self-revising-discovery-harness.md
+spec/self-revising-discovery-harness.md      the spec (v0.2) — authoritative
+spec/references/                              the grounding paper + prior-art analyses
 ```
 
-Treat that document as authoritative. Implementation choices should trace back to a spec section
-(cited as `§N`); if the code needs to diverge from the spec, raise it rather than drifting.
+Treat `spec/self-revising-discovery-harness.md` as authoritative. Implementation choices should trace
+back to a spec section (cited as `§N`); if the code needs to diverge from the spec, raise it rather
+than drifting. The `spec/` tree is a copy synced from the sibling spec repo (`NL-specs`,
+`agents-and-harnesses/self-revising-discovery/`) — re-sync it if upstream changes.
 
 ## Architecture in brief
 
