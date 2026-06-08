@@ -83,11 +83,15 @@ class OperationSignature:
     """A typed operation signature: name, input types → output type (§8.2).
 
     Typed on both sides so operation composition is checkable ([SC], §8.2).
+    ``required_payload_keys`` is an *optional* per-operation payload schema (presence-only): the
+    keys the proposal payload must carry, checked at intake (ROADMAP 5.1 #13). Structural, not
+    semantic — the control plane never interprets payload values, only that declared keys exist.
     """
 
     name: str
     inputs: tuple[str, ...]
     output: str
+    required_payload_keys: tuple[str, ...] = ()
 
 
 class SchemaRegistry:

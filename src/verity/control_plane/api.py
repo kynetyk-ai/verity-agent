@@ -26,11 +26,13 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field, replace
 
 from verity.contracts import (
     SANDBOX_PROVIDERS,
     VERIFIER_PROVIDERS,
+    GateUnavailable,
     Operation,
     OperationStatus,
     ProposalEnvelope,
@@ -48,7 +50,7 @@ from verity.control_plane.commit import (
     ShapeError,
     run_commit,
 )
-from verity.control_plane.config import TaskConfig
+from verity.control_plane.config import TaskConfig, orientation_digest
 from verity.control_plane.context import AssembledContext, ContextAssembler
 from verity.control_plane.independence import resolve_declared_slice
 from verity.control_plane.run_report import (
@@ -61,6 +63,7 @@ from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
     Clock,
+    ContractVersion,
     ObjectRef,
     Provenance,
     SqliteStore,
@@ -99,11 +102,13 @@ class OrchestrationError(ControlPlaneError):
 class IntakeResult:
     """The outcome of submitting one proposal (spec §3.4 intake).
 
-    ``entered_protocol`` is False exactly when the proposal was malformed *or* the sandbox produced
-    no usable proposal this cycle. On a malformed proposal ``shape_error`` carries the correction;
-    on a sandbox failure ``sandbox_error`` carries the reason. In both cases **nothing is recorded**
-    (no object harvested, no `proposed` row, no decision — §7.0). Otherwise ``commit`` is the §7
-    result and ``harvested`` maps each outbox object's name to its content-addressed reference.
+    ``entered_protocol`` is False exactly when the proposal was malformed, the sandbox produced no
+    usable proposal this cycle, *or* the gate was unavailable. On a malformed proposal
+    ``shape_error`` carries the correction; on a sandbox failure ``sandbox_error`` carries the
+    reason; on a gate-infra failure ``gate_error`` carries it (the proposal *was* recorded, but no
+    verdict could be rendered — §3.4, ROADMAP 5.1). For shape/sandbox failures **nothing is
+    recorded** (no object harvested, no `proposed` row, no decision — §7.0). Otherwise ``commit`` is
+    the §7 result and ``harvested`` maps each outbox object name to its content-addressed reference.
     """
 
     entered_protocol: bool
@@ -111,6 +116,7 @@ class IntakeResult:
     commit: CommitResult | None = None
     harvested: dict[str, ObjectRef] = field(default_factory=dict)
     sandbox_error: str | None = None
+    gate_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,9 +127,10 @@ class OrchestrationPolicy:
     ``refine_cap`` bounds how many times a single lineage may be sent back to refine before it
     terminates in ``rejected`` (so an un-satisfiable artifact cannot loop forever, §12 seam).
     ``stop_on_accept`` ends the run as soon as an artifact is accepted (useful for tests/demos).
-    ``max_consecutive_sandbox_failures`` bounds how many cycles in a row may fail to produce a
-    proposal (a timed-out / crashed / runaway sandbox) before the run aborts, so a wholly-broken
-    sandbox cannot spin to ``max_cycles``; the counter resets on any cycle that does propose.
+    ``max_consecutive_sandbox_failures`` bounds how many cycles in a row may fail (a timed-out /
+    crashed / runaway sandbox, *or* an unavailable gate) before the run aborts, so a wholly-broken
+    sandbox or verifier cannot spin to ``max_cycles``; the counter resets on any cycle that proposes
+    and is evaluated.
     """
 
     max_cycles: int = 20
@@ -159,6 +166,7 @@ class ControlPlane:
         verifier_providers: ProviderRegistry[VerifierPort] = VERIFIER_PROVIDERS,
         clock: Clock = default_clock,
         timer: Callable[[], float] = time.monotonic,
+        dispatch_timeout_s: float | None = None,
     ) -> None:
         self._store = store
         self._assembler = assembler if assembler is not None else ContextAssembler()
@@ -167,16 +175,28 @@ class ControlPlane:
         self._verifier_providers = verifier_providers
         self._clock = clock
         self._timer = timer  # monotonic seconds, injected so RunReport timings are testable
+        # A backstop on the one opaque verifier handoff: a hung verifier becomes a recoverable
+        # GateUnavailable rather than blocking the cycle forever (ROADMAP 5.1). None = no backstop.
+        self._dispatch_timeout_s = dispatch_timeout_s
         self._tasks: dict[str, TaskState] = {}
 
     # -- configure-by-task --------------------------------------------------------
 
     async def configure(self, config: TaskConfig) -> None:
-        """Register a task: stamp its schema version, resolve + provision its services (§3.4)."""
+        """Register a task: stamp schema + contract versions, resolve + provision services."""
         current = self._store.current_schema_version()
         version = (current.version + 1) if current is not None else 1
         self._store.register_schema_version(
             config.schema.snapshot(version=version, created_at=self._clock())
+        )
+        # Stamp the workspace-contract / orientation version too (#12, §3.4): a versioned kernel
+        # artifact recorded like the schema, not left ambient. Idempotent across tasks.
+        self._store.register_contract_version(
+            ContractVersion(
+                version=config.contract.version,
+                orientation_digest=orientation_digest(config.contract),
+                created_at=self._clock(),
+            )
         )
         sandbox = self._sandbox_providers.create(config.sandbox_key)
         verifier = self._verifier_providers.create(config.verifier_key)
@@ -221,6 +241,30 @@ class ControlPlane:
 
     # -- proposal intake (§3.4, §7) -----------------------------------------------
 
+    def _check_shape(self, task: TaskState, envelope: ProposalEnvelope) -> ShapeError | None:
+        """Validate proposal shape at intake (§7.0, ROADMAP 5.1 #13). Returns a correction or None.
+
+        Three layers, kernel-first: (1) the payload must be a **JSON object** — a kernel guarantee
+        independent of any domain (the domain validator skips types it doesn't recognize, so without
+        this a non-object payload could slip through); (2) any **required payload keys** the
+        operation declares must be present (a per-operation payload schema, presence-only — the
+        kernel never interprets payload *semantics*); (3) the domain's own ``shape_validator``.
+        """
+        payload = envelope.artifact.payload
+        if not isinstance(payload, dict):
+            return ShapeError(
+                f"a proposal payload must be a JSON object, got {type(payload).__name__}"
+            )
+        signature = task.config.schema.operation(envelope.operation.op_name)
+        if signature is not None and signature.required_payload_keys:
+            missing = [k for k in signature.required_payload_keys if k not in payload]
+            if missing:
+                return ShapeError(
+                    f"payload for operation {signature.name!r} is missing required key(s): "
+                    f"{', '.join(missing)}"
+                )
+        return task.config.shape_validator(envelope.artifact)
+
     async def submit_proposal(
         self, task_id: str, envelope: ProposalEnvelope
     ) -> IntakeResult:
@@ -229,7 +273,7 @@ class ControlPlane:
 
         # §7.0 — a malformed proposal is corrected and records NOTHING (no harvest, no row). The
         # shape check is a presence/type filter only; if it fails the verifier is never triggered.
-        shape_error = task.config.shape_validator(envelope.artifact)
+        shape_error = self._check_shape(task, envelope)
         if shape_error is not None:
             log.info("intake_shape_error", task_id=task_id, artifact_id=envelope.artifact.id)
             return IntakeResult(entered_protocol=False, shape_error=shape_error)
@@ -332,7 +376,15 @@ class ControlPlane:
                 objects=bound_objects,
             )
             future = asyncio.run_coroutine_threadsafe(task.verifier.dispatch(request), loop)
-            return future.result()
+            try:
+                return future.result(timeout=self._dispatch_timeout_s)
+            except FuturesTimeout as exc:
+                # The verifier hung past the backstop: cancel it and surface a recoverable failure
+                # (a verdict could not be rendered this cycle), not an aborting raw timeout.
+                future.cancel()
+                raise GateUnavailable(
+                    f"verifier did not respond within {self._dispatch_timeout_s}s"
+                ) from exc
 
         return await asyncio.to_thread(
             run_commit,
@@ -406,7 +458,22 @@ class ControlPlane:
             return result
         sandbox_ms = (self._timer() - sandbox_started) * 1000
         commit_started = self._timer()
-        result = await self.submit_proposal(task_id, envelope)
+        try:
+            result = await self.submit_proposal(task_id, envelope)
+        except GateUnavailable as exc:
+            # Symmetric with the sandbox path: a gate that could not render a verdict (transient
+            # model/container failure, or a timed-out handoff) is a recoverable failed cycle, not a
+            # run abort. The proposal may already be recorded as `proposed`; it simply went un-gated
+            # this cycle. Discard the workspace and feed the reason back (ROADMAP 5.1).
+            commit_ms = (self._timer() - commit_started) * 1000
+            log.warning("gate_cycle_failed", task_id=task_id, error=str(exc))
+            await task.sandbox.regenerate()
+            result = IntakeResult(entered_protocol=False, gate_error=str(exc))
+            self._record_cycle(task, goal, result, Timings(
+                cycle_ms=(self._timer() - started) * 1000,
+                sandbox_ms=sandbox_ms, commit_ms=commit_ms),
+                agent_telemetry=envelope.agent_telemetry)
+            return result
         commit_ms = (self._timer() - commit_started) * 1000
         # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
         await task.sandbox.regenerate()
@@ -428,6 +495,7 @@ class ControlPlane:
             entered_protocol=result.entered_protocol,
             shape_error=result.shape_error.message if result.shape_error is not None else None,
             sandbox_error=result.sandbox_error,
+            gate_error=result.gate_error,
             commit=result.commit,
             timings=timings,
             agent_telemetry=agent_telemetry,
@@ -447,15 +515,17 @@ class ControlPlane:
             result = await self.run_cycle(task_id, goal=goal, feedback=feedback)
             results.append(result)
             cycles += 1
-            if result.sandbox_error is not None:
-                # A failed cycle: bound runaway failure, else feed the reason back and continue.
+            failure = result.sandbox_error or result.gate_error
+            if failure is not None:
+                # A failed cycle (sandbox could not propose, or the gate was unavailable): bound
+                # runaway failure, else feed the reason back and continue.
                 consecutive_failures += 1
                 cap = self._policy.max_consecutive_sandbox_failures
                 if cap and consecutive_failures >= cap:
-                    log.error("run_aborted_sandbox_failures", task_id=task_id, failures=cap)
+                    log.error("run_aborted_consecutive_failures", task_id=task_id, failures=cap)
                     raise OrchestrationError(
-                        f"aborting run after {consecutive_failures} consecutive sandbox failures "
-                        f"(last: {result.sandbox_error})"
+                        f"aborting run after {consecutive_failures} consecutive failed cycles "
+                        f"(last: {failure})"
                     )
             else:
                 consecutive_failures = 0
@@ -526,6 +596,11 @@ def _feedback_from(result: IntakeResult) -> str:
         return (
             f"sandbox-error: your previous attempt did not produce a valid submission "
             f"({result.sandbox_error}); produce exactly one complete proposal within the budget"
+        )
+    if result.gate_error is not None:
+        return (
+            f"gate-unavailable: the verifier could not evaluate your last proposal "
+            f"({result.gate_error}) — this was not a rejection; submit your proposal again"
         )
     if not result.entered_protocol and result.shape_error is not None:
         return f"shape-error: {result.shape_error.message}"

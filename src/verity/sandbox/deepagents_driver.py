@@ -46,6 +46,8 @@ from verity.sandbox.tools import resolve_tools
 __all__ = [
     "DeepAgentsInProcessDriver",
     "DeadlineMiddleware",
+    "StepBudgetMiddleware",
+    "StepBudgetExceeded",
     "build_deepagents_agent",
     "run_agent",
 ]
@@ -53,7 +55,7 @@ __all__ = [
 log = get_logger("verity.sandbox.deepagents_driver")
 
 _DEFAULT_RECURSION_LIMIT = 80
-_DEADLINE_WARN_FRACTION = 0.8  # warn the agent once it is this far into its time budget
+_DEADLINE_WARN_FRACTION = 0.8  # warn the agent once it is this far into its time/step budget
 
 
 class DeadlineMiddleware(AgentMiddleware):
@@ -101,6 +103,47 @@ class DeadlineMiddleware(AgentMiddleware):
         }
 
 
+class StepBudgetExceeded(RuntimeError):
+    """The agent burned its per-cycle model-step budget without converging on a proposal."""
+
+
+class StepBudgetMiddleware(AgentMiddleware):
+    """A per-cycle model-step budget (ROADMAP 5.1): nudge to wrap up, then hard-stop if ignored.
+
+    Each ``before_model`` is one model step. At ``warn_fraction`` of ``max_steps`` it injects a
+    one-time wrap-up nudge (like :class:`DeadlineMiddleware`, but counting steps not wall-clock);
+    once the budget is spent it raises :class:`StepBudgetExceeded`, which the drivers turn into a
+    cycle-level ``SandboxError`` so a non-converging agent yields a *recorded, fed-back* failed
+    cycle with a clear reason instead of an opaque ``GraphRecursionError`` at the framework limit.
+    """
+
+    def __init__(self, max_steps: int, *, warn_fraction: float = _DEADLINE_WARN_FRACTION) -> None:
+        super().__init__()
+        self._max = max_steps
+        self._warn_at = max(1, int(warn_fraction * max_steps))
+        self._steps = 0
+        self._warned = False
+
+    def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        self._steps += 1
+        if self._steps > self._max:
+            raise StepBudgetExceeded(
+                f"model-step budget exhausted ({self._max} steps); the agent did not converge on a "
+                "proposal within its budget"
+            )
+        if not self._warned and self._steps >= self._warn_at:
+            self._warned = True
+            return {
+                "messages": [
+                    HumanMessage(content=(
+                        f"Step budget almost spent: {self._steps} of {self._max} model steps used. "
+                        "Stop exploring now — finalize and submit your best proposal immediately."
+                    ))
+                ]
+            }
+        return None
+
+
 def build_deepagents_agent(
     *,
     model: Any,
@@ -111,6 +154,7 @@ def build_deepagents_agent(
     extra_tools: Sequence[Any] = (),
     middleware: Sequence[Any] = (),
     deadline_s: float | None = None,
+    step_budget: int | None = None,
 ) -> Any:
     """Build the YOLO coding agent: Deep Agents' native tools + a propose tool per operation.
 
@@ -118,13 +162,16 @@ def build_deepagents_agent(
     a working ``execute``; a plain ``FilesystemBackend`` gives file tools only. ``outbox`` is where
     the propose tools write the descriptor. ``extra_tools`` are domain/task tools the adapter binds
     (§8.2 seam, #6). ``middleware`` forwards to ``create_deep_agent``; when ``deadline_s`` is set a
-    :class:`DeadlineMiddleware` is appended. (Deep Agents auto-injects **summarization/compaction**
-    middleware into its base stack, so context compaction is already on — ROADMAP 5.2.)
+    :class:`DeadlineMiddleware` is appended, and when ``step_budget`` is set a
+    :class:`StepBudgetMiddleware` is appended (ROADMAP 5.1). (Deep Agents auto-injects
+    **summarization/compaction** middleware into its base stack, so compaction is already on — 5.2.)
     """
     tools = [_make_propose_tool(sig, outbox) for sig in operations] + list(extra_tools)
     stack = list(middleware)
     if deadline_s is not None:
         stack.append(DeadlineMiddleware(deadline_s))
+    if step_budget is not None:
+        stack.append(StepBudgetMiddleware(step_budget))
     # The framework is opaque to us: treat the compiled agent as Any so its overloaded `invoke`
     # bridges cleanly through asyncio.to_thread / a direct call.
     agent: Any = create_deep_agent(
@@ -200,10 +247,12 @@ class DeepAgentsInProcessDriver:
         model: Any,
         recursion_limit: int = _DEFAULT_RECURSION_LIMIT,
         tool_names: tuple[str, ...] = (),
+        step_budget: int | None = None,
     ) -> None:
         self._model = model
         self._recursion_limit = recursion_limit
         self._tool_names = tool_names
+        self._step_budget = step_budget
 
     async def run(
         self,
@@ -221,6 +270,7 @@ class DeepAgentsInProcessDriver:
             system_prompt=system_prompt,
             backend=backend,
             extra_tools=resolve_tools(self._tool_names),
+            step_budget=self._step_budget,
         )
         log.info("deepagents_run", ops=[s.name for s in operations], root=str(workspace.root))
         try:

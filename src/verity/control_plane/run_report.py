@@ -69,13 +69,15 @@ class CycleInput:
     """The raw facts the control plane records per cycle — the builder's input (not the report).
 
     Kernel-typed only (a :class:`CommitResult` or ``None``), so this module never depends on the
-    control-plane API. ``shape_error`` / ``sandbox_error`` are the §7.0 / §21 failure messages.
+    control-plane API. ``shape_error`` / ``sandbox_error`` / ``gate_error`` are the §7.0 / §21 /
+    5.1 failure messages.
     """
 
     goal: str
     entered_protocol: bool
     shape_error: str | None = None
     sandbox_error: str | None = None
+    gate_error: str | None = None
     commit: CommitResult | None = None
     timings: Timings = field(default_factory=Timings)
     agent_telemetry: Mapping[str, Any] | None = None  # tokens / steps / model (5.3b), or None
@@ -144,6 +146,7 @@ class CycleReport:
     entered_protocol: bool
     shape_error: str | None
     sandbox_error: str | None
+    gate_error: str | None
     proposal: ProposalReport | None
     commit: CommitReport | None
     rationale: str | None
@@ -154,6 +157,7 @@ class CycleReport:
         return {
             "index": self.index, "goal": self.goal, "entered_protocol": self.entered_protocol,
             "shape_error": self.shape_error, "sandbox_error": self.sandbox_error,
+            "gate_error": self.gate_error,
             "proposal": self.proposal.to_dict() if self.proposal else None,
             "commit": self.commit.to_dict() if self.commit else None,
             "rationale": self.rationale, "timings": self.timings.to_dict(),
@@ -217,7 +221,9 @@ class RunReport:
         ]
         for c in self.cycles:
             outcome = c.sandbox_error and "sandbox-failed" or (
-                c.shape_error and "shape-error" or (c.commit.outcome if c.commit else "—")
+                c.gate_error and "gate-failed" or (
+                    c.shape_error and "shape-error" or (c.commit.outcome if c.commit else "—")
+                )
             )
             who = c.proposal.artifact_id if c.proposal else "(no proposal)"
             lines.append(f"  [{c.index}] {outcome}: {who}")
@@ -248,6 +254,7 @@ def build_run_report(
             entered_protocol=ci.entered_protocol,
             shape_error=ci.shape_error,
             sandbox_error=ci.sandbox_error,
+            gate_error=ci.gate_error,
             proposal=_proposal(store, ci.commit),
             commit=_commit(store, ci.commit),
             rationale=_rationale(rationale, ci.commit),
@@ -326,6 +333,8 @@ def _rationale(rationale: Mapping[str, str], commit: CommitResult | None) -> str
 def _outcome_label(ci: CycleInput) -> str:
     if ci.sandbox_error is not None:
         return "sandbox_failed"
+    if ci.gate_error is not None:
+        return "gate_failed"
     if not ci.entered_protocol:
         return "shape_error"
     if ci.commit is not None:

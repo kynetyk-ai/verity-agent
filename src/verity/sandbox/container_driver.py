@@ -64,6 +64,7 @@ class DeepAgentsContainerDriver:
     tmpfs_size: str = "256m"
     timeout_s: float = 1800.0
     recursion_limit: int = 80
+    step_budget: int | None = None  # per-cycle model-step budget (5.1); None = framework limit only
     _docker_env: dict[str, str] = field(default_factory=dict)
 
     async def run(
@@ -85,6 +86,7 @@ class DeepAgentsContainerDriver:
                 # finalize before the kill (5.2). The hard timeout stays the backstop.
                 deadline_s=self.timeout_s,
                 tool_names=self.tool_names,
+                step_budget=self.step_budget,
             )
             (inputs_dir / "input.json").write_bytes(cycle.to_json())
             os.chmod(inputs_dir, 0o755)
@@ -132,9 +134,16 @@ class DeepAgentsContainerDriver:
         return cmd
 
     async def _run_container(self, cmd: Sequence[str], *, name: str) -> None:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError as exc:
+            # A missing/unreachable docker binary would otherwise raise a raw OSError that bypasses
+            # the control plane's degrade-don't-crash catch; type it as a recoverable cycle (5.1).
+            raise SandboxError(
+                f"could not launch the sandbox container ({self.docker_bin}): {exc}"
+            ) from exc
         try:
             _out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
         except TimeoutError:

@@ -62,6 +62,25 @@ def _default_clock() -> str:
     return ""
 
 
+def _parse_telemetry(raw: bytes | None) -> dict[str, object] | None:
+    """Parse the advisory ``__telemetry__.json`` (5.3b); degrade to ``None`` on any decode error.
+
+    Telemetry is observability, not the proposal — a malformed or non-object telemetry file must
+    never fail an otherwise-valid cycle (ROADMAP 5.1), so it is dropped with a warning, not raised.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        log.warning("telemetry_unparseable", error=str(exc))
+        return None
+    if not isinstance(parsed, dict):
+        log.warning("telemetry_not_an_object", got=type(parsed).__name__)
+        return None
+    return parsed
+
+
 @dataclass
 class AgentSandbox:
     """A real :class:`SandboxPort` over a :class:`WorkspaceLayout`, driven by a ``SandboxDriver``.
@@ -143,7 +162,12 @@ class AgentSandbox:
             workspace=workspace,
         )
 
-        harvested = self.layout.harvest(workspace)
+        try:
+            harvested = self.layout.harvest(workspace)
+        except OSError as exc:
+            # An outbox I/O error is a failed cycle, not a crash: type it so the control plane's
+            # degrade-don't-crash path catches it like any other sandbox failure (ROADMAP 5.1).
+            raise SandboxError(f"could not harvest the outbox: {exc}") from exc
         descriptor_bytes = harvested.pop(RESERVED_PROPOSAL_NAME, None)
         telemetry_bytes = harvested.pop(RESERVED_TELEMETRY_NAME, None)
         if descriptor_bytes is None:
@@ -152,7 +176,9 @@ class AgentSandbox:
                 f"(no {RESERVED_PROPOSAL_NAME} in the outbox); outbox had: {sorted(harvested)}"
             )
         descriptor = ProposalDescriptor.from_json(descriptor_bytes)
-        agent_telemetry = json.loads(telemetry_bytes) if telemetry_bytes else None
+        # Telemetry is advisory (5.3b): a corrupt __telemetry__.json must never sink an otherwise
+        # good proposal, so parse defensively and degrade to None on any decode error.
+        agent_telemetry = _parse_telemetry(telemetry_bytes)
         envelope = self._mint(descriptor, objects=harvested, agent_telemetry=agent_telemetry)
         log.info(
             "proposal_collected",

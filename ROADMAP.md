@@ -282,32 +282,47 @@ observability come first so the later phases are measurable and debuggable; the 
 follows; the full service split is last and largest. Each sub-item becomes a tracked GitHub issue as
 it activates (roadmap hygiene).
 
-### Phase 5 — Reliability & observability ⬜
+### Phase 5 — Reliability & observability ✅
 
 Harden the loop and make it measurable before scaling models or splitting services.
 
-- **5.1 Error-handling & reliability hardening** — extend #21's *degrade-don't-crash* discipline
-  everywhere: typed errors at every service boundary, retries / backoff on transient model + Docker
-  failures, explicit partial-failure semantics in harvest/commit, and "a failed step is recorded, not
-  fatal" as a stated invariant. Also **gate-reproducibility discipline for the LLM judge** so verdicts
-  are deterministic (**#11**, §5.8), and **stamp the workspace-contract / orientation version into the
-  store** like the schema version (**#12**, §3.4).
-- **5.2 Agent-harness hardening** — enable **context compaction / summarization** in the Deep Agents
-  loop (verify the middleware API), bound tool-call / step budgets, and add a **soft-deadline signal**:
-  a pre-model-step hook injects "≈Xs of Ys remaining — finalize and submit now," so a long cycle yields
-  a rushed-but-real proposal instead of being killed. The hard sandbox timeout stays the backstop; the
-  control plane supplies the budget, the harness injects it. Complements #21's graceful skip. Also
-  **enforce JSON-object proposal payloads** (+ an optional per-operation payload schema) at intake
-  (**#13**).
-- **5.3 Metrics foundation — the store-derived `RunReport`** — the store *is* the audit record, so most
-  of the panel is derivable for free: per-cycle outcomes (accept / reject / revise / refine /
-  sandbox-fail), score trajectory + supersessions, refine-cap hits, trial counts, object-store growth,
-  and cycle / gate / sandbox latencies — plus agent-loop telemetry (tokens, tool calls, wall-time,
-  model, steps) carried back from the sandbox. Live emission + a dashboard come later (7.3).
-- **5.4 Sandbox tools & extensibility** — a `ToolBinding` seam that binds non-propose, **executable**
-  tools into the agent's harness (the parallel to `WorkspaceLayout`; **#6**), with a **PDF-read tool**
-  as the first concrete one so the agent can read PDFs / spec / reference docs in its read-only roles.
-  Domain-agnostic: the control plane declares *what* tools a task gets; the adapter binds *how*.
+- **5.1 Error-handling & reliability hardening ✅** — the loop now degrades-don't-crash on *both*
+  sides. A `GateUnavailable` (transient verifier/runner infrastructure, or a dispatch hung past a
+  backstop) is a recorded, fed-back failed cycle, symmetric with the sandbox side (#21); the
+  consecutive-failure breaker counts it too. Transient model + Docker calls retry with bounded
+  backoff (a shared `retry_async`), and a missing/broken daemon is a typed error, not a raw crash.
+  The commit path is **atomic** across its decision rows + terminal status. **#12** stamps the
+  workspace-contract / orientation version into the store (with an orientation digest) like the
+  schema version (§3.4). **#13** enforces JSON-object proposal payloads at intake (+ an optional
+  per-operation required-keys schema). A per-cycle **step budget** (`StepBudgetMiddleware`) nudges
+  then hard-stops a non-converging agent. "A failed step is recorded, not fatal" is a property test.
+  Durable failure-provenance (recording failed cycles in the store, not just the in-memory
+  `RunReport`) is split out as **#32**.
+  - *Deferred — LLM-judge reproducibility (**#11**, §5.8).* The `llm_judge` primitive + `ModelClient`
+    port exist and are unit-tested (against `FakeModelClient`), but the judge sits in **no live gate
+    stack** and `AnthropicModelClient` is integration-only — so determinism / reproducibility
+    discipline has nothing to bite on yet; its utility is theoretical. Build it out **when** we expand
+    the verifier primitives *or* stand up an LLM-judge in a real domain's gate stack (a natural fit for
+    Phase 6's cheap / local models). Until then the primitive stays frozen as a tested seam.
+- **5.2 Agent-harness hardening ✅** — **soft-deadline signal** shipped: a `DeadlineMiddleware`
+  pre-model-step hook injects a one-shot "≈Xs of Ys remaining — finalize and submit now" once past
+  0.8 of the budget, so a long cycle yields a rushed-but-real proposal instead of being killed (the
+  hard sandbox timeout stays the backstop; the control plane supplies the budget via
+  `CycleInput.deadline_s`, the harness injects it). **Context compaction** confirmed already on —
+  `create_deep_agent` auto-injects `SummarizationMiddleware`. Tool-call / step budgets and **#13**
+  JSON-object payload enforcement were folded into 5.1 (both delivered there).
+- **5.3 Metrics foundation — the store-derived `RunReport` ✅** — score-agnostic JSON projection of the
+  store (the audit record): per-cycle outcomes (accept / reject / revise / refine / sandbox-fail),
+  supersessions, trial counts, object-store growth, and cycle / gate / sandbox latencies (**5.3a**),
+  plus **agent-loop telemetry** (tokens / model-steps / tool-calls / model) carried back from the
+  sandbox through a reserved outbox file and summed per run (**5.3b**). All fields nullable — the
+  consumer parses, the control plane does not assume a numeric score. Live emission + a dashboard come
+  later (7.3).
+- **5.4 Sandbox tools & extensibility ✅** — the `ToolBinding` seam (**#6**): a
+  `SANDBOX_TOOL_REGISTRY` + `resolve_tools()` that binds non-propose, **executable** tools into the
+  agent's harness by name (the control plane declares *what* a task gets via `sandbox_tools`; the
+  adapter binds *how*; names — not callables — cross the container boundary). First concrete tool:
+  **`read_pdf`**, so the agent can read PDFs in its read-only roles.
 
 ### Phase 6 — Model breadth: open, local & cheaper hosted ⬜ *(the thesis payoff)*
 
