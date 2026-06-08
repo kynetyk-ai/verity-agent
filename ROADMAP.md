@@ -249,9 +249,14 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   independence holds). The `CodeRunner` gained a `requirements`/`network`/`env` path: pip-install the
   declared deps into an `exec` tmpfs over outbound network (the no-deps default stays hardened). A
   `@docker` test installs pandas and scores a real script end to end. *(§11, §12)*
-- **4.3 Harvested `Feature`s + grounding + refine ⬜** — a domain `harvester` hook + the control-plane
-  post-propose harvest minting one `Feature` per declared feature; the cheap grounding gate; `refine`
-  naming a bad feature. *(§12, §6, §7)*
+- **4.3 Harvested `Feature`s + grounding + refine ✅** — a domain `harvester` hook on `TaskConfig`
+  (`HarvestedChild`) + the control-plane harvest step: on acceptance it mints one `Feature` per
+  declared feature via a `harvest` operation (parent → child), carrying the parent's code sidecar, and
+  commits each through its own cheap **grounding** gate (genuinely defined by the code, else refused —
+  no implicit accept for `Feature` too, §13.6). A static **features-defined** check refines a
+  submission whose code omits a declared feature, naming it in the defects → a tracked revision with
+  intact lineage (§13.8). Ids/lineage are minted on the trusted side; the domain only declares
+  content. *(§12, §6, §7)*
 - **4.4 Live multi-round run + the twelve §13 criteria ⬜** — each §13 criterion as a runnable check;
   a `@live` container run improving across ≥3 rounds with ≥1 supersession on the real dataset.
 - **Exit:** **all twelve §13 acceptance criteria pass → MVP reached.**

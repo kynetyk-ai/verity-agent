@@ -69,13 +69,24 @@ def _preds_csv(preds: dict[str, str]) -> bytes:
     return f"id,class\n{rows}\n".encode()
 
 
-def _runner(by_code: dict[bytes, dict[str, str]]) -> FakeCodeRunner:
-    """A fake runner whose predictions output depends on which submission code it is handed."""
+def _feature_names(n: int) -> list[str]:
+    return [f"feat{i}" for i in range(n)]
+
+
+def _entrypoint(marker: bytes, names: list[str]) -> bytes:
+    """Script bytes: a marker the fake runner keys on + the declared feature names, so the static
+    ``features-defined`` gate finds them (a described-but-absent feature would refine)."""
+    return marker + b"\n# defines: " + " ".join(names).encode()
+
+
+def _runner(by_marker: dict[bytes, dict[str, str]]) -> FakeCodeRunner:
+    """A fake runner whose predictions depend on which marker the submitted code contains."""
 
     def script(req: RunRequest) -> RunResult:
-        preds = by_code.get(req.code)
-        output = _preds_csv(preds) if preds is not None else None
-        return RunResult(exit_code=0, stdout="", stderr="", output=output)
+        for marker, preds in by_marker.items():
+            if marker in req.code:
+                return RunResult(exit_code=0, stdout="", stderr="", output=_preds_csv(preds))
+        return RunResult(exit_code=0, stdout="", stderr="", output=None)
 
     return FakeCodeRunner(script=script)
 
@@ -88,13 +99,16 @@ def _request(
     store_slice: tuple[Artifact, ...] = (),
     with_code: bool = True,
 ) -> VerifierRequest:
-    features = [{"name": f"f{i}", "definition": "d", "rationale": "r"} for i in range(n_features)]
+    names = _feature_names(n_features)
+    features = [{"name": n, "definition": "d", "rationale": "r"} for n in names]
     proposal = Artifact(
         proposal_id, SUBMISSION,
         {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS, "features": features},
         ArtifactStatus.PROPOSED, "agent", "t1",
     )
-    objects = {ENTRYPOINT: code, REQUIREMENTS: b"pandas==2.2.2"} if with_code else {}
+    objects = (
+        {ENTRYPOINT: _entrypoint(code, names), REQUIREMENTS: b"pandas==2.2.2"} if with_code else {}
+    )
     return VerifierRequest(proposal=proposal, store_slice=store_slice, objects=objects)
 
 
@@ -251,12 +265,11 @@ class _FeDriver:
     ) -> None:
         code, n_features = self.scripts[self.cursor]
         self.cursor += 1
+        names = _feature_names(n_features)
         out = workspace.outbox()  # type: ignore[attr-defined]
-        (out / ENTRYPOINT).write_bytes(code)
+        (out / ENTRYPOINT).write_bytes(_entrypoint(code, names))
         (out / REQUIREMENTS).write_bytes(b"pandas==2.2.2")
-        features = [
-            {"name": f"f{i}", "definition": "d", "rationale": "r"} for i in range(n_features)
-        ]
+        features = [{"name": n, "definition": "d", "rationale": "r"} for n in names]
         payload = {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS, "features": features}
         (out / RESERVED_PROPOSAL_NAME).write_bytes(
             ProposalDescriptor("submit", ("ds",), payload, metadata="reasoned").to_json()
@@ -354,7 +367,8 @@ def predict(z: float) -> str:
     return "QSO"
 
 
-test["class"] = test["redshift"].apply(predict)
+test["redshift_rule"] = test["redshift"]  # the declared engineered feature
+test["class"] = test["redshift_rule"].apply(predict)
 test[["id", "class"]].to_csv(os.path.join(out, "predictions.csv"), index=False)
 """
 

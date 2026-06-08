@@ -9,10 +9,11 @@ model: the model is produced by the gate, from the script, on a **reserved datas
 sees** (§12) — so a feature that peeks at the target inflates the agent's own score but fails to
 generalize, and is caught on the reserved set.
 
-This module is the **control-plane side**: the schema, the gated-type coverage, the proposal-shape
-spec, and the domain instructions. The **verifier side** — the two ``Submission`` gates (runnable →
-``tentative``; selection-on-the-reserved-set → ``accepted``) and the ``Feature`` grounding gate —
-lands in Phase 4.2/4.3 as the opaque verifier package selected by ``verifier_key``.
+This module holds both sides for the domain. The **control-plane side**: the schema, the gated-type
+coverage, the proposal-shape spec, the domain instructions, and the feature harvester. The
+**verifier side** (:func:`build_feature_engineering_verifier`, by ``verifier_key``): the two
+``Submission`` gates — runnable → ``tentative`` and selection-on-the-reserved-set → ``accepted``,
+with a static ``features-defined`` refine — plus the ``Feature`` grounding gate.
 
 Schema (§12):
 * ``DatasetVersion`` — the pinned dataset (the CSV, the named target, fixed folds); the larger
@@ -31,8 +32,15 @@ import io
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from verity.contracts import Artifact, ArtifactStatus, GateVerdict, VerdictKind, VerifierRequest
+from verity.contracts import (
+    Artifact,
+    ArtifactStatus,
+    GateVerdict,
+    VerdictKind,
+    VerifierRequest,
+)
 from verity.control_plane.commit import ShapeError, ShapeValidator
+from verity.control_plane.config import HarvestedChild, Harvester
 from verity.control_plane.independence import StoreInput
 from verity.control_plane.registries import (
     ArtifactTypeDef,
@@ -40,7 +48,15 @@ from verity.control_plane.registries import (
     OperationSignature,
     SchemaRegistry,
 )
-from verity.verifier import CodeRunner, GateStep, RunRequest, RunResult, SdkVerifier
+from verity.verifier import (
+    CheckOutcome,
+    CodeRunner,
+    GateStep,
+    RunRequest,
+    RunResult,
+    SdkVerifier,
+    deterministic_check,
+)
 
 __all__ = [
     "DATASET_VERSION",
@@ -57,6 +73,7 @@ __all__ = [
     "FeatureEngineeringDomain",
     "build_feature_engineering_domain",
     "build_feature_engineering_verifier",
+    "harvest_features",
     "balanced_accuracy",
 ]
 
@@ -95,6 +112,24 @@ class FeatureEngineeringDomain:
     gated_types: GatedTypeRegistry
     shape_validator: ShapeValidator
     domain_instructions: str
+    harvester: Harvester
+
+
+def harvest_features(submission: Artifact) -> list[HarvestedChild]:
+    """Derive one ``Feature`` child per declared feature from a submission's description (§12).
+
+    The harness mints these as inspectable provenance nodes via a ``harvest`` operation; each then
+    clears its own grounding gate (genuinely defined by the code) or is refused (§5.7, §13.6).
+    """
+    payload = submission.payload
+    features = payload.get("features") if isinstance(payload, dict) else None
+    if not isinstance(features, list):
+        return []
+    return [
+        HarvestedChild(artifact_type=FEATURE, op_name="harvest", payload=feature)
+        for feature in features
+        if isinstance(feature, dict)
+    ]
 
 
 def build_feature_engineering_domain() -> FeatureEngineeringDomain:
@@ -127,6 +162,7 @@ def build_feature_engineering_domain() -> FeatureEngineeringDomain:
         gated_types=gated_types,
         shape_validator=_validate_shape,
         domain_instructions=FEATURE_ENGINEERING_INSTRUCTIONS,
+        harvester=harvest_features,
     )
 
 
@@ -208,10 +244,55 @@ def build_feature_engineering_verifier(
         pipelines={
             SUBMISSION: (
                 GateStep("runs-clean", gates.runnable, is_hard=False),
+                GateStep("features-defined", deterministic_check(_features_defined), is_hard=False),
                 GateStep("selection", gates.selection, is_hard=True),
-            )
+            ),
+            # The harvested-Feature grounding gate: cheap, structural, so "no implicit accept" holds
+            # for Features too (§5.7, §13.6). Clearing it is the only check, so it earns acceptance.
+            FEATURE: (
+                GateStep("grounding", deterministic_check(_grounds_feature), is_hard=False),
+            ),
         },
     )
+
+
+def _features_defined(request: VerifierRequest) -> CheckOutcome:
+    """Cheap, static refine: every declared feature must actually appear in the submitted code.
+
+    A described-but-absent feature is a *localized* defect — most of the submission may be fine — so
+    this returns ``refine`` naming the offending feature(s) (§7.5b, §12), recoverable by a revision.
+    """
+    code = request.objects.get(ENTRYPOINT)
+    if code is None:
+        return CheckOutcome(ok=False, rationale=f"no {ENTRYPOINT!r} to ground features against")
+    payload = request.proposal.payload
+    features = payload.get("features", []) if isinstance(payload, dict) else []
+    absent: list[str] = []
+    for feature in features if isinstance(features, list) else []:
+        name = feature.get("name") if isinstance(feature, dict) else None
+        if isinstance(name, str) and name.encode() not in code:
+            absent.append(name)
+    if absent:
+        return CheckOutcome(
+            ok=False,
+            rationale=f"declared features not defined in the code: {', '.join(absent)}",
+            defects=tuple(absent),
+        )
+    return CheckOutcome(ok=True, rationale="every declared feature appears in the code")
+
+
+def _grounds_feature(request: VerifierRequest) -> CheckOutcome:
+    """Cheap grounding (§12): a harvested ``Feature`` must be genuinely defined by the code."""
+    code = request.objects.get(ENTRYPOINT)
+    payload = request.proposal.payload
+    name = payload.get("name") if isinstance(payload, dict) else None
+    if not isinstance(name, str) or not name:
+        return CheckOutcome(ok=False, rationale="feature has no name to ground")
+    if code is None or name.encode() not in code:
+        return CheckOutcome(
+            ok=False, rationale=f"feature {name!r} is described but not defined in the code"
+        )
+    return CheckOutcome(ok=True, rationale=f"feature {name!r} is defined in the code")
 
 
 @dataclass

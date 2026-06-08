@@ -31,6 +31,7 @@ from verity.contracts import (
     SANDBOX_PROVIDERS,
     VERIFIER_PROVIDERS,
     Operation,
+    OperationStatus,
     ProposalEnvelope,
     ProviderRegistry,
     SandboxPort,
@@ -235,8 +236,53 @@ class ControlPlane:
         result = await self._run_commit(
             task, artifact.id, envelope.objects, refine_exhausted=refine_exhausted
         )
+        # On acceptance, harvest the domain's child artifacts (e.g. one Feature per declared
+        # feature, §12): each is an inspectable node, committed through its own declared gate.
+        if result.outcome is CommitOutcome.ACCEPTED and task.config.harvester is not None:
+            await self._harvest_children(task, artifact)
         log.info("proposal_committed", task_id=task_id, outcome=result.outcome.value)
         return IntakeResult(entered_protocol=True, commit=result, harvested=harvested)
+
+    async def _harvest_children(self, task: TaskState, parent: Artifact) -> None:
+        """Mint the domain's harvested children from an accepted parent and gate each (§4.1, §12).
+
+        Ids and lineage are minted here on the trusted side (the domain only declares content), via
+        a ``harvest`` operation parent → child. Each child carries the parent's objects so its
+        declared gate (e.g. ``Feature`` grounding) can check it against the submitted code.
+        """
+        children = task.config.harvester(parent) if task.config.harvester else []
+        if not children:
+            return
+        parent_bytes = {
+            name: self._store.get_object(ref.content_hash) for name, ref in parent.objects
+        }
+        for index, child in enumerate(children):
+            child_id = f"{parent.id}::{child.artifact_type.lower()}::{index}"
+            timestamp = self._clock()
+            artifact = Artifact(
+                id=child_id,
+                type=child.artifact_type,
+                payload=child.payload,
+                status=ArtifactStatus.PROPOSED,
+                created_by=parent.created_by,  # the proposer, distinct from the gate (§7.2)
+                created_at=timestamp,
+                objects=parent.objects,  # the child records the same code provenance
+            )
+            operation = Operation(
+                op_id=f"op-{child_id}",
+                op_name=child.op_name,
+                parents=(parent.id,),
+                output_id=child_id,
+                status=OperationStatus.SUCCESS,
+                created_at=timestamp,
+            )
+            self._store.propose(artifact, operation)
+            result = await self._run_commit(task, child_id, parent_bytes)
+            log.info(
+                "child_harvested",
+                parent=parent.id, child=child_id,
+                type=child.artifact_type, outcome=result.outcome.value,
+            )
 
     async def _run_commit(
         self,

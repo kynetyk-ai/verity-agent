@@ -21,8 +21,10 @@ The orientation + layout layers are stable, so they belong in the prompt-cache p
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from verity.contracts import Artifact, JSONValue
 from verity.control_plane.commit import ShapeValidator
 from verity.control_plane.registries import (
     GatedTypeRegistry,
@@ -34,10 +36,30 @@ from verity.control_plane.workspace import WORKSPACE_CONTRACT, WorkspaceContract
 
 __all__ = [
     "TaskConfig",
+    "HarvestedChild",
+    "Harvester",
     "render_workspace_layout",
     "compose_system_prompt",
     "KERNEL_ORIENTATION_TEMPLATE",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class HarvestedChild:
+    """A child artifact the harness mints from a parent's payload (spec §4.1, §12 ``Feature``).
+
+    The domain's :data:`Harvester` returns these; the control plane mints the typed artifact + the
+    ``op_name`` operation (parent → child), carrying the parent's object sidecar so the child's gate
+    can see it. Ids and lineage are minted on the trusted side — the domain only declares content.
+    """
+
+    artifact_type: str
+    op_name: str
+    payload: JSONValue
+
+
+# A domain hook: derive the child artifacts to harvest from a (just-accepted) parent artifact (§12).
+Harvester = Callable[[Artifact], list[HarvestedChild]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +87,7 @@ class TaskConfig:
     data_sources: tuple[str, ...] = ()
     context_files: tuple[str, ...] = ()
     object_provisioning: ObjectProvisioningPolicy = field(default_factory=ObjectProvisioningPolicy)
+    harvester: Harvester | None = None
     contract: WorkspaceContract = field(default=WORKSPACE_CONTRACT)
 
     def system_prompt(self) -> str:
