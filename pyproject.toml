@@ -13,6 +13,7 @@ dependencies = [
 sandbox = [
     "deepagents>=0.6.8,<0.7",
     "langchain-openai>=0.2",
+    "pypdf>=4",  # the read_pdf sandbox tool (5.4); baked into the sandbox image
 ]
 
 [dependency-groups]

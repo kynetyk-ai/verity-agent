@@ -41,6 +41,7 @@ from verity.sandbox.descriptor import (
     ProposalDescriptor,
 )
 from verity.sandbox.errors import SandboxError
+from verity.sandbox.tools import resolve_tools
 
 __all__ = [
     "DeepAgentsInProcessDriver",
@@ -193,9 +194,16 @@ class DeepAgentsInProcessDriver:
     in the container driver.
     """
 
-    def __init__(self, *, model: Any, recursion_limit: int = _DEFAULT_RECURSION_LIMIT) -> None:
+    def __init__(
+        self,
+        *,
+        model: Any,
+        recursion_limit: int = _DEFAULT_RECURSION_LIMIT,
+        tool_names: tuple[str, ...] = (),
+    ) -> None:
         self._model = model
         self._recursion_limit = recursion_limit
+        self._tool_names = tool_names
 
     async def run(
         self,
@@ -212,6 +220,7 @@ class DeepAgentsInProcessDriver:
             outbox=workspace.outbox(),
             system_prompt=system_prompt,
             backend=backend,
+            extra_tools=resolve_tools(self._tool_names),
         )
         log.info("deepagents_run", ops=[s.name for s in operations], root=str(workspace.root))
         try:

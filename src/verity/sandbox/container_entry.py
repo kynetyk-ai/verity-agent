@@ -22,6 +22,7 @@ from verity.sandbox.container_io import (
     CycleInput,
 )
 from verity.sandbox.deepagents_driver import build_deepagents_agent, run_agent
+from verity.sandbox.tools import resolve_tools
 
 log = get_logger("verity.sandbox.container_entry")
 
@@ -45,6 +46,7 @@ def main() -> None:
         system_prompt=cycle.system_prompt,
         backend=backend,
         deadline_s=cycle.deadline_s,
+        extra_tools=resolve_tools(cycle.tool_names),
     )
     log.info("container_entry_run", model=model, ops=[s.name for s in cycle.operations])
     run_agent(

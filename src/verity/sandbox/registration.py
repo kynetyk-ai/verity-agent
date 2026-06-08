@@ -63,15 +63,20 @@ def build_deepagents_sandbox(
     root: Path,
     model: Any,
     proposer_identity: str = "deepagents-inprocess",
+    sandbox_tools: tuple[str, ...] = (),
     **kwargs: Any,
 ) -> AgentSandbox:
-    """An **in-process** Deep Agents sandbox (tests/dev). Requires the ``sandbox`` extra."""
+    """An **in-process** Deep Agents sandbox (tests/dev). Requires the ``sandbox`` extra.
+
+    ``sandbox_tools`` names extra (non-propose) tools the agent gets, resolved from the sandbox tool
+    registry (5.4, #6).
+    """
     from verity.sandbox.deepagents_driver import DeepAgentsInProcessDriver
 
     return build_sandbox(
         schema=schema,
         root=root,
-        driver=DeepAgentsInProcessDriver(model=model),
+        driver=DeepAgentsInProcessDriver(model=model, tool_names=sandbox_tools),
         proposer_identity=proposer_identity,
         **kwargs,
     )
@@ -84,11 +89,18 @@ def build_container_sandbox(
     model: str,
     image: str = "verity-sandbox:latest",
     data_sources: tuple[str, ...] = (),
+    sandbox_tools: tuple[str, ...] = (),
     proposer_identity: str | None = None,
     **kwargs: Any,
 ) -> AgentSandbox:
-    """A **container-isolated** Deep Agents sandbox — safe YOLO arbitrary-code execution."""
-    driver = DeepAgentsContainerDriver(model=model, image=image, data_sources=data_sources)
+    """A **container-isolated** Deep Agents sandbox — safe YOLO arbitrary-code execution.
+
+    ``sandbox_tools`` names extra (non-propose) tools, resolved in-container from the tool registry
+    (5.4, #6); the names ride ``CycleInput.tool_names``.
+    """
+    driver = DeepAgentsContainerDriver(
+        model=model, image=image, data_sources=data_sources, tool_names=sandbox_tools,
+    )
     return build_sandbox(
         schema=schema,
         root=root,

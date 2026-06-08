@@ -307,3 +307,28 @@ def test_agent_builds_with_a_deadline(tmp_path: Path) -> None:
         deadline_s=300.0,
     )
     assert "author" in set(agent.get_graph().nodes["tools"].data.tools_by_name)
+
+
+# --------------------------------------------------------------------------- 5.4 sandbox tools
+
+
+def test_extra_tools_are_bound_when_selected(tmp_path: Path) -> None:
+    from verity.sandbox.tools import resolve_tools
+
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)
+    fake = ToolCallingFakeModel(messages=iter([AIMessage(content="x")]))
+
+    without = build_deepagents_agent(
+        model=fake, operations=_note_schema().operations(), outbox=outbox,
+        system_prompt="s", backend=backend,
+    )
+    assert "read_pdf" not in set(without.get_graph().nodes["tools"].data.tools_by_name)
+
+    with_tool = build_deepagents_agent(
+        model=fake, operations=_note_schema().operations(), outbox=outbox,
+        system_prompt="s", backend=backend, extra_tools=resolve_tools(("read_pdf",)),
+    )
+    bound = set(with_tool.get_graph().nodes["tools"].data.tools_by_name)
+    assert "read_pdf" in bound and "author" in bound  # the seam tool + the propose tool coexist
