@@ -64,6 +64,7 @@ class DeepAgentsContainerDriver:
     tmpfs_size: str = "256m"
     timeout_s: float = 1800.0
     recursion_limit: int = 80
+    step_budget: int | None = None  # per-cycle model-step budget (5.1); None = framework limit only
     _docker_env: dict[str, str] = field(default_factory=dict)
 
     async def run(
@@ -85,6 +86,7 @@ class DeepAgentsContainerDriver:
                 # finalize before the kill (5.2). The hard timeout stays the backstop.
                 deadline_s=self.timeout_s,
                 tool_names=self.tool_names,
+                step_budget=self.step_budget,
             )
             (inputs_dir / "input.json").write_bytes(cycle.to_json())
             os.chmod(inputs_dir, 0o755)

@@ -50,7 +50,7 @@ from verity.control_plane.commit import (
     ShapeError,
     run_commit,
 )
-from verity.control_plane.config import TaskConfig
+from verity.control_plane.config import TaskConfig, orientation_digest
 from verity.control_plane.context import AssembledContext, ContextAssembler
 from verity.control_plane.independence import resolve_declared_slice
 from verity.control_plane.run_report import (
@@ -63,6 +63,7 @@ from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
     Clock,
+    ContractVersion,
     ObjectRef,
     Provenance,
     SqliteStore,
@@ -182,11 +183,20 @@ class ControlPlane:
     # -- configure-by-task --------------------------------------------------------
 
     async def configure(self, config: TaskConfig) -> None:
-        """Register a task: stamp its schema version, resolve + provision its services (§3.4)."""
+        """Register a task: stamp schema + contract versions, resolve + provision services."""
         current = self._store.current_schema_version()
         version = (current.version + 1) if current is not None else 1
         self._store.register_schema_version(
             config.schema.snapshot(version=version, created_at=self._clock())
+        )
+        # Stamp the workspace-contract / orientation version too (#12, §3.4): a versioned kernel
+        # artifact recorded like the schema, not left ambient. Idempotent across tasks.
+        self._store.register_contract_version(
+            ContractVersion(
+                version=config.contract.version,
+                orientation_digest=orientation_digest(config.contract),
+                created_at=self._clock(),
+            )
         )
         sandbox = self._sandbox_providers.create(config.sandbox_key)
         verifier = self._verifier_providers.create(config.verifier_key)
@@ -231,6 +241,30 @@ class ControlPlane:
 
     # -- proposal intake (§3.4, §7) -----------------------------------------------
 
+    def _check_shape(self, task: TaskState, envelope: ProposalEnvelope) -> ShapeError | None:
+        """Validate proposal shape at intake (§7.0, ROADMAP 5.1 #13). Returns a correction or None.
+
+        Three layers, kernel-first: (1) the payload must be a **JSON object** — a kernel guarantee
+        independent of any domain (the domain validator skips types it doesn't recognize, so without
+        this a non-object payload could slip through); (2) any **required payload keys** the
+        operation declares must be present (a per-operation payload schema, presence-only — the
+        kernel never interprets payload *semantics*); (3) the domain's own ``shape_validator``.
+        """
+        payload = envelope.artifact.payload
+        if not isinstance(payload, dict):
+            return ShapeError(
+                f"a proposal payload must be a JSON object, got {type(payload).__name__}"
+            )
+        signature = task.config.schema.operation(envelope.operation.op_name)
+        if signature is not None and signature.required_payload_keys:
+            missing = [k for k in signature.required_payload_keys if k not in payload]
+            if missing:
+                return ShapeError(
+                    f"payload for operation {signature.name!r} is missing required key(s): "
+                    f"{', '.join(missing)}"
+                )
+        return task.config.shape_validator(envelope.artifact)
+
     async def submit_proposal(
         self, task_id: str, envelope: ProposalEnvelope
     ) -> IntakeResult:
@@ -239,7 +273,7 @@ class ControlPlane:
 
         # §7.0 — a malformed proposal is corrected and records NOTHING (no harvest, no row). The
         # shape check is a presence/type filter only; if it fails the verifier is never triggered.
-        shape_error = task.config.shape_validator(envelope.artifact)
+        shape_error = self._check_shape(task, envelope)
         if shape_error is not None:
             log.info("intake_shape_error", task_id=task_id, artifact_id=envelope.artifact.id)
             return IntakeResult(entered_protocol=False, shape_error=shape_error)

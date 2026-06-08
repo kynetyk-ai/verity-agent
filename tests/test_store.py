@@ -8,6 +8,7 @@ from tests.helpers import AGENT, make_store, propose
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
+    ContractVersion,
     Decision,
     ObjectRef,
     Operation,
@@ -201,3 +202,29 @@ def test_schema_versions_register_and_read() -> None:
     assert current is not None
     assert current.version == 2
     assert current.types == ("Thing", "Other")
+
+
+def test_contract_version_is_stamped_and_read_back() -> None:
+    store = make_store()
+    assert store.current_contract_version() is None
+    store.register_contract_version(ContractVersion(1, "deadbeef", "t1"))
+    cv = store.current_contract_version()
+    assert cv is not None and cv.version == 1 and cv.orientation_digest == "deadbeef"
+
+
+def test_re_registering_the_same_contract_version_is_idempotent() -> None:
+    # The contract version is a kernel constant shared by every task, so configuring N tasks must
+    # not duplicate-key or churn the stamp (#12).
+    store = make_store()
+    store.register_contract_version(ContractVersion(1, "abc", "t1"))
+    store.register_contract_version(ContractVersion(1, "abc", "t2"))  # same content -> no-op
+    cv = store.current_contract_version()
+    assert cv is not None and cv.created_at == "t1"  # the first stamp is kept
+
+
+def test_same_contract_version_with_a_changed_orientation_is_refused() -> None:
+    # Changing the orientation without bumping the version is a misconfiguration, surfaced loudly.
+    store = make_store()
+    store.register_contract_version(ContractVersion(1, "abc", "t1"))
+    with pytest.raises(StoreError, match="different orientation digest"):
+        store.register_contract_version(ContractVersion(1, "xyz", "t2"))

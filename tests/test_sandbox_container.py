@@ -47,10 +47,12 @@ def test_cycle_input_roundtrips() -> None:
         recursion_limit=42,
         deadline_s=1500.0,  # soft wrap-up budget (5.2)
         tool_names=("read_pdf",),  # extra sandbox tools by name (5.4)
+        step_budget=30,  # per-cycle model-step budget (5.1)
     )
     back = CycleInput.from_json(ci.to_json())
     assert back == ci
     assert back.deadline_s == 1500.0 and back.tool_names == ("read_pdf",)
+    assert back.step_budget == 30
 
 
 def test_a_missing_docker_binary_degrades_to_a_sandbox_error() -> None:

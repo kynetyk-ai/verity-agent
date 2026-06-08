@@ -47,6 +47,8 @@ from langchain_core.messages import AIMessage  # noqa: E402
 from verity.sandbox.deepagents_driver import (  # noqa: E402
     DeadlineMiddleware,
     DeepAgentsInProcessDriver,
+    StepBudgetExceeded,
+    StepBudgetMiddleware,
     _extract_telemetry,
     build_deepagents_agent,
 )
@@ -305,6 +307,39 @@ def test_agent_builds_with_a_deadline(tmp_path: Path) -> None:
         system_prompt="s",
         backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
         deadline_s=300.0,
+    )
+    assert "author" in set(agent.get_graph().nodes["tools"].data.tools_by_name)
+
+
+def test_step_budget_middleware_nudges_then_halts() -> None:
+    mw = StepBudgetMiddleware(5, warn_fraction=0.8)  # warn at step 4, halt past step 5
+    assert mw.before_model(None, None) is None  # step 1
+    assert mw.before_model(None, None) is None  # step 2
+    assert mw.before_model(None, None) is None  # step 3
+    injected = mw.before_model(None, None)  # step 4: the one-time wrap-up nudge
+    assert injected is not None and "submit" in injected["messages"][0].content
+    assert mw.before_model(None, None) is None  # step 5: within budget, already warned
+    with pytest.raises(StepBudgetExceeded, match="budget exhausted"):
+        mw.before_model(None, None)  # step 6: over budget -> hard stop
+
+
+def test_step_budget_middleware_is_silent_well_under_budget() -> None:
+    mw = StepBudgetMiddleware(100)
+    for _ in range(3):
+        assert mw.before_model(None, None) is None
+
+
+def test_agent_builds_with_a_step_budget(tmp_path: Path) -> None:
+    # Smoke: building with a step budget (appends StepBudgetMiddleware) succeeds and keeps tools.
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    agent = build_deepagents_agent(
+        model=ToolCallingFakeModel(messages=iter([AIMessage(content="x")])),
+        operations=_note_schema().operations(),
+        outbox=outbox,
+        system_prompt="s",
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+        step_budget=10,
     )
     assert "author" in set(agent.get_graph().nodes["tools"].data.tools_by_name)
 

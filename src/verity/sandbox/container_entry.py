@@ -46,6 +46,7 @@ def main() -> None:
         system_prompt=cycle.system_prompt,
         backend=backend,
         deadline_s=cycle.deadline_s,
+        step_budget=cycle.step_budget,
         extra_tools=resolve_tools(cycle.tool_names),
     )
     log.info("container_entry_run", model=model, ops=[s.name for s in cycle.operations])
