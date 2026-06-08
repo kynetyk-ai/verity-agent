@@ -240,10 +240,15 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   edits never persist; read-only is reserved for gold data). A deterministic stdlib stratified split
   (`tools/harness/dataset.py`). Offline tests + the per-mode policy + a two-cycle run that provisions
   the prior accepted script. *(§9, §12)*
-- **4.2 The two `Submission` gates ⬜** — extend the code runner for the deps decision
-  (`requirements`/network); the cheap **runs-clean** gate (→ `tentative`) and the hard **selection**
-  gate (balanced accuracy on the reserved set, net of complexity, **rejected-log-deflated**, beats
-  the incumbent → `accepted`). *(§11, §12)*
+- **4.2 The two `Submission` gates ✅** — `build_feature_engineering_verifier`: both gates over one
+  cached run of the submitted script (train on agent data, predict the reserved hold-out). The cheap
+  **runs-clean** gate (→ `tentative`) requires a clean exit + a well-formed prediction for every
+  reserved row; the hard **selection** gate (→ `accepted`) scores **balanced accuracy** net of a
+  per-feature complexity penalty, **deflated by the rejected-log** (the trial count), and must beat
+  the incumbent (status from the slice, scores from the verifier's own measurement ledger — so
+  independence holds). The `CodeRunner` gained a `requirements`/`network`/`env` path: pip-install the
+  declared deps into an `exec` tmpfs over outbound network (the no-deps default stays hardened). A
+  `@docker` test installs pandas and scores a real script end to end. *(§11, §12)*
 - **4.3 Harvested `Feature`s + grounding + refine ⬜** — a domain `harvester` hook + the control-plane
   post-propose harvest minting one `Feature` per declared feature; the cheap grounding gate; `refine`
   naming a bad feature. *(§12, §6, §7)*

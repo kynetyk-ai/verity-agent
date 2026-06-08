@@ -43,6 +43,9 @@ __all__ = [
 
 log = get_logger("verity.verifier.code_runner")
 
+# The file name a declared package list is written to inside the work dir (Phase 4 deps).
+_REQUIREMENTS_NAME = "requirements.txt"
+
 
 @dataclass(frozen=True, slots=True)
 class RunRequest:
@@ -52,6 +55,13 @@ class RunRequest:
     ``inputs`` are read-only datasets mounted alongside (name → bytes); the script is expected to
     write its result to ``output_name`` in a writable output dir, whose bytes come back on the
     result. ``timeout_s`` bounds the run.
+
+    ``requirements`` (a ``requirements.txt`` body) and ``network`` support the feature-engineering
+    domain's deps decision (Phase 4): when ``requirements`` is given they are ``pip install``-ed
+    into a writable tmpfs before the script runs, which needs ``network=True`` (outbound enabled).
+    This is a deliberately weaker posture than the default no-network run — pinned versions keep it
+    reproducible (§5.8). ``env`` are extra environment variables for the run (e.g. where the script
+    finds its data). Defaults preserve the original no-network, no-deps behaviour exactly.
     """
 
     code: bytes
@@ -59,6 +69,9 @@ class RunRequest:
     inputs: Mapping[str, bytes] = field(default_factory=dict)
     output_name: str = "result.json"
     timeout_s: float = 30.0
+    requirements: bytes | None = None
+    network: bool = False
+    env: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,11 +147,13 @@ class ContainerCodeRunner:
             for d in (code_dir, data_dir, out_dir):
                 d.mkdir()
             (code_dir / request.entrypoint).write_bytes(request.code)
+            if request.requirements is not None:
+                (code_dir / _REQUIREMENTS_NAME).write_bytes(request.requirements)
             for input_name, blob in request.inputs.items():
                 (data_dir / input_name).write_bytes(blob)
             out_dir.chmod(0o777)  # the non-root container user must be able to write here
 
-            cmd = self._docker_cmd(name, code_dir, data_dir, out_dir, request.entrypoint)
+            cmd = self._docker_cmd(name, code_dir, data_dir, out_dir, request)
             result = await self._run_container(cmd, name, request.timeout_s)
 
             output_path = out_dir / request.output_name
@@ -161,13 +176,19 @@ class ContainerCodeRunner:
             shutil.rmtree(host, ignore_errors=True)
 
     def _docker_cmd(
-        self, name: str, code_dir: Path, data_dir: Path, out_dir: Path, entrypoint: str
+        self, name: str, code_dir: Path, data_dir: Path, out_dir: Path, request: RunRequest
     ) -> list[str]:
-        return [
-            self.docker_bin, "run", "--rm", "--name", name,
-            "--network=none",
+        cmd = [self.docker_bin, "run", "--rm", "--name", name]
+        if not request.network:
+            cmd.append("--network=none")  # the default hostile-input posture (§3.6)
+        # The deps path installs native wheels (e.g. numpy) into the tmpfs and must mmap their
+        # ``.so`` files, so /tmp needs ``exec``; the strict no-deps path keeps the hardened default.
+        tmpfs_opts = f"rw,size={self.tmpfs_size},mode=1777"
+        if request.requirements is not None:
+            tmpfs_opts += ",exec"
+        cmd += [
             "--read-only",
-            f"--tmpfs=/tmp:rw,size={self.tmpfs_size},mode=1777",
+            f"--tmpfs=/tmp:{tmpfs_opts}",
             f"--memory={self.memory}", f"--memory-swap={self.memory}",
             f"--cpus={self.cpus}", f"--pids-limit={self.pids_limit}",
             "--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -177,9 +198,25 @@ class ContainerCodeRunner:
             "-v", f"{out_dir}:/out:rw",
             "-w", "/work",
             "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HOME=/tmp",
-            self.image,
-            "python", f"/work/{entrypoint}",
         ]
+        for key, value in request.env.items():
+            cmd += ["-e", f"{key}={value}"]
+        cmd.append(self.image)
+        cmd += self._run_argv(request.entrypoint, with_deps=request.requirements is not None)
+        return cmd
+
+    @staticmethod
+    def _run_argv(entrypoint: str, *, with_deps: bool) -> list[str]:
+        """The in-container command: a direct ``python`` run, or pip-install-then-run with deps."""
+        if not with_deps:
+            return ["python", f"/work/{entrypoint}"]
+        # Install the declared deps into a writable tmpfs (root is read-only) and run with them on
+        # the path. Needs network=True (set by the caller). Pinned versions keep it reproducible.
+        install = (
+            f"pip install --no-cache-dir --target=/tmp/site -r /work/{_REQUIREMENTS_NAME} "
+            f"&& PYTHONPATH=/tmp/site python /work/{entrypoint}"
+        )
+        return ["sh", "-c", install]
 
     async def _run_container(self, cmd: list[str], name: str, timeout_s: float) -> RunResult:
         proc = await asyncio.create_subprocess_exec(
