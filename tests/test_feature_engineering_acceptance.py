@@ -421,7 +421,7 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     from verity.sandbox.container_driver import DeepAgentsContainerDriver
     from verity.sandbox.registration import build_sandbox
 
-    raw = _subsample(dataset.read_bytes(), per_class=600)
+    raw = _subsample(dataset.read_bytes(), per_class=400)  # small slice → fast per-cycle training
     split = stratified_split(raw, target="class", id_column="id", reserved_fraction=0.5)
 
     domain = build_feature_engineering_domain()
@@ -458,7 +458,13 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
         sandbox_providers=sp, verifier_providers=vp,
     )
     config = TaskConfig(
-        task_id="fe", instructions="Engineer 1-3 features that improve balanced accuracy.",
+        task_id="fe",
+        instructions=(
+            "Engineer 1-3 features that improve balanced accuracy. Be FAST: train one small, "
+            "fixed model (no hyperparameter search, no cross-validation, no big ensembles); your "
+            "edge is the features, not the model. Run the script once to confirm it works, then "
+            "submit — do not keep retraining."
+        ),
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator, sandbox_key="fe", verifier_key="fe",
@@ -471,6 +477,9 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
 
     # A slow agent that exceeds the sandbox timeout is now a skipped cycle, not a crashed run (#21),
     # so run() returns normally; assert on what committed across the cycles.
-    asyncio.run(cp.run("fe", goal="Improve balanced accuracy on the stellar dataset."))
+    asyncio.run(cp.run(
+        "fe",
+        goal="Improve balanced accuracy via feature engineering; keep training fast and simple.",
+    ))
     accepted = store.query_artifacts(type=SUBMISSION, status=ArtifactStatus.ACCEPTED)
     assert accepted, "no accepted submission across the live run"
