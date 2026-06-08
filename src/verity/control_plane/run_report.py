@@ -78,6 +78,7 @@ class CycleInput:
     sandbox_error: str | None = None
     commit: CommitResult | None = None
     timings: Timings = field(default_factory=Timings)
+    agent_telemetry: Mapping[str, Any] | None = None  # tokens / steps / model (5.3b), or None
 
 
 # ----------------------------------------------------------------- the report (machine-readable)
@@ -147,6 +148,7 @@ class CycleReport:
     commit: CommitReport | None
     rationale: str | None
     timings: Timings
+    agent_telemetry: JsonDict | None
 
     def to_dict(self) -> JsonDict:
         return {
@@ -155,6 +157,7 @@ class CycleReport:
             "proposal": self.proposal.to_dict() if self.proposal else None,
             "commit": self.commit.to_dict() if self.commit else None,
             "rationale": self.rationale, "timings": self.timings.to_dict(),
+            "agent_telemetry": self.agent_telemetry,
         }
 
 
@@ -190,7 +193,7 @@ class RunReport:
     policy: JsonDict
     cycles: list[CycleReport]
     summary: RunSummary
-    agent_telemetry: None  # 5.3b slot: tokens / tool-calls / steps, once the driver surfaces them
+    agent_telemetry: JsonDict | None  # run-total tokens / steps / tool-calls (5.3b), or None
 
     def to_dict(self) -> JsonDict:
         return {
@@ -249,6 +252,7 @@ def build_run_report(
             commit=_commit(store, ci.commit),
             rationale=_rationale(rationale, ci.commit),
             timings=ci.timings,
+            agent_telemetry=dict(ci.agent_telemetry) if ci.agent_telemetry is not None else None,
         )
         for i, ci in enumerate(cycles)
     ]
@@ -259,8 +263,22 @@ def build_run_report(
         policy=policy,
         cycles=cycle_reports,
         summary=_summary(store, cycles),
-        agent_telemetry=None,
+        agent_telemetry=_run_telemetry(cycles),
     )
+
+
+def _run_telemetry(cycles: Sequence[CycleInput]) -> JsonDict | None:
+    """Sum the per-cycle agent telemetry into a run total (``None`` if no cycle reported any)."""
+    present = [ci.agent_telemetry for ci in cycles if ci.agent_telemetry is not None]
+    if not present:
+        return None
+    totals: JsonDict = {
+        key: sum(int(t.get(key, 0) or 0) for t in present)
+        for key in ("input_tokens", "output_tokens", "total_tokens", "model_steps", "tool_calls")
+    }
+    models = [t.get("model") for t in present if t.get("model")]
+    totals["model"] = models[-1] if models else None
+    return totals
 
 
 def _proposal(store: Store, commit: CommitResult | None) -> ProposalReport | None:

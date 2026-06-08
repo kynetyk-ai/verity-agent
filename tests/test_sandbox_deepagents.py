@@ -46,6 +46,7 @@ from langchain_core.messages import AIMessage  # noqa: E402
 
 from verity.sandbox.deepagents_driver import (  # noqa: E402
     DeepAgentsInProcessDriver,
+    _extract_telemetry,
     build_deepagents_agent,
 )
 
@@ -221,3 +222,51 @@ def test_live_claude_authors_an_accepted_note(tmp_path: Path) -> None:
     assert result.commit is not None and result.commit.outcome is CommitOutcome.ACCEPTED
     got = store.get_artifact("note-1")
     assert got is not None and got.status is ArtifactStatus.ACCEPTED
+
+
+# --------------------------------------------------------------------------- 5.3b telemetry
+
+
+def test_extract_telemetry_sums_usage_and_counts_steps() -> None:
+    # Two model steps: one with a tool call + usage, one final answer with usage.
+    result = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "author", "args": {}, "id": "c1"}],
+                usage_metadata={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+                response_metadata={"model_name": "claude-x"},
+            ),
+            AIMessage(
+                content="done",
+                usage_metadata={"input_tokens": 130, "output_tokens": 5, "total_tokens": 135},
+                response_metadata={"model_name": "claude-x"},
+            ),
+        ]
+    }
+    telemetry = _extract_telemetry(result)
+    assert telemetry == {
+        "input_tokens": 230, "output_tokens": 25, "total_tokens": 255,
+        "model_steps": 2, "tool_calls": 1, "model": "claude-x",
+    }
+
+
+def test_extract_telemetry_is_null_safe_for_a_usage_less_model() -> None:
+    result = {"messages": [AIMessage(content="hi")]}  # no usage_metadata, no tool calls
+    telemetry = _extract_telemetry(result)
+    assert telemetry["model_steps"] == 1 and telemetry["total_tokens"] == 0
+    assert telemetry["model"] is None  # never assumed
+
+
+def test_telemetry_flows_through_the_loop_into_the_run_report(tmp_path: Path) -> None:
+    # A real in-process Deep Agents run with the fake model writes __telemetry__.json, harvested
+    # onto the envelope and surfaced in the RunReport (tokens 0 with the fake model, steps counted).
+    cp, store = _configure(tmp_path, ToolCallingFakeModel(messages=iter(_author_call("a note"))))
+    _seed_source(store, "src-1")
+    asyncio.run(cp.run_cycle("t1", goal="author a note from src-1"))
+
+    report = cp.run_report("t1")
+    cycle = report.cycles[0]
+    assert cycle.agent_telemetry is not None and cycle.agent_telemetry["model_steps"] >= 1
+    assert report.agent_telemetry is not None  # the run total is populated (no longer a null slot)
+    assert report.agent_telemetry["model_steps"] >= 1
