@@ -101,6 +101,29 @@ class AgentSandbox:
 
     async def serve_context(self, context: ServedContext) -> None:
         self._served = context
+        if context.workspace_objects:
+            self._materialize_objects(context.workspace_objects)
+
+    def _materialize_objects(
+        self, objects: Mapping[str, Mapping[str, bytes]]
+    ) -> None:
+        """Write the control plane's durable refs into the (freshly provisioned) workspace (§9).
+
+        Re-runs every cycle on top of the regenerated workspace, so agent edits never persist; the
+        target role is the control plane's choice (a writable role) — read-only is reserved for gold
+        ``static_contents``. Names may be nested paths within the role.
+        """
+        workspace = self._require_workspace()
+        for role, files in objects.items():
+            role_dir = workspace.path_for(role)
+            for name, data in files.items():
+                dest = role_dir / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+        log.info(
+            "workspace_objects_materialized",
+            roles={role: sorted(files) for role, files in objects.items()},
+        )
 
     async def collect_proposal(self) -> ProposalEnvelope:
         served = self._served

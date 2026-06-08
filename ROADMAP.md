@@ -221,14 +221,34 @@ now, cheap open models later; ADR 0002). Built as two sprints behind one `Sandbo
 - **Exit ✅:** a real agent drives read→propose→gate→commit against the control plane; ephemerality and
   gold-data isolation hold across cycles, in-process and under container isolation.
 
-### Phase 4 — Feature-engineering domain (§12) → MVP ⬜
+### Phase 4 — Feature-engineering domain (§12) → MVP 🚧
 
-The first real discovery run, and the MVP.
+The first real discovery run, and the MVP — the §12 domain on the real Kaggle stellar dataset
+(`feature-engineering-test/`), run for multiple proposal rounds against the live control plane. Two
+settled decisions shape it: the submitted **script trains end-to-end** and the verifier scores it on
+a **reserved hold-out** split from `train.csv` (leakage caught on the reserved set, §13.11); and the
+submission declares a **package list** the runner **pip-installs at run time** (network on; pinned
+versions for reproducibility). Built in sub-phases, each a tested, gate-green PR:
 
-- Real schema (`DatasetVersion` / `Submission` / harvested `Feature`); workspace tools + code-object
-  harvest; the objective gate (the verifier runs the submitted code and scores the trained model on
-  the **reserved verification dataset**, net of complexity, trial-count-deflated); the grounding gate
-  on harvested features; `refine` on a bad feature. *(§12)*
+- **4.1 Domain skeleton + data + object provisioning ✅** — `domains/feature_engineering.py`: the §12
+  schema (`DatasetVersion` root / `Submission` gated `{INCUMBENTS, REJECTED_LOG}` / `Feature` gated)
+  + `submit`/`revises`/`harvest` op signatures + the presence-only shape spec + domain instructions
+  (the script I/O contract). A **durable-object provisioning policy** (`ObjectProvisioningPolicy`,
+  modes `ALL`/`ALL_ACCEPTED`/`LAST_ACCEPTED`) on `TaskConfig`, resolved by the control plane in
+  control-plane-native terms (status/recency, **not** verifier semantics) and materialized into a
+  **writable** role via `ServedContext.workspace_objects` — **re-provisioned every cycle** (agent
+  edits never persist; read-only is reserved for gold data). A deterministic stdlib stratified split
+  (`tools/harness/dataset.py`). Offline tests + the per-mode policy + a two-cycle run that provisions
+  the prior accepted script. *(§9, §12)*
+- **4.2 The two `Submission` gates ⬜** — extend the code runner for the deps decision
+  (`requirements`/network); the cheap **runs-clean** gate (→ `tentative`) and the hard **selection**
+  gate (balanced accuracy on the reserved set, net of complexity, **rejected-log-deflated**, beats
+  the incumbent → `accepted`). *(§11, §12)*
+- **4.3 Harvested `Feature`s + grounding + refine ⬜** — a domain `harvester` hook + the control-plane
+  post-propose harvest minting one `Feature` per declared feature; the cheap grounding gate; `refine`
+  naming a bad feature. *(§12, §6, §7)*
+- **4.4 Live multi-round run + the twelve §13 criteria ⬜** — each §13 criterion as a runnable check;
+  a `@live` container run improving across ≥3 rounds with ≥1 supersession on the real dataset.
 - **Exit:** **all twelve §13 acceptance criteria pass → MVP reached.**
 
 ---

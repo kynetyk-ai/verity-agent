@@ -187,6 +187,9 @@ class ControlPlane:
             system_prompt=assembled.stable_prefix,
             tail=assembled.volatile_tail,
             feedback=feedback,
+            # Durable refs the agent builds on, selected by status/recency only (§9, no verifier
+            # knowledge); re-materialized every cycle into a writable role.
+            workspace_objects=task.config.object_provisioning.materialize(self._store),
         )
         await task.sandbox.serve_context(served)
         return served

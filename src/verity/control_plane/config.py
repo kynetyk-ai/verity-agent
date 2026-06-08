@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from verity.control_plane.commit import ShapeValidator
 from verity.control_plane.registries import (
     GatedTypeRegistry,
+    ObjectProvisioningPolicy,
     RetrievalPolicy,
     SchemaRegistry,
 )
@@ -46,7 +47,10 @@ class TaskConfig:
     ``sandbox_key`` / ``verifier_key`` name the providers to resolve from the port registries
     (:mod:`verity.contracts`), so swapping the harness or verifier is a config change.
     ``shape_validator``
-    realizes the proposal-shape spec the commit path checks at §7.0.
+    realizes the proposal-shape spec the commit path checks at §7.0. ``data_sources`` are host
+    paths the control plane reads into the read-only ``data/`` role (in-process) or the driver
+    bind-mounts (container). ``object_provisioning`` selects durable objects to materialize into the
+    workspace each cycle as references the agent builds on (defaults to ``NONE``).
     """
 
     task_id: str
@@ -60,6 +64,7 @@ class TaskConfig:
     verifier_key: str
     data_sources: tuple[str, ...] = ()
     context_files: tuple[str, ...] = ()
+    object_provisioning: ObjectProvisioningPolicy = field(default_factory=ObjectProvisioningPolicy)
     contract: WorkspaceContract = field(default=WORKSPACE_CONTRACT)
 
     def system_prompt(self) -> str:
