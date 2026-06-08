@@ -1,14 +1,16 @@
-"""The Deep Agents in-process driver (ROADMAP Phase 3).
+"""Deep Agents agent build + the in-process driver (ROADMAP Phase 3).
 
-The **only** module that imports Deep Agents / LangChain (quarantined behind the mypy override). It
-realises a general-purpose coding agent in **YOLO mode** — the full coding toolset plus a
-``run_shell`` execution tool, and **no** permission prompts / human-in-the-loop — whose only
-task-specific inputs come through the control plane (the system prompt, the served context, and the
-operation tools generated from the schema). Isolation, not in-loop gating, is the safety boundary;
-in-process is the wiring/dev harness (the container driver is Phase-3 Sprint 2).
+The Deep Agents / LangChain import is quarantined to this module and
+:mod:`~verity.sandbox.container_entry` (both behind the mypy override). The agent is a general
+coding agent in **YOLO mode** — the full coding toolset plus a ``run_shell`` execution tool, and
+**no** permission prompts / human-in-the-loop — whose only task-specific inputs come through the
+control plane (the system prompt, the served context, and the operation tools generated from the
+schema). Isolation, not in-loop gating, is the safety boundary.
 
-Each domain :class:`~verity.control_plane.registries.OperationSignature` becomes one propose tool
-(name = op name); calling it writes the descriptor to the outbox; the host core harvests and mints
+:func:`build_deepagents_agent` + :func:`run_agent` are the shared build/run used by both the
+**in-process** driver (here) and the **container** entrypoint, so the tool-binding and descriptor
+contract are single-sourced. Each domain ``OperationSignature`` becomes one propose tool (name = op
+name) that writes the descriptor to the outbox; the host core harvests and mints
 (see :mod:`verity.sandbox.descriptor`).
 """
 
@@ -28,12 +30,49 @@ from verity.control_plane.workspace import ProvisionedWorkspace
 from verity.logging import get_logger
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, ProposalDescriptor
 
-__all__ = ["DeepAgentsInProcessDriver"]
+__all__ = ["DeepAgentsInProcessDriver", "build_deepagents_agent", "run_agent"]
 
 log = get_logger("verity.sandbox.deepagents_driver")
 
 _RUN_SHELL_TIMEOUT_S = 1500
 _MAX_TOOL_OUTPUT = 4000
+_DEFAULT_RECURSION_LIMIT = 80
+
+
+def build_deepagents_agent(
+    *,
+    model: Any,
+    operations: tuple[OperationSignature, ...],
+    root: Path,
+    outbox: Path,
+    system_prompt: str,
+) -> Any:
+    """Build the YOLO coding agent: propose-tool-per-operation + ``run_shell``, no HITL.
+
+    Shared by the in-process driver and the container entrypoint. ``root`` is the agent's filesystem
+    backend root; ``outbox`` is where the propose tools write the descriptor.
+    """
+    tools = [_make_propose_tool(sig, outbox) for sig in operations]
+    tools.append(_make_run_shell_tool(root))
+    # The framework is opaque to us: treat the compiled agent as Any so its overloaded `invoke`
+    # bridges cleanly through asyncio.to_thread / a direct call.
+    agent: Any = create_deep_agent(
+        model=model,
+        tools=tools,
+        system_prompt=system_prompt,
+        backend=FilesystemBackend(root_dir=root, virtual_mode=False),
+    )
+    return agent
+
+
+def run_agent(
+    agent: Any, user_message: str, *, recursion_limit: int = _DEFAULT_RECURSION_LIMIT
+) -> None:
+    """Run the agent loop to completion (synchronous)."""
+    agent.invoke(
+        {"messages": [{"role": "user", "content": user_message}]},
+        {"recursion_limit": recursion_limit},
+    )
 
 
 class DeepAgentsInProcessDriver:
@@ -41,10 +80,10 @@ class DeepAgentsInProcessDriver:
 
     YOLO: no ``interrupt_on`` / HITL middleware — the agent runs its tools freely. In-process runs
     untrusted code on the host, so this driver is for the fake-model offline tests and the
-    code-execution-free live smoke; arbitrary-code work belongs in the container driver (Sprint 2).
+    code-execution-free live smoke; arbitrary-code work belongs in the container driver.
     """
 
-    def __init__(self, *, model: Any, recursion_limit: int = 80) -> None:
+    def __init__(self, *, model: Any, recursion_limit: int = _DEFAULT_RECURSION_LIMIT) -> None:
         self._model = model
         self._recursion_limit = recursion_limit
 
@@ -56,22 +95,16 @@ class DeepAgentsInProcessDriver:
         operations: tuple[OperationSignature, ...],
         workspace: ProvisionedWorkspace,
     ) -> None:
-        outbox = workspace.outbox()
-        tools = [_make_propose_tool(sig, outbox) for sig in operations]
-        tools.append(_make_run_shell_tool(workspace.root))
-        # The framework is opaque to us: treat the compiled agent as Any so its overloaded `invoke`
-        # bridges cleanly through asyncio.to_thread.
-        agent: Any = create_deep_agent(
+        agent = build_deepagents_agent(
             model=self._model,
-            tools=tools,
+            operations=operations,
+            root=workspace.root,
+            outbox=workspace.outbox(),
             system_prompt=system_prompt,
-            backend=FilesystemBackend(root_dir=workspace.root, virtual_mode=False),
         )
         log.info("deepagents_run", ops=[s.name for s in operations], root=str(workspace.root))
         await asyncio.to_thread(
-            agent.invoke,
-            {"messages": [{"role": "user", "content": user_message}]},
-            {"recursion_limit": self._recursion_limit},
+            run_agent, agent, user_message, recursion_limit=self._recursion_limit
         )
 
 

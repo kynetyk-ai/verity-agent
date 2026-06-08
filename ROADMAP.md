@@ -189,10 +189,10 @@ the runner shells out to the `docker` CLI rather than taking a Python Docker SDK
 beyond Phase 2's needs (rootless/gVisor/seccomp) and the networked standing-service data plane (#3)
 are tracked as issues, not blockers.
 
-### Phase 3 — Sandbox service (agent runtime + workspace) 🚧
+### Phase 3 — Sandbox service (agent runtime + workspace) ✅
 
 Replace the stub agent with the real sandbox. Framework: **Deep Agents** (provider-agnostic — Claude
-now, cheap open models later; ADR 0002). Run as two sprints behind one `SandboxPort`.
+now, cheap open models later; ADR 0002). Built as two sprints behind one `SandboxPort`.
 
 - **Sprint 1 — in-process Deep Agents sandbox ✅**
   - `verity.sandbox`: a framework-neutral `AgentSandbox` (`SandboxPort`) over the `DefaultLayout`
@@ -206,12 +206,19 @@ now, cheap open models later; ADR 0002). Run as two sprints behind one `SandboxP
     registration line or one new driver — ADR 0002).
   - Offline tests (fake driver + a fake-model Deep Agents run) drive `read→propose→gate→commit` on the
     fake + code domains; a live Claude smoke commits an accepted `Note` end to end.
-- **Sprint 2 — container isolation + cross-cycle exit ⬜**
-  - `DeepAgentsContainerDriver` (hostile-input posture: outbound network for the API, non-root, caps
-    dropped, outbox the only writable mount); full `data_sources` mounting; cross-cycle ephemerality +
-    shape-error/refine **feedback-driven revision**; the §13 exit tests.
-- **Exit:** a real agent drives read→propose→gate→commit against the control plane; ephemerality and
-  gold-data isolation hold across cycles. *(Sprint 1 reaches it in-process; Sprint 2 under isolation.)*
+- **Sprint 2 — container isolation + cross-cycle exit ✅**
+  - `DeepAgentsContainerDriver` runs the loop in a fresh per-cycle container (hostile-input posture:
+    non-root, all caps dropped, `no-new-privileges`, read-only root + tmpfs, mem/CPU/PID limits,
+    timeout-kill) — but with **outbound network** for the model API and the workspace mounted writable,
+    with read-only roles re-mounted ro on top (**physical gold-data isolation**) and `data_sources`
+    mounted ro into `data/`. The container entrypoint reuses the shared agent builders, so a host that
+    only orchestrates containers needs no Deep Agents install (`Dockerfile.sandbox` carries it).
+  - A docker+live integration test commits a `Submission` end to end: the agent **writes and runs
+    code inside the container**, then proposes; the verifier gates it `ACCEPTED`. A cross-cycle test
+    proves feedback-driven correction + ephemerality (a shape-error records nothing, threads back, and
+    the next cycle commits on a freshly regenerated workspace).
+- **Exit ✅:** a real agent drives read→propose→gate→commit against the control plane; ephemerality and
+  gold-data isolation hold across cycles, in-process and under container isolation.
 
 ### Phase 4 — Feature-engineering domain (§12) → MVP ⬜
 

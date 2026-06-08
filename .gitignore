@@ -24,6 +24,9 @@ npm-debug.log*
 /data/
 /store/
 
+# Local task datasets (large; not source) — e.g. the stellar feature-engineering data
+/feature-engineering-test/
+
 # OS / editor
 .DS_Store
 .idea/

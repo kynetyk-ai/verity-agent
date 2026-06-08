@@ -69,6 +69,18 @@ def _author_call(text: str, parent: str = "src-1") -> list[AIMessage]:
     ]
 
 
+def _author_payload(payload: dict[str, Any], parent: str = "src-1") -> list[AIMessage]:
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "author", "args": {"parents": [parent], "payload": payload}, "id": "c"}
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+
+
 def _note_schema() -> SchemaRegistry:
     schema = SchemaRegistry()
     schema.register_type(ArtifactTypeDef(SOURCE, is_root=True))
@@ -150,6 +162,25 @@ def test_full_cycle_through_deepagents_accepts(tmp_path: Path) -> None:
     result = asyncio.run(cp.run_cycle("t1", goal="author a note from src-1"))
 
     assert result.commit is not None and result.commit.outcome is CommitOutcome.ACCEPTED
+    got = store.get_artifact("note-1")
+    assert got is not None and got.status is ArtifactStatus.ACCEPTED
+
+
+def test_cross_cycle_shape_error_then_accept(tmp_path: Path) -> None:
+    # Cycle 1 proposes a Note with no "text" (shape error, records nothing); the correction feeds
+    # back; cycle 2 fixes it on a freshly regenerated workspace and commits. Proves cross-cycle
+    # operation + feedback threading + ephemerality through the real sandbox.
+    messages = _author_payload({"summary": "x"}) + _author_payload({"text": "a kept note"})
+    cp, store = _configure(tmp_path, ToolCallingFakeModel(messages=iter(messages)))
+    _seed_source(store, "src-1")
+
+    first = asyncio.run(cp.run_cycle("t1", goal="author a note"))
+    assert not first.entered_protocol and first.shape_error is not None
+    assert store.get_artifact("note-1") is None  # the malformed proposal recorded nothing
+
+    feedback = f"shape-error: {first.shape_error.message}"
+    second = asyncio.run(cp.run_cycle("t1", goal="author a note", feedback=feedback))
+    assert second.commit is not None and second.commit.outcome is CommitOutcome.ACCEPTED
     got = store.get_artifact("note-1")
     assert got is not None and got.status is ArtifactStatus.ACCEPTED
 

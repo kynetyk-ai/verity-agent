@@ -1,6 +1,6 @@
 # ADR 0002 — The sandbox runtime: Deep Agents, behind a framework-neutral adapter
 
-- **Status:** Accepted — Sprint 1 implemented on `feat/phase3-sandbox`
+- **Status:** Accepted — Sprints 1–2 implemented on `feat/phase3-sandbox`
 - **Date:** 2026-06-08
 - **Affects spec:** §3.4–§3.5 (the sandbox service), §8.2 (the harness-bound tool form). Realizes the
   "sandbox adapter" already anticipated by the §8.2 collapse note in `control_plane/registries.py`.
@@ -85,10 +85,18 @@ trusted core (mint, provenance, harvest, lifecycle) is shared by every present a
   + code domains (fake driver, and a fake-model Deep Agents run); a live Claude smoke commits an
   accepted `Note` end to end. **In-process runs untrusted code on the host**, so it is the wiring/dev
   harness — the live smoke is code-execution-free (the `Note` domain).
-- **Sprint 2 — container + cross-cycle exit.** `DeepAgentsContainerDriver` (the spike's hostile-input
-  posture: outbound network for the API, non-root, caps dropped, outbox the only writable mount), full
-  `data_sources` mounting, cross-cycle ephemerality + shape-error/refine feedback-driven revision, and
-  the §13 exit tests. Safe YOLO execution of arbitrary code lands here.
+- **Sprint 2 (this change) — container + cross-cycle exit.** `DeepAgentsContainerDriver` runs the loop
+  in a fresh per-cycle container (hostile-input posture: non-root host-uid, all caps dropped,
+  `no-new-privileges`, read-only root + tmpfs, mem/CPU/PID limits, timeout-kill) — but with outbound
+  network for the model API and the workspace mounted writable, the read-only roles re-mounted ro on
+  top (physical gold-data isolation) and `data_sources` mounted ro into `data/`. The container
+  entrypoint (`container_entry`) reuses the shared agent builders; a host that only orchestrates
+  containers needs no Deep Agents install (`Dockerfile.sandbox` carries it). Safe YOLO execution of
+  arbitrary code lands here. Validated by a docker+live integration test (agent writes+runs code in
+  the container, proposes a `Submission`, gated `ACCEPTED`) and a cross-cycle feedback/ephemerality
+  test. The **Phase 3 exit** (read→propose→gate→commit by a real agent; ephemerality + gold-data
+  isolation across cycles) is reached — in-process and under isolation. (The twelve §13 acceptance
+  criteria remain Phase 4's finish line.)
 
 ## Consequences
 
