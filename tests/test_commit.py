@@ -18,6 +18,7 @@ from verity.control_plane.commit import (
     ProposerIsGate,
     run_commit,
 )
+from verity.control_plane.store import SqliteStore
 
 T = "Thing"
 
@@ -177,3 +178,26 @@ def test_non_root_artifact_keeps_provenance_to_accept() -> None:
 
 def test_proposer_constant_distinct_from_verifier() -> None:
     assert AGENT != VERIFIER
+
+
+# --------------------------------------------------------------------------- atomicity (5.1)
+
+
+class _FailsOnSetStatus(SqliteStore):
+    """A store whose ``set_status`` always raises — simulates a write failing part-way through."""
+
+    def set_status(self, artifact_id: str, status: ArtifactStatus) -> None:
+        raise RuntimeError("simulated store error mid-commit")
+
+
+def test_a_mid_commit_failure_rolls_back_the_decision_rows() -> None:
+    # A commit records its decisions and sets the terminal status as one unit (ROADMAP 5.1): if the
+    # status write fails after the decisions are recorded, the decisions must roll back too — never
+    # leave decision rows on a still-'proposed' artifact.
+    store = _FailsOnSetStatus()
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
+    with pytest.raises(RuntimeError, match="simulated store error"):
+        _commit(store, "a", result=bundle(ArtifactStatus.ACCEPTED, decision("worth-keeping")))
+
+    assert store.decisions_for("a") == []  # the decision row rolled back with the failed status
+    assert store.get_artifact("a").status is ArtifactStatus.PROPOSED  # untouched

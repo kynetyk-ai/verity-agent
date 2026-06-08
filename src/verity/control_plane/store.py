@@ -21,7 +21,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -192,6 +192,10 @@ class CommitSink(Protocol):
     def link_revision(self, old_id: str, new_id: str) -> None: ...
     def register_schema_version(self, schema: SchemaVersion) -> None: ...
 
+    # one atomic unit spanning several of the writes above (ROADMAP 5.1): a commit's decision rows
+    # and its terminal status land together, or not at all — no partial commit on a mid-path fail.
+    def transaction(self) -> AbstractContextManager[None]: ...
+
 
 # ---------------------------------------------------------------------- sqlite backend
 
@@ -270,6 +274,7 @@ class SqliteStore:
     new_id: IdFactory = field(default=default_id_factory)
     _objects: dict[str, bytes] = field(default_factory=dict, init=False, repr=False)
     _conn: sqlite3.Connection = field(init=False, repr=False)
+    _tx_depth: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # check_same_thread=False: the control plane runs the (sync) commit path in a worker
@@ -287,13 +292,34 @@ class SqliteStore:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
-        """A single atomic unit. Supersession/revision must be atomic with their cause (§6)."""
+        """A single atomic unit, **re-entrant**: when several writes nest under one
+        :meth:`transaction`, only the outermost commits (or rolls back), so a multi-write commit
+        lands all-or-nothing (ROADMAP 5.1). Supersession/revision stay atomic with their cause (§6).
+        """
+        self._tx_depth += 1
+        outermost = self._tx_depth == 1
         try:
             yield self._conn
-            self._conn.commit()
         except Exception:
-            self._conn.rollback()
+            if outermost:
+                self._conn.rollback()
             raise
+        else:
+            if outermost:
+                self._conn.commit()
+        finally:
+            self._tx_depth -= 1
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Run several :class:`CommitSink` writes as one atomic unit (ROADMAP 5.1).
+
+        All of a commit's decision rows + its terminal status write land together, or none do — a
+        failure part-way through (a failed provenance check, an illegal transition, a store error)
+        rolls the whole thing back instead of leaving decisions on a still-``proposed`` artifact.
+        """
+        with self._tx():
+            yield
 
     # -- (de)serialization --------------------------------------------------------
 
