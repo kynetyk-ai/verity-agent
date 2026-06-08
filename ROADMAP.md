@@ -4,11 +4,13 @@ The living path from an empty repo to **MVP**. This is the canonical answer to *
 what's next?"* — `README.md` and `CLAUDE.md` point here.
 
 **MVP = spec v1.** The feature-engineering domain (spec §12) runs end-to-end and **all twelve §13
-acceptance criteria pass**. That is the finish line for this roadmap (Phase 4).
+acceptance criteria pass** — the MVP finish line (Phase 4). The arc then continues into the
+**Post-MVP roadmap** (Phases 5–7) below.
 
 > **Status: MVP reached ✅** — Phases 0–4 are done. All twelve §13 criteria pass as runnable checks
 > (`tests/test_feature_engineering_acceptance.py`); a `@live` run drives real Claude proposals scored
-> in a container on the stellar dataset. What remains is the post-MVP backlog below.
+> in a container on the stellar dataset. Next: the Post-MVP roadmap (reliability & observability →
+> open models → service split) at the end of this file.
 
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
 every invariant — and prove it works against *bespoke, throwaway* agent/workspace and verifier
@@ -43,8 +45,10 @@ These hold in every phase (see `CLAUDE.md` → *Coding habits*):
 
 - **uv** for everything; **structured logging from day one**; **tests alongside the code**.
 - **Branch + PR** for all changes; **never a PR on buggy or embarrassing code.**
-- **Container-per-service readiness** — control plane, sandbox, and verifier each build into their
-  own image; nothing defeats that portability.
+- **Container-per-service readiness** — the architecture keeps each service independently imageable
+  (async ports, no shared mutable state). Today the **sandbox** ships its own image; the control
+  plane and verifier run in-process and are imaged when the service split lands (Post-MVP Phase 7,
+  issues #3 / #10).
 - **Spec-traceability** — implementation decisions cite the spec section (`§N`) they realize; the
   vendored `spec/` tree is authoritative.
 - **Invariants are property tests**, not prose aspirations (spec §5).
@@ -271,13 +275,72 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
 
 ---
 
-## Explicitly deferred past MVP
+## Post-MVP roadmap
 
-Designed-for, not built before MVP (spec §16 seams). Each becomes a tracked issue/epic when its time
-comes:
+MVP (spec v1) is reached; this is the path beyond, **sequenced by dependency**. Reliability and
+observability come first so the later phases are measurable and debuggable; the open-model payoff
+follows; the full service split is last and largest. Each sub-item becomes a tracked GitHub issue as
+it activates (roadmap hygiene).
+
+### Phase 5 — Reliability & observability ⬜
+
+Harden the loop and make it measurable before scaling models or splitting services.
+
+- **5.1 Error-handling hardening** — extend #21's *degrade-don't-crash* discipline everywhere: typed
+  errors at every service boundary, retries / backoff on transient model + Docker failures, explicit
+  partial-failure semantics in harvest/commit, and "a failed step is recorded, not fatal" as a stated
+  invariant.
+- **5.2 Agent-harness hardening** — enable **context compaction / summarization** in the Deep Agents
+  loop (verify the middleware API), bound tool-call / step budgets, and add a **soft-deadline signal**:
+  a pre-model-step hook injects "≈Xs of Ys remaining — finalize and submit now," so a long cycle yields
+  a rushed-but-real proposal instead of being killed. The hard sandbox timeout stays the backstop; the
+  control plane supplies the budget, the harness injects it. Complements #21's graceful skip.
+- **5.3 Metrics foundation — the store-derived `RunReport`** — the store *is* the audit record, so most
+  of the panel is derivable for free: per-cycle outcomes (accept / reject / revise / refine /
+  sandbox-fail), score trajectory + supersessions, refine-cap hits, trial counts, object-store growth,
+  and cycle / gate / sandbox latencies — plus agent-loop telemetry (tokens, tool calls, wall-time,
+  model, steps) carried back from the sandbox. Live emission + a dashboard come later (7.3).
+
+### Phase 6 — Open / local models ⬜ *(the thesis payoff)*
+
+"Good proposals from cheap models" is the point of the whole approach — make it real.
+
+- **6.1 Local model via vllm-mlx** — stand up **vllm-mlx** (OpenAI-compatible server, Apple-Silicon
+  Metal backend) and a `deepagents-local` sandbox config; solve container→host networking
+  (`host.docker.internal`). Keep the seam **OpenAI-compatible** so Ollama / other backends swap in —
+  vLLM on Apple Silicon is younger than Ollama, so don't couple to it. Leans on 5.2 compaction (small
+  local context windows make it a hard dependency, not a nicety).
+- **6.2 Eval / benchmarking harness** — compare **proposal quality + cost + latency** across models
+  (cheap-local vs frontier) on the same task, using the 5.3 RunReport metrics. The instrument that
+  tells us whether the thesis actually holds.
+
+### Phase 7 — Service split & full containerization ⬜
+
+The biggest, most deferrable: make each service independently deployable.
+
+- **7.1 Service entrypoints + images** — `__main__` / server entrypoints + Dockerfiles for the
+  **control plane** and **verifier** (today only the sandbox is imaged), so each builds into its own
+  image even before the wire exists.
+- **7.2 Networked transport** — a wire serialization + transport adapter so the async ports cross a
+  network instead of an in-process call (they were built for exactly this): the standing
+  control-plane data plane (**#3**) and the networked verifier (**#10**). The four-service split
+  (workspace promoted out of the sandbox) lands here.
+- **7.3 Live telemetry + panel** — OpenTelemetry / Prometheus emission from each service and a metrics
+  dashboard over the 5.3 RunReport signals.
+
+### Woven through Phases 6–7
+
+- **Code-runner hardening / generalization** — a declarative runner config (image, network policy,
+  resource + output caps, mount layout, deps strategy), an offline / pinned-wheels install option to
+  reclaim reproducibility, and a cleaner validity-rung vs scoring-rung split. Revisits the accepted
+  network-on tradeoff.
+
+### Further out / seamed (spec §16)
+
+Designed-for, not yet scheduled; each becomes an issue/epic when its time comes:
 
 - Multi-tenancy and authentication on the control plane.
 - Parallel agents against one task (diversity / race — N sandboxes → 1 control plane).
-- The four-service split (workspace promoted out of the sandbox).
+- Secrets / egress policy once local + networked services land.
 - True schema migration / regime transition (spec §15).
 - The soft-gate consulting domain (spec §14).
