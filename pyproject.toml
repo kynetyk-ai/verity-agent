@@ -9,6 +9,12 @@ dependencies = [
     "structlog>=24.1",
 ]
 
+[project.optional-dependencies]
+sandbox = [
+    "deepagents>=0.6.8,<0.7",
+    "langchain-openai>=0.2",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
@@ -36,10 +42,17 @@ python_version = "3.12"
 strict = true
 files = ["src"]
 
+# The Deep Agents sandbox driver imports an untyped third-party stack; it is quarantined to one
+# module (src/verity/sandbox/deepagents_driver.py) and the framework-neutral core stays strict-typed.
+[[tool.mypy.overrides]]
+module = ["deepagents.*", "langchain.*", "langchain_core.*", "langchain_openai.*", "langgraph.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra"
 markers = [
     "docker: integration test requiring a reachable Docker daemon (auto-skipped when absent)",
+    "live: integration test requiring a live model API key (auto-skipped when absent)",
 ]

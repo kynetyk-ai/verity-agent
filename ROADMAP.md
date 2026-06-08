@@ -189,18 +189,29 @@ the runner shells out to the `docker` CLI rather than taking a Python Docker SDK
 beyond Phase 2's needs (rootless/gVisor/seccomp) and the networked standing-service data plane (#3)
 are tracked as issues, not blockers.
 
-### Phase 3 — Sandbox service (agent runtime + workspace) ⬜
+### Phase 3 — Sandbox service (agent runtime + workspace) 🚧
 
-Replace the stub agent with the real sandbox.
+Replace the stub agent with the real sandbox. Framework: **Deep Agents** (provider-agnostic — Claude
+now, cheap open models later; ADR 0002). Run as two sprints behind one `SandboxPort`.
 
-- Open-source agent loop + LLM client; ephemeral workspace provisioned to the workspace contract;
-  the outbox; per-cycle workspace regeneration + chat flush; read-only data/context mounts; never
-  contacts the verifier. *(§3.5, §10)*
-- **Harness-bound tools.** This is where the executable form of a tool lands — the sandbox adapter
-  binds each domain operation (typed in the schema registry, §8.1) to its framework's native tool
-  model (the control plane carries no tool registry; see Phase 1.2). Parallel to `WorkspaceLayout`.
+- **Sprint 1 — in-process Deep Agents sandbox ✅**
+  - `verity.sandbox`: a framework-neutral `AgentSandbox` (`SandboxPort`) over the `DefaultLayout`
+    workspace + a `SandboxDriver` seam; the Deep Agents driver is the one module importing the
+    framework. The agent is a **general-purpose coding agent in YOLO mode** (full coding toolset +
+    `run_shell`, no permission prompts); all project steer comes through the control plane. *(§3.5)*
+  - **Harness-bound tools.** The sandbox adapter binds each domain `OperationSignature` (§8.1) to a
+    propose tool; the agent writes a **proposal descriptor** to the outbox and the trusted host
+    harvests + mints the typed `Artifact`+`Operation` (so it can't forge ids/lineage). Parallel to
+    `WorkspaceLayout`. **Additional sandbox configs are additive** (a new model/driver/framework is a
+    registration line or one new driver — ADR 0002).
+  - Offline tests (fake driver + a fake-model Deep Agents run) drive `read→propose→gate→commit` on the
+    fake + code domains; a live Claude smoke commits an accepted `Note` end to end.
+- **Sprint 2 — container isolation + cross-cycle exit ⬜**
+  - `DeepAgentsContainerDriver` (hostile-input posture: outbound network for the API, non-root, caps
+    dropped, outbox the only writable mount); full `data_sources` mounting; cross-cycle ephemerality +
+    shape-error/refine **feedback-driven revision**; the §13 exit tests.
 - **Exit:** a real agent drives read→propose→gate→commit against the control plane; ephemerality and
-  gold-data isolation hold across cycles.
+  gold-data isolation hold across cycles. *(Sprint 1 reaches it in-process; Sprint 2 under isolation.)*
 
 ### Phase 4 — Feature-engineering domain (§12) → MVP ⬜
 
