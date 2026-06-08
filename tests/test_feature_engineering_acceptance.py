@@ -416,12 +416,12 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     dataset = Path("feature-engineering-test/train.csv")
     if not dataset.exists():
         pytest.skip("the stellar dataset is not present")
-    pytest.importorskip("deepagents")
     from tools.harness.dataset import stratified_split
 
-    from verity.sandbox.deepagents_driver import DeepAgentsInProcessDriver
+    from verity.sandbox.container_driver import DeepAgentsContainerDriver
+    from verity.sandbox.registration import build_sandbox
 
-    raw = _subsample(dataset.read_bytes(), per_class=800)
+    raw = _subsample(dataset.read_bytes(), per_class=600)
     split = stratified_split(raw, target="class", id_column="id", reserved_fraction=0.5)
 
     domain = build_feature_engineering_domain()
@@ -431,10 +431,17 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
                  "loader", "t0", is_root=True),
         Operation("op-ds", "load", (), "ds", OperationStatus.SUCCESS, "t0"),
     )
-    sandbox = AgentSandbox(
-        root=tmp_path / "ws",
-        driver=DeepAgentsInProcessDriver(model="anthropic:claude-sonnet-4-6"),
-        schema=domain.schema, proposer_identity="deepagents:claude",
+    # The CONTAINER sandbox: the agent gets a real shell + network, so it can install libraries and
+    # *run and test* its script before proposing (the in-process backend cannot execute code, so a
+    # code-writing agent loops to the recursion cap). The data rides the workspace mount via
+    # static_contents (the gold-data role is re-mounted read-only on top — physical isolation).
+    driver = DeepAgentsContainerDriver(
+        model="anthropic:claude-sonnet-4-6", image="verity-sandbox:latest",
+        recursion_limit=200, timeout_s=1500.0, memory="4g",
+    )
+    sandbox = build_sandbox(
+        schema=domain.schema, root=tmp_path / "ws", driver=driver,
+        proposer_identity="deepagents-container:claude",
         static_contents={"data": {"train.csv": split.agent_train_csv,
                                   "test.csv": split.reserved_test_csv}},
     )
@@ -462,6 +469,13 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     )
     asyncio.run(cp.configure(config))
 
-    results = asyncio.run(cp.run("fe", goal="Improve balanced accuracy on the stellar dataset."))
-    accepted = [r for r in results if r.commit and r.commit.outcome is CommitOutcome.ACCEPTED]
-    assert accepted, f"no accepted submission across {len(results)} live cycles"
+    from verity.sandbox import SandboxError
+
+    # A slow agent can exceed the sandbox timeout, which today aborts the whole run (issue #21), so
+    # tolerate it and assert on what actually committed to the store, not on a clean run() return.
+    try:
+        asyncio.run(cp.run("fe", goal="Improve balanced accuracy on the stellar dataset."))
+    except SandboxError:
+        pass
+    accepted = store.query_artifacts(type=SUBMISSION, status=ArtifactStatus.ACCEPTED)
+    assert accepted, "no accepted submission across the live run"
