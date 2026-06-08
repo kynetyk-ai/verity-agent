@@ -16,6 +16,7 @@ npm-debug.log*
 # Env / secrets
 .env
 .env.*
+!.env.example
 
 # Durable state (store / object-blobs) — not source
 *.sqlite
