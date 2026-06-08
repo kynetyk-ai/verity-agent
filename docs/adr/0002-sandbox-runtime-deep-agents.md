@@ -51,9 +51,12 @@ also makes in-process and container isolation share identical host-side code.
   `DefaultLayout`, harvest/split/mint, envelope assembly. Imports no framework; strict-typed.
 - A **`SandboxDriver`** seam: "run the agent loop until a descriptor lands in the outbox," returns
   nothing.
-- A **Deep Agents driver** (`DeepAgentsInProcessDriver`): the one module importing
-  deepagents/langchain. Generates **one propose tool per `OperationSignature`** plus the general
-  coding toolset + a `run_shell` execution tool, with **no `interrupt_on`/HITL** (YOLO).
+- A **Deep Agents driver** (`DeepAgentsInProcessDriver` / container entrypoint): the modules importing
+  deepagents/langchain. Generate **one propose tool per `OperationSignature`** alongside Deep Agents'
+  **native** coding tools (file ops, planning, subagents, and the backend's shell `execute`), with
+  **no `interrupt_on`/HITL** (YOLO). Shell execution is the backend's native `execute` — the container
+  uses a shell-capable `LocalShellBackend` (execution in the isolated container); the in-process
+  driver uses a plain `FilesystemBackend` (file tools only; it must not run untrusted code on the host).
 
 ### (c) Harness-bound tools (realizes §8.2)
 

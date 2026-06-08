@@ -40,10 +40,14 @@ from verity.sandbox import AgentSandbox
 
 pytest.importorskip("deepagents")
 
+from deepagents.backends.filesystem import FilesystemBackend  # noqa: E402
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel  # noqa: E402
 from langchain_core.messages import AIMessage  # noqa: E402
 
-from verity.sandbox.deepagents_driver import DeepAgentsInProcessDriver  # noqa: E402
+from verity.sandbox.deepagents_driver import (  # noqa: E402
+    DeepAgentsInProcessDriver,
+    build_deepagents_agent,
+)
 
 
 class ToolCallingFakeModel(GenericFakeChatModel):
@@ -87,6 +91,26 @@ def _note_schema() -> SchemaRegistry:
     schema.register_type(ArtifactTypeDef(NOTE))
     schema.register_operation(OperationSignature("author", inputs=(SOURCE,), output=NOTE))
     return schema
+
+
+def test_agent_has_native_tools_and_no_custom_run_shell(tmp_path: Path) -> None:
+    # The agent gets Deep Agents' native coding tools (file ops + execute) plus the propose tool —
+    # and NOT a bespoke run_shell (cleanup: shell execution is the backend's `execute`).
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    fake = ToolCallingFakeModel(messages=iter([AIMessage(content="x")]))
+    agent = build_deepagents_agent(
+        model=fake,
+        operations=_note_schema().operations(),
+        outbox=outbox,
+        system_prompt="s",
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+    )
+    tools = set(agent.get_graph().nodes["tools"].data.tools_by_name)
+
+    assert "run_shell" not in tools  # removed in favour of the backend's native execute
+    assert "author" in tools  # the generated propose tool (the typed output seam)
+    assert {"read_file", "write_file", "edit_file", "ls", "glob", "grep", "execute"} <= tools
 
 
 def test_fake_model_drives_the_generated_propose_tool(tmp_path: Path) -> None:

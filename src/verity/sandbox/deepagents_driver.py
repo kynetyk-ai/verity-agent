@@ -2,22 +2,25 @@
 
 The Deep Agents / LangChain import is quarantined to this module and
 :mod:`~verity.sandbox.container_entry` (both behind the mypy override). The agent is a general
-coding agent in **YOLO mode** — the full coding toolset plus a ``run_shell`` execution tool, and
-**no** permission prompts / human-in-the-loop — whose only task-specific inputs come through the
-control plane (the system prompt, the served context, and the operation tools generated from the
-schema). Isolation, not in-loop gating, is the safety boundary.
+coding agent in **YOLO mode** — Deep Agents' native coding toolset (file ops + ``execute`` shell +
+planning + subagents), **no** permission prompts / human-in-the-loop, plus the generated propose
+tools — whose only task-specific inputs come through the control plane (the system prompt, the
+served context, and the operations from the schema). Isolation, not in-loop gating, is the boundary.
 
-:func:`build_deepagents_agent` + :func:`run_agent` are the shared build/run used by both the
-**in-process** driver (here) and the **container** entrypoint, so the tool-binding and descriptor
-contract are single-sourced. Each domain ``OperationSignature`` becomes one propose tool (name = op
-name) that writes the descriptor to the outbox; the host core harvests and mints
-(see :mod:`verity.sandbox.descriptor`).
+Shell execution is the **backend's** native ``execute``: the container entrypoint uses a
+shell-capable backend (``LocalShellBackend``) so ``execute`` runs code in the isolated container.
+The in-process driver uses a plain ``FilesystemBackend`` (file tools only — it is the dev/test
+harness and must not run untrusted code on the host).
+
+:func:`build_deepagents_agent` + :func:`run_agent` are the shared build/run used by both drivers, so
+the tool-binding and descriptor contract are single-sourced. Each domain ``OperationSignature``
+becomes one propose tool (name = op name) that writes the descriptor to the outbox; the host core
+harvests and mints (see :mod:`verity.sandbox.descriptor`).
 """
 
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -34,8 +37,6 @@ __all__ = ["DeepAgentsInProcessDriver", "build_deepagents_agent", "run_agent"]
 
 log = get_logger("verity.sandbox.deepagents_driver")
 
-_RUN_SHELL_TIMEOUT_S = 1500
-_MAX_TOOL_OUTPUT = 4000
 _DEFAULT_RECURSION_LIMIT = 80
 
 
@@ -43,24 +44,24 @@ def build_deepagents_agent(
     *,
     model: Any,
     operations: tuple[OperationSignature, ...],
-    root: Path,
     outbox: Path,
     system_prompt: str,
+    backend: Any,
 ) -> Any:
-    """Build the YOLO coding agent: propose-tool-per-operation + ``run_shell``, no HITL.
+    """Build the YOLO coding agent: Deep Agents' native tools + a propose tool per operation.
 
-    Shared by the in-process driver and the container entrypoint. ``root`` is the agent's filesystem
-    backend root; ``outbox`` is where the propose tools write the descriptor.
+    ``backend`` decides the coding capability: a shell-capable backend (``LocalShellBackend``) gives
+    a working ``execute``; a plain ``FilesystemBackend`` gives file tools only. ``outbox`` is where
+    the propose tools write the descriptor.
     """
     tools = [_make_propose_tool(sig, outbox) for sig in operations]
-    tools.append(_make_run_shell_tool(root))
     # The framework is opaque to us: treat the compiled agent as Any so its overloaded `invoke`
     # bridges cleanly through asyncio.to_thread / a direct call.
     agent: Any = create_deep_agent(
         model=model,
         tools=tools,
         system_prompt=system_prompt,
-        backend=FilesystemBackend(root_dir=root, virtual_mode=False),
+        backend=backend,
     )
     return agent
 
@@ -78,9 +79,10 @@ def run_agent(
 class DeepAgentsInProcessDriver:
     """Runs the Deep Agents loop in this process (tests/dev). ``model`` is a provider string/model.
 
-    YOLO: no ``interrupt_on`` / HITL middleware — the agent runs its tools freely. In-process runs
-    untrusted code on the host, so this driver is for the fake-model offline tests and the
-    code-execution-free live smoke; arbitrary-code work belongs in the container driver.
+    YOLO: no ``interrupt_on`` / HITL. Uses a plain ``FilesystemBackend`` (file tools, **no**
+    working ``execute``) — in-process must not run untrusted code on the host, so this driver is for
+    the fake-model offline tests and the code-execution-free live smoke; arbitrary-code work belongs
+    in the container driver.
     """
 
     def __init__(self, *, model: Any, recursion_limit: int = _DEFAULT_RECURSION_LIMIT) -> None:
@@ -95,12 +97,13 @@ class DeepAgentsInProcessDriver:
         operations: tuple[OperationSignature, ...],
         workspace: ProvisionedWorkspace,
     ) -> None:
+        backend = FilesystemBackend(root_dir=workspace.root, virtual_mode=False)
         agent = build_deepagents_agent(
             model=self._model,
             operations=operations,
-            root=workspace.root,
             outbox=workspace.outbox(),
             system_prompt=system_prompt,
+            backend=backend,
         )
         log.info("deepagents_run", ops=[s.name for s in operations], root=str(workspace.root))
         await asyncio.to_thread(
@@ -135,32 +138,3 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
         f"    rationale: brief note on how/why (audit trail; never shown to the verifier)."
     )
     return propose
-
-
-def _make_run_shell_tool(root: Path) -> Callable[[str], str]:
-    """The general-purpose code-execution tool (YOLO). Runs in the workspace; output truncated."""
-
-    def run_shell(command: str) -> str:
-        """Run a shell command in the workspace to inspect data or run code.
-
-        Args:
-            command: the shell command to execute.
-        """
-        try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-                timeout=_RUN_SHELL_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            return f"TIMEOUT after {_RUN_SHELL_TIMEOUT_S}s"
-        out = (proc.stdout or "") + (f"\n[stderr]\n{proc.stderr}" if proc.stderr else "")
-        if len(out) > _MAX_TOOL_OUTPUT:
-            half = _MAX_TOOL_OUTPUT // 2
-            out = out[:half] + "\n...[truncated]...\n" + out[-half:]
-        return f"exit={proc.returncode}\n{out}"
-
-    return run_shell

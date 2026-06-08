@@ -133,9 +133,9 @@ def test_container_sandbox_commits_a_submission_end_to_end(tmp_path: Path) -> No
     config = TaskConfig(
         task_id="t1",
         instructions=(
-            "Write a Python script submission.py to outbox/ that prints 'ok' (you may run it with "
-            "run_shell to check), then submit it as a Submission with entrypoint submission.py, "
-            "using dataset id 'ds' as the parent."
+            "Write submission.py to outbox/ that prints 'ok' (run it to check), then "
+            "submit it as a Submission with entrypoint submission.py, using dataset id 'ds' as the "
+            "parent."
         ),
         domain_instructions="a Submission names an entrypoint script written to outbox/",
         schema=domain.schema,

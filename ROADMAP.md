@@ -197,8 +197,9 @@ now, cheap open models later; ADR 0002). Built as two sprints behind one `Sandbo
 - **Sprint 1 — in-process Deep Agents sandbox ✅**
   - `verity.sandbox`: a framework-neutral `AgentSandbox` (`SandboxPort`) over the `DefaultLayout`
     workspace + a `SandboxDriver` seam; the Deep Agents driver is the one module importing the
-    framework. The agent is a **general-purpose coding agent in YOLO mode** (full coding toolset +
-    `run_shell`, no permission prompts); all project steer comes through the control plane. *(§3.5)*
+    framework. The agent is a **general-purpose coding agent in YOLO mode** (Deep Agents' native
+    coding tools incl. shell `execute`, no permission prompts); steer comes via the control plane.
+    *(§3.5)*
   - **Harness-bound tools.** The sandbox adapter binds each domain `OperationSignature` (§8.1) to a
     propose tool; the agent writes a **proposal descriptor** to the outbox and the trusted host
     harvests + mints the typed `Artifact`+`Operation` (so it can't forge ids/lineage). Parallel to
