@@ -65,8 +65,22 @@ Non-negotiable working norms for this repo:
   - **Structured logging from day one** — every service logs; no `print`-and-hope.
   - **Tests written alongside the code** — good coverage as we go, not bolted on at the end.
 - **Always work on a branch.** Never commit directly to `main`; branch, then open a PR.
+- **The unit of work for a sprint is a commit, not a PR.** Land each sprint as its own focused,
+  green commit on the working branch; a single PR then carries several related sprints. Prefer
+  **fewer, meaningful PRs** over one-PR-per-sprint churn. **Always align before issuing a PR** —
+  confirm the scope and timing with the user rather than opening one unprompted.
 - **Never open a PR on buggy or embarrassing code.** It runs, it's tested, and it's clean before it
   goes up for review. A PR is a finished thought, not a work-in-progress dump.
+- **Keep the error-handling bar the hardening pass set (Phase 5.1).** These are now defaults, not
+  one-off work:
+  - **Typed errors wherever failure is predictable** — every service/IO boundary surfaces a
+    domain-specific error, never a raw `OSError`/`KeyError` escaping to abort a run. Distinguish
+    *recoverable* (degrade-don't-crash: record the failed cycle, feed it back, continue) from *misuse*
+    (fail fast and loud).
+  - **Retry transient external calls** with bounded backoff (the shared `retry_async` /
+    `RetryPolicy`), and classify what's transient vs. fatal explicitly.
+  - **"A failed step is recorded, not fatal"** stays an invariant — assert it with property tests, not
+    just examples. Mutations stay atomic (commit-path `transaction()`).
 
 ## Status
 
