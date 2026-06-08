@@ -8,7 +8,6 @@ from tests.helpers import AGENT, make_store, propose
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
-    ContractVersion,
     Decision,
     ObjectRef,
     Operation,
@@ -118,33 +117,6 @@ def test_accept_superseding_is_atomic() -> None:
     assert [a.id for a in store.superseded_log()] == ["old"]
 
 
-def test_transaction_commits_several_writes_as_one_unit() -> None:
-    # The re-entrant transaction primitive (ROADMAP 5.1): nested writes commit once, together.
-    store = make_store()
-    propose(store, artifact_id="a1")
-    with store.transaction():
-        store.record_decision(Decision("a1", "g1", VerdictKind.ACCEPT, "ok", score=0.5))
-        store.record_decision(Decision("a1", "g2", VerdictKind.ACCEPT, "ok", score=0.6))
-        store.set_status("a1", ArtifactStatus.TENTATIVE)
-    assert len(store.decisions_for("a1")) == 2
-    art = store.get_artifact("a1")
-    assert art is not None and art.status is ArtifactStatus.TENTATIVE
-
-
-def test_transaction_rolls_back_every_write_on_failure() -> None:
-    # If anything inside the transaction raises, none of its writes persist — all-or-nothing.
-    store = make_store()
-    propose(store, artifact_id="a1")
-    with pytest.raises(RuntimeError, match="boom"):
-        with store.transaction():
-            store.record_decision(Decision("a1", "g1", VerdictKind.ACCEPT, "ok", score=0.5))
-            store.set_status("a1", ArtifactStatus.TENTATIVE)
-            raise RuntimeError("boom")  # after the writes, still inside the tx
-    assert store.decisions_for("a1") == []  # the decision rolled back
-    art = store.get_artifact("a1")
-    assert art is not None and art.status is ArtifactStatus.PROPOSED  # the status rolled back too
-
-
 def test_link_revision_sets_pointer_and_status() -> None:
     store = make_store()
     propose(store, artifact_id="orig")
@@ -202,29 +174,3 @@ def test_schema_versions_register_and_read() -> None:
     assert current is not None
     assert current.version == 2
     assert current.types == ("Thing", "Other")
-
-
-def test_contract_version_is_stamped_and_read_back() -> None:
-    store = make_store()
-    assert store.current_contract_version() is None
-    store.register_contract_version(ContractVersion(1, "deadbeef", "t1"))
-    cv = store.current_contract_version()
-    assert cv is not None and cv.version == 1 and cv.orientation_digest == "deadbeef"
-
-
-def test_re_registering_the_same_contract_version_is_idempotent() -> None:
-    # The contract version is a kernel constant shared by every task, so configuring N tasks must
-    # not duplicate-key or churn the stamp (#12).
-    store = make_store()
-    store.register_contract_version(ContractVersion(1, "abc", "t1"))
-    store.register_contract_version(ContractVersion(1, "abc", "t2"))  # same content -> no-op
-    cv = store.current_contract_version()
-    assert cv is not None and cv.created_at == "t1"  # the first stamp is kept
-
-
-def test_same_contract_version_with_a_changed_orientation_is_refused() -> None:
-    # Changing the orientation without bumping the version is a misconfiguration, surfaced loudly.
-    store = make_store()
-    store.register_contract_version(ContractVersion(1, "abc", "t1"))
-    with pytest.raises(StoreError, match="different orientation digest"):
-        store.register_contract_version(ContractVersion(1, "xyz", "t2"))

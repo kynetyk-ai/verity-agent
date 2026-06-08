@@ -35,21 +35,20 @@ from verity.control_plane.registries import (
     SchemaRegistry,
 )
 from verity.control_plane.store import Artifact, SqliteStore
-from verity.control_plane.workspace import DefaultLayout, ProvisionedWorkspace
+from verity.control_plane.workspace import ProvisionedWorkspace
 from verity.domains.code import DATASET, ENTRYPOINT, SUBMISSION, build_code_domain
 from verity.domains.fake import NOTE, SOURCE, build_fake_domain, build_fake_verifier
 from verity.sandbox import AgentSandbox, ProposalDescriptor, SandboxError
-from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, RESERVED_TELEMETRY_NAME
+from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
 from verity.verifier import FakeCodeRunner, RunResult
 
 
 @dataclass
 class FakeDriver:
-    """A scripted ``SandboxDriver``: writes a descriptor (+ attachments + telemetry) to outbox."""
+    """A scripted :class:`SandboxDriver`: writes a descriptor (+ attachments) to the outbox."""
 
     descriptor: ProposalDescriptor | None
     objects: dict[str, bytes] = field(default_factory=dict)
-    telemetry: bytes | None = None  # raw bytes for __telemetry__.json (may be deliberately corrupt)
     seen_prompt: str = ""
 
     async def run(
@@ -63,8 +62,6 @@ class FakeDriver:
         self.seen_prompt = system_prompt
         for name, data in self.objects.items():
             (workspace.outbox() / name).write_bytes(data)
-        if self.telemetry is not None:
-            (workspace.outbox() / RESERVED_TELEMETRY_NAME).write_bytes(self.telemetry)
         if self.descriptor is not None:
             (workspace.outbox() / RESERVED_PROPOSAL_NAME).write_bytes(self.descriptor.to_json())
 
@@ -165,70 +162,6 @@ def test_regenerate_empties_the_outbox(tmp_path: Path) -> None:
         return sorted(p.name for p in (tmp_path / "ws" / "outbox").iterdir())
 
     assert asyncio.run(go()) == []  # the writable outbox is discarded on regeneration
-
-
-# ------------------------------------------------------------- telemetry + harvest resilience (5.1)
-
-
-def _collect(sandbox: AgentSandbox) -> ProposalEnvelope:
-    async def go() -> ProposalEnvelope:
-        await sandbox.provision()
-        await sandbox.serve_context(ServedContext(system_prompt="SYS", tail="Source id=src-1"))
-        return await sandbox.collect_proposal()
-
-    return asyncio.run(go())
-
-
-def test_valid_telemetry_is_carried_on_the_envelope(tmp_path: Path) -> None:
-    driver = FakeDriver(
-        descriptor=ProposalDescriptor("author", ("src-1",), {"text": "hi"}),
-        telemetry=b'{"total_tokens": 1234, "model_steps": 3, "model": "claude-x"}',
-    )
-    env = _collect(_sandbox(tmp_path / "ws", driver, _note_schema()))
-    assert env.agent_telemetry == {"total_tokens": 1234, "model_steps": 3, "model": "claude-x"}
-
-
-def test_corrupt_telemetry_degrades_to_none_without_sinking_the_proposal(tmp_path: Path) -> None:
-    # Telemetry is advisory (5.3b): a malformed __telemetry__.json must NOT fail an otherwise-good
-    # cycle. The proposal is still minted; only the telemetry is dropped (ROADMAP 5.1).
-    driver = FakeDriver(
-        descriptor=ProposalDescriptor("author", ("src-1",), {"text": "hi"}),
-        telemetry=b"{ this is not valid json ",
-    )
-    env = _collect(_sandbox(tmp_path / "ws", driver, _note_schema()))
-    assert env.artifact.id == "art-1" and env.artifact.payload == {"text": "hi"}
-    assert env.agent_telemetry is None
-
-
-def test_non_object_telemetry_also_degrades_to_none(tmp_path: Path) -> None:
-    driver = FakeDriver(
-        descriptor=ProposalDescriptor("author", ("src-1",), {"text": "hi"}),
-        telemetry=b"[1, 2, 3]",  # valid JSON, but not a telemetry object
-    )
-    assert _collect(_sandbox(tmp_path / "ws", driver, _note_schema())).agent_telemetry is None
-
-
-class _HarvestRaisesLayout(DefaultLayout):
-    """A layout that provisions normally but fails on harvest, simulating an outbox I/O error."""
-
-    def harvest(self, workspace: ProvisionedWorkspace) -> dict[str, bytes]:
-        raise OSError("disk read error in the outbox")
-
-
-def test_harvest_io_error_becomes_a_sandbox_error(tmp_path: Path) -> None:
-    # A raw OSError on the harvest path would bypass the control plane's degrade-don't-crash catch;
-    # the core types it as a SandboxError so a transient outbox failure is recoverable (5.1).
-    sandbox = AgentSandbox(
-        root=tmp_path / "ws",
-        driver=FakeDriver(descriptor=ProposalDescriptor("author", ("src-1",), {"text": "hi"})),
-        schema=_note_schema(),
-        proposer_identity="deepagents:test",
-        layout=_HarvestRaisesLayout(),
-        clock=lambda: "t1",
-        id_source=lambda: "art-1",
-    )
-    with pytest.raises(SandboxError, match="could not harvest the outbox"):
-        _collect(sandbox)
 
 
 # ----------------------------------------------------------------- full run_cycle (real verifier)

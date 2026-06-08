@@ -21,7 +21,6 @@ The orientation + layout layers are stable, so they belong in the prompt-cache p
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -41,7 +40,6 @@ __all__ = [
     "Harvester",
     "render_workspace_layout",
     "compose_system_prompt",
-    "orientation_digest",
     "KERNEL_ORIENTATION_TEMPLATE",
 ]
 
@@ -129,28 +127,17 @@ def render_workspace_layout(contract: WorkspaceContract) -> str:
     )
 
 
-def _render_orientation(contract: WorkspaceContract) -> str:
-    """The invariant kernel-orientation block (layer 1), rendered from the contract."""
-    return KERNEL_ORIENTATION_TEMPLATE.format(layout=render_workspace_layout(contract))
-
-
 def compose_system_prompt(
     *, contract: WorkspaceContract, domain_instructions: str, task_instructions: str
 ) -> str:
     """Mechanically assemble the 3-layer system prompt (§3.4). Deterministic string assembly."""
+    orientation = KERNEL_ORIENTATION_TEMPLATE.format(
+        layout=render_workspace_layout(contract)
+    )
     return "\n\n".join(
         [
-            "# Kernel orientation (invariant)\n" + _render_orientation(contract),
+            "# Kernel orientation (invariant)\n" + orientation,
             "# Domain instructions\n" + domain_instructions.strip(),
             "# Task instructions\n" + task_instructions.strip(),
         ]
     )
-
-
-def orientation_digest(contract: WorkspaceContract) -> str:
-    """A content hash of the rendered kernel orientation — the #12 stamp's tamper-evidence.
-
-    Covers both the orientation template and the contract's role skeleton, so any change to *how the
-    agent is oriented* changes the digest even if the version number was not bumped (ROADMAP 5.1).
-    """
-    return hashlib.sha256(_render_orientation(contract).encode()).hexdigest()

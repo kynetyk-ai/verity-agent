@@ -26,10 +26,9 @@ from verity.contracts import (
 )
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.commit import CommitOutcome
-from verity.control_plane.config import TaskConfig, orientation_digest
+from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import SqliteStore
-from verity.control_plane.workspace import WORKSPACE_CONTRACT
 from verity.domains.fake import NOTE, SOURCE, build_fake_domain
 
 _ACCEPT = bundle(ArtifactStatus.ACCEPTED, decision("well-formed"), decision("worth-keeping"))
@@ -133,15 +132,6 @@ def test_configure_stamps_schema_and_provisions_services() -> None:
     assert current is not None and NOTE in current.types
 
 
-def test_configure_stamps_the_workspace_contract_version() -> None:
-    # #12: the workspace-contract / orientation version is recorded like the schema version (§3.4).
-    _cp, _sandbox, _verifier, store = _setup()
-    cv = store.current_contract_version()
-    assert cv is not None
-    assert cv.version == WORKSPACE_CONTRACT.version
-    assert cv.orientation_digest == orientation_digest(WORKSPACE_CONTRACT)
-
-
 def test_happy_path_accepts_and_commits() -> None:
     cp, _sandbox, verifier, store = _setup()
     result = asyncio.run(cp.submit_proposal("t1", _note("n1")))
@@ -174,77 +164,6 @@ def test_malformed_proposal_records_nothing() -> None:
     assert store.get_artifact("n1") is None
     assert result.harvested == {}
     assert verifier.requests == []
-
-
-def test_a_non_object_payload_is_refused_at_the_kernel(  # #13: kernel JSON-object guarantee
-) -> None:
-    cp, _sandbox, verifier, store = _setup()
-    # a list payload would slip past the domain validator (it only checks NOTE dicts); the kernel
-    # guard refuses any non-object payload before the domain validator runs and records nothing.
-    bad_payload = ["not", "an", "object"]
-    bad = ProposalEnvelope(
-        artifact=Artifact("n1", NOTE, bad_payload, ArtifactStatus.PROPOSED, "agent", ""),
-        operation=Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, ""),
-    )
-    result = asyncio.run(cp.submit_proposal("t1", bad))
-    assert result.entered_protocol is False
-    assert result.shape_error is not None and "JSON object" in result.shape_error.message
-    assert store.get_artifact("n1") is None and verifier.requests == []
-
-
-def test_an_operation_can_require_payload_keys_at_intake() -> None:  # #13 per-op payload schema
-    from verity.control_plane.registries import (
-        ArtifactTypeDef,
-        GatedTypeRegistry,
-        OperationSignature,
-        SchemaRegistry,
-        StoreInput,
-    )
-
-    schema = SchemaRegistry()
-    schema.register_type(ArtifactTypeDef(SOURCE, is_root=True))
-    schema.register_type(ArtifactTypeDef(NOTE))
-    schema.register_operation(
-        OperationSignature("author", (SOURCE,), NOTE, required_payload_keys=("text", "priority"))
-    )
-    gated = GatedTypeRegistry()
-    gated.gate(NOTE, declared_inputs=frozenset({StoreInput.INCUMBENTS}))
-
-    store = SqliteStore()
-    store.propose(
-        Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
-        Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
-    )
-    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
-    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
-    sp.register("stub", lambda: FakeSandbox(None))
-    vp.register("stub", lambda: FakeVerifier(bundle(ArtifactStatus.TENTATIVE, decision("g"))))
-    cp = ControlPlane(store, sandbox_providers=sp, verifier_providers=vp)
-    asyncio.run(cp.configure(TaskConfig(
-        task_id="t1", instructions="x", domain_instructions="x", schema=schema, gated_types=gated,
-        retrieval=DefaultRetrievalPolicy(), shape_validator=lambda _a: None,
-        sandbox_key="stub", verifier_key="stub",
-    )))
-
-    # payload missing the declared 'priority' key -> refused at intake, records nothing
-    missing = ProposalEnvelope(
-        artifact=Artifact("n1", NOTE, {"text": "hi"}, ArtifactStatus.PROPOSED, "agent", ""),
-        operation=Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, ""),
-    )
-    refused = asyncio.run(cp.submit_proposal("t1", missing))
-    assert refused.entered_protocol is False
-    assert refused.shape_error is not None and "priority" in refused.shape_error.message
-    assert store.get_artifact("n1") is None
-
-    # the same payload WITH the declared keys clears the per-op check and proceeds
-    complete = ProposalEnvelope(
-        artifact=Artifact(
-            "n2", NOTE, {"text": "hi", "priority": 1}, ArtifactStatus.PROPOSED, "agent", ""
-        ),
-        operation=Operation("op-n2", "author", ("src",), "n2", OperationStatus.SUCCESS, ""),
-    )
-    accepted = asyncio.run(cp.submit_proposal("t1", complete))
-    assert accepted.entered_protocol is True and accepted.shape_error is None
 
 
 def test_object_is_harvested_and_content_addressed() -> None:

@@ -182,60 +182,54 @@ def run_commit(
     if verifier_identity == artifact.created_by:
         raise ProposerIsGate(verifier_identity)
 
-    # 3 — one opaque handoff (§3.6, amended): the verifier returns the bundle. The verifier call
-    # is OUTSIDE the store transaction (it does no store writes and may be slow/networked).
+    # 3 — one opaque handoff (§3.6, amended): the verifier returns the bundle.
     bundle = dispatch(artifact)
     _assert_consistent(bundle)
 
-    # 4 — record the decisions AND set the terminal status as one atomic unit (ROADMAP 5.1): a
-    # failure part-way (a failed provenance check, an illegal transition, a store error) rolls the
-    # decision rows back rather than leaving them on a still-'proposed' artifact.
-    with sink.transaction():
-        decisions: list[Decision] = []
-        for ruling in bundle.decisions:
-            decision = Decision(
-                artifact_id=artifact.id,
-                gate=ruling.gate,
-                verdict=ruling.kind,
-                rationale=ruling.rationale,
-                defects=ruling.defects,
-                score=ruling.score,
-                created_at=clock(),
-            )
-            sink.record_decision(decision)
-            decisions.append(decision)
-
-        # — set the recommended status, after validating the transition is legal (§6).
-        status = bundle.status
-        lifecycle.assert_transition(ArtifactStatus.PROPOSED, status)
-
-        if status is ArtifactStatus.REJECTED:
-            sink.set_status(artifact.id, status)
-            return _result(CommitOutcome.REJECTED, artifact.id, status, decisions)
-
-        if status is ArtifactStatus.REVISED:
-            defects = _defects_from(bundle)
-            if refine_exhausted:
-                # refine_cap reached for this lineage (§3.4): terminate in 'rejected', don't loop.
-                rj = ArtifactStatus.REJECTED
-                sink.set_status(artifact.id, rj)
-                return _result(CommitOutcome.REJECTED, artifact.id, rj, decisions, defects=defects)
-            sink.set_status(artifact.id, status)
-            return _result(CommitOutcome.REVISED, artifact.id, status, decisions, defects=defects)
-
-        if status is ArtifactStatus.TENTATIVE:
-            _ensure_provenance(store, artifact)
-            sink.set_status(artifact.id, status)
-            return _result(CommitOutcome.TENTATIVE, artifact.id, status, decisions)
-
-        if status is ArtifactStatus.ACCEPTED:
-            _ensure_provenance(store, artifact)
-            _accept(artifact, bundle.supersedes, store=store, sink=sink)
-            return _result(CommitOutcome.ACCEPTED, artifact.id, status, decisions)
-
-        raise BundleInconsistent(
-            f"verifier reported an unsupported terminal status: {status.value!r}"
+    # 4 — record every decision the bundle reports (§4.1, §7.3).
+    decisions: list[Decision] = []
+    for ruling in bundle.decisions:
+        decision = Decision(
+            artifact_id=artifact.id,
+            gate=ruling.gate,
+            verdict=ruling.kind,
+            rationale=ruling.rationale,
+            defects=ruling.defects,
+            score=ruling.score,
+            created_at=clock(),
         )
+        sink.record_decision(decision)
+        decisions.append(decision)
+
+    # — set the recommended status, after validating the transition is legal (§6).
+    status = bundle.status
+    lifecycle.assert_transition(ArtifactStatus.PROPOSED, status)
+
+    if status is ArtifactStatus.REJECTED:
+        sink.set_status(artifact.id, status)
+        return _result(CommitOutcome.REJECTED, artifact.id, status, decisions)
+
+    if status is ArtifactStatus.REVISED:
+        defects = _defects_from(bundle)
+        if refine_exhausted:
+            # refine_cap reached for this lineage (§3.4): terminate in 'rejected' rather than loop.
+            rj = ArtifactStatus.REJECTED
+            sink.set_status(artifact.id, rj)
+            return _result(CommitOutcome.REJECTED, artifact.id, rj, decisions, defects=defects)
+        sink.set_status(artifact.id, status)
+        return _result(CommitOutcome.REVISED, artifact.id, status, decisions, defects=defects)
+
+    if status is ArtifactStatus.TENTATIVE:
+        _ensure_provenance(store, artifact)
+        sink.set_status(artifact.id, status)
+        return _result(CommitOutcome.TENTATIVE, artifact.id, status, decisions)
+
+    if status is ArtifactStatus.ACCEPTED:
+        _ensure_provenance(store, artifact)
+        _accept(artifact, bundle.supersedes, store=store, sink=sink)
+        return _result(CommitOutcome.ACCEPTED, artifact.id, status, decisions)
+
+    raise BundleInconsistent(f"verifier reported an unsupported terminal status: {status.value!r}")
 
 
 def _assert_consistent(bundle: VerdictBundle) -> None:
