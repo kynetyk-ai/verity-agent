@@ -110,15 +110,17 @@ class OrchestrationPolicy:
     def should_continue(self, *, cycles_run: int) -> bool: ...  # cycles_run < max_cycles
 ```
 
-`refine_cap` is declared for the §12 refine-loop bound; `refine_counts` is tracked per-task on
-`TaskState` (`api.py:122`) but, as of this revision, the `run` loop only enforces `max_cycles` and
-`stop_on_accept` (`api.py:296-306`).
+`refine_cap` bounds how many times a single lineage may be refined before it terminates in
+`rejected`. It is enforced **per lineage at commit** (issue #17): `ControlPlane._count_lineage_refines`
+walks the store's `revises` chain and passes `refine_exhausted` into `run_commit`, which converts a
+capped refine into a reject. (`TaskState.refine_counts` was removed in favour of this store-derived
+count.)
 
 ### `TaskState`
 
 `src/verity/control_plane/api.py:114-122` — internal per-task record (not constructed by callers):
-holds the `config`, the resolved `sandbox` and `verifier`, the segregated `rationale` channel
-(`dict[artifact_id, str]`), and `refine_counts`.
+holds the `config`, the resolved `sandbox` and `verifier`, and the segregated `rationale` channel
+(`dict[artifact_id, str]`).
 
 ---
 
@@ -750,15 +752,15 @@ asyncio.run(main())
 
 ## Notable / ambiguous findings
 
-- **Class name mismatch.** The public class is `ControlPlane`, not `ControlPlaneApi`. No
-  `ControlPlaneApi` symbol exists anywhere in the package.
-- **`refine_cap` is declared but not yet enforced.** `OrchestrationPolicy.refine_cap` and
-  `TaskState.refine_counts` exist (`api.py:108`, `api.py:122`), but the `run` loop only gates on
-  `max_cycles` and `stop_on_accept` (`api.py:296-306`). The §12 "un-satisfiable artifact terminates
-  in rejected after N refines" behavior is scaffolded but not wired.
-- **`ServedContext.manifest` is unused on the serve path.** The assembler folds the manifest into the
-  stable prefix, so `serve_context` always leaves `manifest=""` and carries the manifest inside
-  `system_prompt` (`api.py:185-189`).
+- **Class name (#16 — closed, no change needed).** The public class is `ControlPlane`; no
+  `ControlPlaneApi` symbol exists anywhere in the package, and the repo is consistent on
+  `ControlPlane`. The `...Api` name only ever appeared in the audit's orientation prompt, not the code.
+- **`refine_cap` enforced (#17 — resolved).** The cap now binds per *lineage* at commit:
+  `_count_lineage_refines` (over the store's `revises` chain) → `run_commit(refine_exhausted=…)`
+  converts a capped refine into a terminal `rejected`. `TaskState.refine_counts` was removed in
+  favour of the store-derived count.
+- **`ServedContext.manifest` removed (#18 — resolved).** The manifest is delivered folded into
+  `system_prompt` (the stable prefix); the dead field was removed and the docstring updated.
 - **`teardown` does not deregister the task.** It tears down the services but leaves the `_tasks`
   entry and the stamped schema version in place; a subsequent call on that `task_id` would still find
   the (now torn-down) services.

@@ -22,7 +22,7 @@ from verity.control_plane.commit import (
 T = "Thing"
 
 
-def _commit(store, artifact_id, *, result, gated=(T,), identity=VERIFIER):
+def _commit(store, artifact_id, *, result, gated=(T,), identity=VERIFIER, refine_exhausted=False):
     return run_commit(
         artifact_id,
         store=store,
@@ -30,6 +30,7 @@ def _commit(store, artifact_id, *, result, gated=(T,), identity=VERIFIER):
         resolve_coverage=coverage(*gated),
         dispatch=returns(result),
         verifier_identity=identity,
+        refine_exhausted=refine_exhausted,
     )
 
 
@@ -112,6 +113,24 @@ def test_refine_carries_defects() -> None:
     assert result.outcome is CommitOutcome.REVISED
     assert result.defects == ("tone",)
     assert store.get_artifact("a").status is ArtifactStatus.REVISED
+
+
+def test_refine_exhausted_terminates_in_rejected() -> None:
+    # §3.4 refine_cap: when the lineage's refine budget is spent, a refine verdict is recorded but
+    # the control plane terminates the artifact in 'rejected' rather than sending it back again.
+    store = make_store()
+    propose(store, artifact_id="a", artifact_type=T, is_root=True)
+    result = _commit(
+        store,
+        "a",
+        result=bundle(
+            ArtifactStatus.REVISED, decision("g", VerdictKind.REFINE, "fix", defects=("tone",))
+        ),
+        refine_exhausted=True,
+    )
+    assert result.outcome is CommitOutcome.REJECTED
+    assert result.defects == ("tone",)  # the refine defect is preserved as the rejection reason
+    assert store.get_artifact("a").status is ArtifactStatus.REJECTED
 
 
 # --------------------------------------------------------------------------- supersession

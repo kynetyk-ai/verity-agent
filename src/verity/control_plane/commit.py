@@ -154,11 +154,17 @@ def run_commit(
     dispatch: BundleDispatch,
     verifier_identity: str,
     clock: Clock = default_clock,
+    refine_exhausted: bool = False,
 ) -> CommitResult:
     """Run the §7 commit protocol on a ``proposed`` artifact and return the outcome (ADR 0001).
 
     All status writes go through :class:`CommitSink`, gated by :func:`lifecycle.assert_transition`,
     so no illegal edge can be written even by this privileged path — or by the verifier's bundle.
+
+    ``refine_exhausted`` is the control plane's continuation call (§3.4 ``refine_cap``): when this
+    lineage has already been sent back to refine the maximum number of times, a further ``refine``
+    verdict terminates it in ``rejected`` instead of looping. The verifier's refine decisions still
+    go on the record; only the terminal status is the control plane's to decide.
     """
     artifact = store.get_artifact(artifact_id)
     if artifact is None:
@@ -204,8 +210,13 @@ def run_commit(
         return _result(CommitOutcome.REJECTED, artifact.id, status, decisions)
 
     if status is ArtifactStatus.REVISED:
-        sink.set_status(artifact.id, status)
         defects = _defects_from(bundle)
+        if refine_exhausted:
+            # refine_cap reached for this lineage (§3.4): terminate in 'rejected' rather than loop.
+            rj = ArtifactStatus.REJECTED
+            sink.set_status(artifact.id, rj)
+            return _result(CommitOutcome.REJECTED, artifact.id, rj, decisions, defects=defects)
+        sink.set_status(artifact.id, status)
         return _result(CommitOutcome.REVISED, artifact.id, status, decisions, defects=defects)
 
     if status is ArtifactStatus.TENTATIVE:
