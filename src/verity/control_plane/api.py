@@ -24,7 +24,8 @@ What it does (the §3.4 API contract):
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 
 from verity.contracts import (
@@ -50,6 +51,12 @@ from verity.control_plane.commit import (
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.context import AssembledContext, ContextAssembler
 from verity.control_plane.independence import resolve_declared_slice
+from verity.control_plane.run_report import (
+    CycleInput,
+    RunReport,
+    Timings,
+    build_run_report,
+)
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
@@ -70,6 +77,7 @@ __all__ = [
     "ControlPlaneError",
     "UnknownTask",
     "OrchestrationError",
+    "RunReport",
 ]
 
 log = get_logger("verity.control_plane.api")
@@ -135,6 +143,7 @@ class TaskState:
     sandbox: SandboxPort
     verifier: VerifierPort
     rationale: dict[str, str] = field(default_factory=dict)
+    history: list[CycleInput] = field(default_factory=list)  # per-cycle facts for the RunReport
 
 
 class ControlPlane:
@@ -149,6 +158,7 @@ class ControlPlane:
         sandbox_providers: ProviderRegistry[SandboxPort] = SANDBOX_PROVIDERS,
         verifier_providers: ProviderRegistry[VerifierPort] = VERIFIER_PROVIDERS,
         clock: Clock = default_clock,
+        timer: Callable[[], float] = time.monotonic,
     ) -> None:
         self._store = store
         self._assembler = assembler if assembler is not None else ContextAssembler()
@@ -156,6 +166,7 @@ class ControlPlane:
         self._sandbox_providers = sandbox_providers
         self._verifier_providers = verifier_providers
         self._clock = clock
+        self._timer = timer  # monotonic seconds, injected so RunReport timings are testable
         self._tasks: dict[str, TaskState] = {}
 
     # -- configure-by-task --------------------------------------------------------
@@ -380,17 +391,41 @@ class ControlPlane:
         single bad cycle cannot destroy a multi-round session (§3.4; issue #21).
         """
         task = self._task(task_id)
+        started = self._timer()
         await self.serve_context(task_id, goal=goal, feedback=feedback)
+        sandbox_started = self._timer()
         try:
             envelope = await task.sandbox.collect_proposal()
         except SandboxError as exc:
+            sandbox_ms = (self._timer() - sandbox_started) * 1000
             log.warning("sandbox_cycle_failed", task_id=task_id, error=str(exc))
             await task.sandbox.regenerate()  # discard the broken workspace; next cycle starts fresh
-            return IntakeResult(entered_protocol=False, sandbox_error=str(exc))
+            result = IntakeResult(entered_protocol=False, sandbox_error=str(exc))
+            self._record_cycle(task, goal, result, Timings(
+                cycle_ms=(self._timer() - started) * 1000, sandbox_ms=sandbox_ms))
+            return result
+        sandbox_ms = (self._timer() - sandbox_started) * 1000
+        commit_started = self._timer()
         result = await self.submit_proposal(task_id, envelope)
+        commit_ms = (self._timer() - commit_started) * 1000
         # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
         await task.sandbox.regenerate()
+        self._record_cycle(task, goal, result, Timings(
+            cycle_ms=(self._timer() - started) * 1000, sandbox_ms=sandbox_ms, commit_ms=commit_ms))
         return result
+
+    def _record_cycle(
+        self, task: TaskState, goal: str, result: IntakeResult, timings: Timings
+    ) -> None:
+        """Append this cycle's raw facts to the task's history (the RunReport's input, 5.3a)."""
+        task.history.append(CycleInput(
+            goal=goal,
+            entered_protocol=result.entered_protocol,
+            shape_error=result.shape_error.message if result.shape_error is not None else None,
+            sandbox_error=result.sandbox_error,
+            commit=result.commit,
+            timings=timings,
+        ))
 
     async def run(self, task_id: str, *, goal: str) -> list[IntakeResult]:
         """Drive cycles until the orchestration policy stops the run (§3.4).
@@ -429,6 +464,25 @@ class ControlPlane:
         return results
 
     # -- extraction (§3.4) --------------------------------------------------------
+
+    def run_report(self, task_id: str) -> RunReport:
+        """A generic, machine-readable projection of a task's run so far (ROADMAP 5.3a).
+
+        Built from the recorded per-cycle facts + the store's lifecycle queries; it assumes nothing
+        about the verifier or domain (decisions are projected verbatim, ``score`` nullable). The
+        control plane *emits* it; parsing it is the receiving service's job.
+        """
+        task = self._task(task_id)
+        policy = {
+            "max_cycles": self._policy.max_cycles,
+            "refine_cap": self._policy.refine_cap,
+            "stop_on_accept": self._policy.stop_on_accept,
+            "max_consecutive_sandbox_failures": self._policy.max_consecutive_sandbox_failures,
+        }
+        return build_run_report(
+            task.history, self._store, task_id=task_id, policy=policy,
+            generated_at=self._clock(), rationale=task.rationale,
+        )
 
     def accepted_artifacts(self, *, type: str | None = None) -> list[Artifact]:
         return self._store.query_artifacts(type=type, status=ArtifactStatus.ACCEPTED)
