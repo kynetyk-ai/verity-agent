@@ -19,6 +19,7 @@ context the control plane assembled — nothing task-specific is hardcoded here.
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from collections.abc import Callable, Mapping
@@ -40,7 +41,11 @@ from verity.control_plane.workspace import (
     WorkspaceLayout,
 )
 from verity.logging import get_logger
-from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, ProposalDescriptor
+from verity.sandbox.descriptor import (
+    RESERVED_PROPOSAL_NAME,
+    RESERVED_TELEMETRY_NAME,
+    ProposalDescriptor,
+)
 from verity.sandbox.driver import SandboxDriver
 from verity.sandbox.errors import SandboxError
 
@@ -55,6 +60,25 @@ def _default_id() -> str:
 
 def _default_clock() -> str:
     return ""
+
+
+def _parse_telemetry(raw: bytes | None) -> dict[str, object] | None:
+    """Parse the advisory ``__telemetry__.json`` (5.3b); degrade to ``None`` on any decode error.
+
+    Telemetry is observability, not the proposal — a malformed or non-object telemetry file must
+    never fail an otherwise-valid cycle (ROADMAP 5.1), so it is dropped with a warning, not raised.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        log.warning("telemetry_unparseable", error=str(exc))
+        return None
+    if not isinstance(parsed, dict):
+        log.warning("telemetry_not_an_object", got=type(parsed).__name__)
+        return None
+    return parsed
 
 
 @dataclass
@@ -138,15 +162,24 @@ class AgentSandbox:
             workspace=workspace,
         )
 
-        harvested = self.layout.harvest(workspace)
+        try:
+            harvested = self.layout.harvest(workspace)
+        except OSError as exc:
+            # An outbox I/O error is a failed cycle, not a crash: type it so the control plane's
+            # degrade-don't-crash path catches it like any other sandbox failure (ROADMAP 5.1).
+            raise SandboxError(f"could not harvest the outbox: {exc}") from exc
         descriptor_bytes = harvested.pop(RESERVED_PROPOSAL_NAME, None)
+        telemetry_bytes = harvested.pop(RESERVED_TELEMETRY_NAME, None)
         if descriptor_bytes is None:
             raise SandboxError(
                 "the agent produced no proposal "
                 f"(no {RESERVED_PROPOSAL_NAME} in the outbox); outbox had: {sorted(harvested)}"
             )
         descriptor = ProposalDescriptor.from_json(descriptor_bytes)
-        envelope = self._mint(descriptor, objects=harvested)
+        # Telemetry is advisory (5.3b): a corrupt __telemetry__.json must never sink an otherwise
+        # good proposal, so parse defensively and degrade to None on any decode error.
+        agent_telemetry = _parse_telemetry(telemetry_bytes)
+        envelope = self._mint(descriptor, objects=harvested, agent_telemetry=agent_telemetry)
         log.info(
             "proposal_collected",
             op=descriptor.op_name,
@@ -159,7 +192,11 @@ class AgentSandbox:
     # -- internals ----------------------------------------------------------------
 
     def _mint(
-        self, descriptor: ProposalDescriptor, *, objects: Mapping[str, bytes]
+        self,
+        descriptor: ProposalDescriptor,
+        *,
+        objects: Mapping[str, bytes],
+        agent_telemetry: Mapping[str, object] | None = None,
     ) -> ProposalEnvelope:
         """Mint the typed artifact + provenance edge from the agent's declaration (host-trusted)."""
         signature = self.schema.operation(descriptor.op_name)
@@ -190,6 +227,7 @@ class AgentSandbox:
             operation=operation,
             metadata=descriptor.metadata,
             objects=dict(objects),
+            agent_telemetry=agent_telemetry,
         )
 
     def _user_message(self, served: ServedContext) -> str:

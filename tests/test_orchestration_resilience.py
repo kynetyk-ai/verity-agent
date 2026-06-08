@@ -133,7 +133,7 @@ def test_too_many_consecutive_failures_abort_the_run(tmp_path: Path) -> None:
         items=[SandboxError("runaway")],  # repeats -> always fails
         policy=OrchestrationPolicy(max_cycles=20, max_consecutive_sandbox_failures=2),
     )
-    with pytest.raises(OrchestrationError, match="consecutive sandbox failures"):
+    with pytest.raises(OrchestrationError, match="consecutive failed cycles"):
         asyncio.run(cp.run("t1", goal="author a note"))
 
 

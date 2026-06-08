@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from verity.contracts import GateUnavailable
 from verity.logging import get_logger
 
 __all__ = [
@@ -219,9 +220,17 @@ class ContainerCodeRunner:
         return ["sh", "-c", install]
 
     async def _run_container(self, cmd: list[str], name: str, timeout_s: float) -> RunResult:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError as exc:
+            # A missing/unreachable docker binary means the gate cannot run the code at all — that
+            # is infrastructure, not a verdict. Surface it as a recoverable GateUnavailable (5.1) so
+            # the control plane degrades the cycle instead of aborting on a raw OSError.
+            raise GateUnavailable(
+                f"could not launch the code runner ({self.docker_bin}): {exc}"
+            ) from exc
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
         except TimeoutError:
