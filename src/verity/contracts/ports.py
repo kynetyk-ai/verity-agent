@@ -108,13 +108,14 @@ class VerifierPort(Protocol):
 class ServedContext:
     """The assembled context served to the sandbox at the start of a cycle (§9).
 
-    Carries the stable prefix and volatile tail (§9) plus a ``feedback`` channel — the
-    correction returned from the previous cycle (a shape-error message or a refine defect list,
-    §3.5), so the agent can fix formatting or produce a tracked revision.
+    ``system_prompt`` is the **stable prefix** — the composed system prompt *with the slow-changing
+    store manifest already folded in* (§9, the cache-friendly prefix); the manifest is not a
+    separate field. ``tail`` is the volatile per-cycle tail (retrieval + goal). ``feedback`` is the
+    correction from the previous cycle (a shape-error message or a refine defect list, §3.5), so the
+    agent can fix formatting or produce a tracked revision.
     """
 
     system_prompt: str
-    manifest: str = ""
     tail: str = ""
     feedback: str = ""
 

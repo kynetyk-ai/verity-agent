@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from verity.contracts import (
     SANDBOX_PROVIDERS,
     VERIFIER_PROVIDERS,
+    Operation,
     ProposalEnvelope,
     ProviderRegistry,
     SandboxPort,
@@ -39,6 +40,7 @@ from verity.contracts import (
     VerifierRequest,
 )
 from verity.control_plane.commit import (
+    CommitOutcome,
     CommitResult,
     ShapeError,
     run_commit,
@@ -119,7 +121,6 @@ class TaskState:
     sandbox: SandboxPort
     verifier: VerifierPort
     rationale: dict[str, str] = field(default_factory=dict)
-    refine_counts: dict[str, int] = field(default_factory=dict)
 
 
 class ControlPlane:
@@ -223,12 +224,24 @@ class ControlPlane:
 
         self._store.propose(artifact, envelope.operation)
         self._link_revision_if_any(envelope)
-        result = await self._run_commit(task, artifact.id, envelope.objects)
+
+        # §3.4 refine_cap: if this lineage has already been refined to the cap, a further refine
+        # terminates it in 'rejected' rather than looping (computed from the store, not loop state).
+        refines = self._count_lineage_refines(envelope.operation)
+        refine_exhausted = refines >= self._policy.refine_cap
+        result = await self._run_commit(
+            task, artifact.id, envelope.objects, refine_exhausted=refine_exhausted
+        )
         log.info("proposal_committed", task_id=task_id, outcome=result.outcome.value)
         return IntakeResult(entered_protocol=True, commit=result, harvested=harvested)
 
     async def _run_commit(
-        self, task: TaskState, artifact_id: str, objects: Mapping[str, bytes]
+        self,
+        task: TaskState,
+        artifact_id: str,
+        objects: Mapping[str, bytes],
+        *,
+        refine_exhausted: bool = False,
     ) -> CommitResult:
         """Run the sync §7 commit path in a worker thread, bridging the one opaque verifier handoff.
 
@@ -257,7 +270,29 @@ class ControlPlane:
             dispatch=dispatch,
             verifier_identity=task.verifier.identity,
             clock=self._clock,
+            refine_exhausted=refine_exhausted,
         )
+
+    def _count_lineage_refines(self, operation: Operation) -> int:
+        """How many ancestors of this (revising) proposal are ``revised`` — the refine depth (§3.4).
+
+        Walks the ``revises`` chain back from the flagged parent, counting ``revised`` ancestors, so
+        the cap binds a *lineage* (which spans multiple artifact ids) rather than a single id.
+        """
+        if operation.op_name != "revises" or not operation.parents:
+            return 0
+        count = 0
+        current: str | None = operation.parents[0]
+        seen: set[str] = set()
+        while current is not None and current not in seen:
+            seen.add(current)
+            artifact = self._store.get_artifact(current)
+            if artifact is None or artifact.status is not ArtifactStatus.REVISED:
+                break
+            count += 1
+            revises = [op for op in self._store.operations_into(current) if op.op_name == "revises"]
+            current = revises[0].parents[0] if revises and revises[0].parents else None
+        return count
 
     def _link_revision_if_any(self, envelope: ProposalEnvelope) -> None:
         """A ``revises`` operation links the flagged artifact to its revision (spec §4.1, §7.5b).
@@ -337,6 +372,7 @@ def _feedback_from(result: IntakeResult) -> str:
     """Render the cycle's correction for the next served context (a shape-error or refine, §3.5)."""
     if not result.entered_protocol and result.shape_error is not None:
         return f"shape-error: {result.shape_error.message}"
-    if result.commit is not None and result.commit.defects:
-        return "refine: " + ", ".join(result.commit.defects)
+    commit = result.commit
+    if commit is not None and commit.outcome is CommitOutcome.REVISED and commit.defects:
+        return "refine: " + ", ".join(commit.defects)
     return ""

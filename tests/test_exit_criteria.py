@@ -161,6 +161,32 @@ def test_refine_yields_tracked_revision_with_intact_lineage(tmp_path: Path) -> N
     assert any(d.defects == ("tone",) for d in store.decisions_for("n1"))
 
 
+def test_refine_cap_terminates_a_runaway_lineage_in_rejected(tmp_path: Path) -> None:
+    # Every proposal carries a 'defect' marker, so the real gate refines every cycle. With
+    # refine_cap=2 the lineage may be sent back twice (n1, n2 -> revised); the third proposal
+    # (n3) exhausts the budget and the control plane terminates it in 'rejected' (§3.4), instead
+    # of looping to max_cycles. A single lineage cannot refine forever.
+    bad = {"text": "hi", "defect": "always"}
+    steps = [
+        _env("n1", payload=dict(bad)),
+        _env("n2", payload=dict(bad), parents=("n1",), op_name="revises"),
+        _env("n3", payload=dict(bad), parents=("n2",), op_name="revises"),
+    ]
+    cp, _agent, _verifier, store = _build(
+        tmp_path, steps=steps, policy=OrchestrationPolicy(refine_cap=2, max_cycles=3)
+    )
+    results = asyncio.run(cp.run("t1", goal="make a note"))
+
+    assert [r.commit.outcome for r in results] == [
+        CommitOutcome.REVISED,
+        CommitOutcome.REVISED,
+        CommitOutcome.REJECTED,
+    ]
+    assert store.get_artifact("n1").status is ArtifactStatus.REVISED
+    assert store.get_artifact("n2").status is ArtifactStatus.REVISED
+    assert store.get_artifact("n3").status is ArtifactStatus.REJECTED
+
+
 def test_object_harvested_before_teardown_and_round_trips(tmp_path: Path) -> None:
     code = b"def feature(df):\n    return df['a'] * 2\n"
     cp, agent, verifier, store = _build(

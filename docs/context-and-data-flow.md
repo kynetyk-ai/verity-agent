@@ -366,8 +366,8 @@ function of the store + the turn's goal/scratch** — regenerate, never append. 
 
 It then wraps this into a `ServedContext` and awaits `sandbox.serve_context` (`api.py:185-190`).
 
-> **Note on `ServedContext.manifest`** (a real ambiguity worth flagging): the field exists
-> (`ports.py:118`) but `serve_context` constructs the served context with only `system_prompt`
+> **Note on `ServedContext.manifest`** (resolved, #18 — the field has been removed): historically the
+> field existed but `serve_context` constructed the served context with only `system_prompt`
 > (=`stable_prefix`, which *already contains* the rendered manifest), `tail`, and `feedback` —
 > `manifest` is left default-empty (`api.py:185-189`). The manifest is delivered folded into the
 > prefix, not in its own field. Harmless, but the dedicated field is currently dead.
@@ -521,10 +521,11 @@ result surfaces as a `CommitResult{outcome, artifact_id, status, defects, decisi
 `max_cycles=20`, `api.py:96`) stops, optionally short-circuiting on accept (`stop_on_accept`). Each
 cycle's **correction** is fed into the next cycle's served context (`_feedback_from`, `api.py:336`):
 a `shape-error: …` when the proposal was malformed, or `refine: <defects>` after a refine verdict —
-so the agent can fix formatting or produce a tracked revision. `refine_cap` (default 3) is declared
-on the policy (`api.py:106`) as the bound on refine loops, though the live `run` loop does not yet
-enforce it — a noted gap (the cap field exists; the per-lineage counter `TaskState.refine_counts`
-exists at `api.py:123` but is unused).
+so the agent can fix formatting or produce a tracked revision. `refine_cap` (default 3) bounds refine
+loops and is **enforced per lineage at commit** (issue #17): once a lineage has been refined
+`refine_cap` times, a further refine terminates it in `rejected` (`_count_lineage_refines` →
+`run_commit(refine_exhausted=…)`). `_feedback_from` only emits `refine:` feedback on a `revised`
+outcome, so a rejected lineage is not invited to revise.
 
 ---
 
