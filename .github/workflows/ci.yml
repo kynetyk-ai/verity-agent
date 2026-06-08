@@ -1,12 +1,16 @@
 name: ci
 
-# Minimal gate: lint + type-check + test on every push and PR. Calls uv directly — no `just`
-# in CI (the justfile is the local dev shortcut). Kept deliberately small; CI is not a focus
-# this early (ROADMAP cross-cutting principles).
+# Minimal gate: lint + type-check + test. Runs on **merges/pushes to the long-lived branches**
+# (`main`, `develop`) and on **PRs targeting them**, so a feature branch is gated through its PR
+# rather than on every push. Calls uv directly — no `just` in CI (the justfile is the local dev
+# shortcut). Kept small: the offline suite needs no Docker or API key (the `@docker` / `@live` tests
+# auto-skip), and `uv sync` omits the `sandbox` extra so the Deep Agents tests `importorskip`.
 
 on:
   push:
+    branches: [main, develop]
   pull_request:
+    branches: [main, develop]
 
 jobs:
   check:
