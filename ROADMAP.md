@@ -6,6 +6,10 @@ what's next?"* — `README.md` and `CLAUDE.md` point here.
 **MVP = spec v1.** The feature-engineering domain (spec §12) runs end-to-end and **all twelve §13
 acceptance criteria pass**. That is the finish line for this roadmap (Phase 4).
 
+> **Status: MVP reached ✅** — Phases 0–4 are done. All twelve §13 criteria pass as runnable checks
+> (`tests/test_feature_engineering_acceptance.py`); a `@live` run drives real Claude proposals scored
+> in a container on the stellar dataset. What remains is the post-MVP backlog below.
+
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
 every invariant — and prove it works against *bespoke, throwaway* agent/workspace and verifier
 stand-ins. The control plane is deliberately ignorant of how the agent and verifier work internally,
@@ -221,7 +225,7 @@ now, cheap open models later; ADR 0002). Built as two sprints behind one `Sandbo
 - **Exit ✅:** a real agent drives read→propose→gate→commit against the control plane; ephemerality and
   gold-data isolation hold across cycles, in-process and under container isolation.
 
-### Phase 4 — Feature-engineering domain (§12) → MVP 🚧
+### Phase 4 — Feature-engineering domain (§12) → MVP ✅
 
 The first real discovery run, and the MVP — the §12 domain on the real Kaggle stellar dataset
 (`feature-engineering-test/`), run for multiple proposal rounds against the live control plane. Two
@@ -257,9 +261,13 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   submission whose code omits a declared feature, naming it in the defects → a tracked revision with
   intact lineage (§13.8). Ids/lineage are minted on the trusted side; the domain only declares
   content. *(§12, §6, §7)*
-- **4.4 Live multi-round run + the twelve §13 criteria ⬜** — each §13 criterion as a runnable check;
-  a `@live` container run improving across ≥3 rounds with ≥1 supersession on the real dataset.
-- **Exit:** **all twelve §13 acceptance criteria pass → MVP reached.**
+- **4.4 Live multi-round run + the twelve §13 criteria ✅** — `test_feature_engineering_acceptance`
+  runs **all twelve §13 criteria** as runnable checks on the feature-engineering domain through the
+  real control plane, verifier, and sandbox (offline, deterministic runner). A `@live` multi-round
+  demonstration (`test_feature_engineering_live`) drives real Claude proposals scored in a container
+  on the actual stellar dataset, improving on the provisioned incumbent — auto-skips without a key /
+  Docker / the dataset.
+- **Exit ✅:** **all twelve §13 acceptance criteria pass → MVP reached.**
 
 ---
 
