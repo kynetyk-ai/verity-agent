@@ -335,11 +335,33 @@ The biggest, most deferrable: make each service independently deployable.
   reclaim reproducibility, and a cleaner validity-rung vs scoring-rung split. Revisits the accepted
   network-on tradeoff.
 
+### Multi-tenancy & run-control (a track spanning Phases 5 → 7)
+
+The control plane grows into a multi-tenant **job server**. The typed-provenance store stays the
+system of record (artifacts / operations / decisions / objects) — this adds the *operational* layer
+*around* it, not a second copy of it. Built **seams-first, engine-later**, so multi-tenancy is an
+added adapter, not a reshape.
+
+- **Run-control seams (with Phase 5).** A `JobQueue` port (`enqueue` / `claim` / `complete` /
+  `status`) with a trivial **in-process default** (run synchronously, as today); a `RunRecord` /
+  run-results store keyed by `(tenant_id, run_id)` that holds the **5.3 RunReport** + run status +
+  *pointers* to the accepted artifacts (operational metadata referencing the provenance store, **not**
+  a copy of it — the RunReport read-side and this store are the same thing); and a `tenant_id`
+  threaded through the API / `TaskConfig` while there is still only one tenant.
+- **Multi-tenancy engine (with Phase 7).** The real queue + worker model — commits stay **serialized
+  per tenant** so the sole-mutator audit guarantee is preserved; the **store-engine upgrade** the
+  queue forces (SQLite is single-writer → Postgres, or per-tenant DBs); **tenant isolation**
+  (namespaced stores; no cross-tenant reads in retrieval / slices / object-provisioning) — the actual
+  hard part; and the async **submit → job_id → poll/fetch** API a standing, networked control plane
+  wants. Naturally siblings with the service split (7.1–7.2).
+- **Not here:** authentication / authorization (still *further out*); parallel agents against one task
+  (a related but separate concurrency concern, below).
+
 ### Further out / seamed (spec §16)
 
 Designed-for, not yet scheduled; each becomes an issue/epic when its time comes:
 
-- Multi-tenancy and authentication on the control plane.
+- Authentication / authorization on the control plane (pairs with the multi-tenancy track above).
 - Parallel agents against one task (diversity / race — N sandboxes → 1 control plane).
 - Secrets / egress policy once local + networked services land.
 - True schema migration / regime transition (spec §15).
