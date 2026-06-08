@@ -410,14 +410,19 @@ class ControlPlane:
         commit_ms = (self._timer() - commit_started) * 1000
         # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
         await task.sandbox.regenerate()
-        self._record_cycle(task, goal, result, Timings(
-            cycle_ms=(self._timer() - started) * 1000, sandbox_ms=sandbox_ms, commit_ms=commit_ms))
+        self._record_cycle(
+            task, goal, result,
+            Timings(cycle_ms=(self._timer() - started) * 1000,
+                    sandbox_ms=sandbox_ms, commit_ms=commit_ms),
+            agent_telemetry=envelope.agent_telemetry,
+        )
         return result
 
     def _record_cycle(
-        self, task: TaskState, goal: str, result: IntakeResult, timings: Timings
+        self, task: TaskState, goal: str, result: IntakeResult, timings: Timings,
+        *, agent_telemetry: Mapping[str, object] | None = None,
     ) -> None:
-        """Append this cycle's raw facts to the task's history (the RunReport's input, 5.3a)."""
+        """Append this cycle's raw facts to the task's history (the RunReport's input, 5.3a/b)."""
         task.history.append(CycleInput(
             goal=goal,
             entered_protocol=result.entered_protocol,
@@ -425,6 +430,7 @@ class ControlPlane:
             sandbox_error=result.sandbox_error,
             commit=result.commit,
             timings=timings,
+            agent_telemetry=agent_telemetry,
         ))
 
     async def run(self, task_id: str, *, goal: str) -> list[IntakeResult]:

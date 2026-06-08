@@ -19,6 +19,7 @@ context the control plane assembled — nothing task-specific is hardcoded here.
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from collections.abc import Callable, Mapping
@@ -40,7 +41,11 @@ from verity.control_plane.workspace import (
     WorkspaceLayout,
 )
 from verity.logging import get_logger
-from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, ProposalDescriptor
+from verity.sandbox.descriptor import (
+    RESERVED_PROPOSAL_NAME,
+    RESERVED_TELEMETRY_NAME,
+    ProposalDescriptor,
+)
 from verity.sandbox.driver import SandboxDriver
 from verity.sandbox.errors import SandboxError
 
@@ -140,13 +145,15 @@ class AgentSandbox:
 
         harvested = self.layout.harvest(workspace)
         descriptor_bytes = harvested.pop(RESERVED_PROPOSAL_NAME, None)
+        telemetry_bytes = harvested.pop(RESERVED_TELEMETRY_NAME, None)
         if descriptor_bytes is None:
             raise SandboxError(
                 "the agent produced no proposal "
                 f"(no {RESERVED_PROPOSAL_NAME} in the outbox); outbox had: {sorted(harvested)}"
             )
         descriptor = ProposalDescriptor.from_json(descriptor_bytes)
-        envelope = self._mint(descriptor, objects=harvested)
+        agent_telemetry = json.loads(telemetry_bytes) if telemetry_bytes else None
+        envelope = self._mint(descriptor, objects=harvested, agent_telemetry=agent_telemetry)
         log.info(
             "proposal_collected",
             op=descriptor.op_name,
@@ -159,7 +166,11 @@ class AgentSandbox:
     # -- internals ----------------------------------------------------------------
 
     def _mint(
-        self, descriptor: ProposalDescriptor, *, objects: Mapping[str, bytes]
+        self,
+        descriptor: ProposalDescriptor,
+        *,
+        objects: Mapping[str, bytes],
+        agent_telemetry: Mapping[str, object] | None = None,
     ) -> ProposalEnvelope:
         """Mint the typed artifact + provenance edge from the agent's declaration (host-trusted)."""
         signature = self.schema.operation(descriptor.op_name)
@@ -190,6 +201,7 @@ class AgentSandbox:
             operation=operation,
             metadata=descriptor.metadata,
             objects=dict(objects),
+            agent_telemetry=agent_telemetry,
         )
 
     def _user_message(self, served: ServedContext) -> str:

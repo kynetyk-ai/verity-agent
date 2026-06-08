@@ -46,7 +46,10 @@ def main() -> None:
         backend=backend,
     )
     log.info("container_entry_run", model=model, ops=[s.name for s in cycle.operations])
-    run_agent(agent, cycle.user_message, recursion_limit=cycle.recursion_limit)
+    run_agent(
+        agent, cycle.user_message,
+        recursion_limit=cycle.recursion_limit, outbox=Path(CONTAINER_OUTBOX),
+    )
     log.info("container_entry_done")
 
 

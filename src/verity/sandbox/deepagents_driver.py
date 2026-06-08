@@ -21,17 +21,23 @@ harvests and mints (see :mod:`verity.sandbox.descriptor`).
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
+from langchain_core.messages import AIMessage
 
 from verity.control_plane.registries import OperationSignature
 from verity.control_plane.workspace import ProvisionedWorkspace
 from verity.logging import get_logger
-from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, ProposalDescriptor
+from verity.sandbox.descriptor import (
+    RESERVED_PROPOSAL_NAME,
+    RESERVED_TELEMETRY_NAME,
+    ProposalDescriptor,
+)
 from verity.sandbox.errors import SandboxError
 
 __all__ = ["DeepAgentsInProcessDriver", "build_deepagents_agent", "run_agent"]
@@ -68,13 +74,51 @@ def build_deepagents_agent(
 
 
 def run_agent(
-    agent: Any, user_message: str, *, recursion_limit: int = _DEFAULT_RECURSION_LIMIT
+    agent: Any,
+    user_message: str,
+    *,
+    recursion_limit: int = _DEFAULT_RECURSION_LIMIT,
+    outbox: Path | None = None,
 ) -> None:
-    """Run the agent loop to completion (synchronous)."""
-    agent.invoke(
+    """Run the agent loop to completion (synchronous).
+
+    When ``outbox`` is given, the loop's telemetry (tokens / steps / tool-calls / model) is written
+    to the reserved ``__telemetry__.json`` there, harvested back to the host like the proposal
+    descriptor (ROADMAP 5.3b). Best-effort: a model without ``usage_metadata`` yields zeros / nulls.
+    """
+    result = agent.invoke(
         {"messages": [{"role": "user", "content": user_message}]},
         {"recursion_limit": recursion_limit},
     )
+    if outbox is not None:
+        telemetry = _extract_telemetry(result)
+        (outbox / RESERVED_TELEMETRY_NAME).write_bytes(json.dumps(telemetry).encode("utf-8"))
+
+
+def _extract_telemetry(result: Any) -> dict[str, Any]:
+    """Sum token usage + count steps / tool-calls across the run's ``AIMessage``s (5.3b)."""
+    messages = result.get("messages", []) if isinstance(result, dict) else []
+    input_tokens = output_tokens = model_steps = tool_calls = 0
+    model_name: str | None = None
+    for message in messages:
+        if not isinstance(message, AIMessage):
+            continue
+        model_steps += 1
+        tool_calls += len(message.tool_calls or [])
+        usage = message.usage_metadata
+        if usage:
+            input_tokens += int(usage.get("input_tokens", 0) or 0)
+            output_tokens += int(usage.get("output_tokens", 0) or 0)
+        meta = message.response_metadata or {}
+        model_name = meta.get("model_name") or meta.get("model") or model_name
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "model_steps": model_steps,
+        "tool_calls": tool_calls,
+        "model": model_name,
+    }
 
 
 class DeepAgentsInProcessDriver:
@@ -109,7 +153,8 @@ class DeepAgentsInProcessDriver:
         log.info("deepagents_run", ops=[s.name for s in operations], root=str(workspace.root))
         try:
             await asyncio.to_thread(
-                run_agent, agent, user_message, recursion_limit=self._recursion_limit
+                run_agent, agent, user_message,
+                recursion_limit=self._recursion_limit, outbox=workspace.outbox(),
             )
         except Exception as exc:
             # A runaway loop (GraphRecursionError) or any in-loop failure becomes a cycle-level
