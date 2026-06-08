@@ -286,33 +286,47 @@ it activates (roadmap hygiene).
 
 Harden the loop and make it measurable before scaling models or splitting services.
 
-- **5.1 Error-handling hardening** — extend #21's *degrade-don't-crash* discipline everywhere: typed
-  errors at every service boundary, retries / backoff on transient model + Docker failures, explicit
-  partial-failure semantics in harvest/commit, and "a failed step is recorded, not fatal" as a stated
-  invariant.
+- **5.1 Error-handling & reliability hardening** — extend #21's *degrade-don't-crash* discipline
+  everywhere: typed errors at every service boundary, retries / backoff on transient model + Docker
+  failures, explicit partial-failure semantics in harvest/commit, and "a failed step is recorded, not
+  fatal" as a stated invariant. Also **gate-reproducibility discipline for the LLM judge** so verdicts
+  are deterministic (**#11**, §5.8), and **stamp the workspace-contract / orientation version into the
+  store** like the schema version (**#12**, §3.4).
 - **5.2 Agent-harness hardening** — enable **context compaction / summarization** in the Deep Agents
   loop (verify the middleware API), bound tool-call / step budgets, and add a **soft-deadline signal**:
   a pre-model-step hook injects "≈Xs of Ys remaining — finalize and submit now," so a long cycle yields
   a rushed-but-real proposal instead of being killed. The hard sandbox timeout stays the backstop; the
-  control plane supplies the budget, the harness injects it. Complements #21's graceful skip.
+  control plane supplies the budget, the harness injects it. Complements #21's graceful skip. Also
+  **enforce JSON-object proposal payloads** (+ an optional per-operation payload schema) at intake
+  (**#13**).
 - **5.3 Metrics foundation — the store-derived `RunReport`** — the store *is* the audit record, so most
   of the panel is derivable for free: per-cycle outcomes (accept / reject / revise / refine /
   sandbox-fail), score trajectory + supersessions, refine-cap hits, trial counts, object-store growth,
   and cycle / gate / sandbox latencies — plus agent-loop telemetry (tokens, tool calls, wall-time,
   model, steps) carried back from the sandbox. Live emission + a dashboard come later (7.3).
+- **5.4 Sandbox tools & extensibility** — a `ToolBinding` seam that binds non-propose, **executable**
+  tools into the agent's harness (the parallel to `WorkspaceLayout`; **#6**), with a **PDF-read tool**
+  as the first concrete one so the agent can read PDFs / spec / reference docs in its read-only roles.
+  Domain-agnostic: the control plane declares *what* tools a task gets; the adapter binds *how*.
 
-### Phase 6 — Open / local models ⬜ *(the thesis payoff)*
+### Phase 6 — Model breadth: open, local & cheaper hosted ⬜ *(the thesis payoff)*
 
-"Good proposals from cheap models" is the point of the whole approach — make it real.
+"Good proposals from cheap models" is the point of the whole approach — make it real across local /
+open weights *and* cheaper hosted APIs.
 
 - **6.1 Local model via vllm-mlx** — stand up **vllm-mlx** (OpenAI-compatible server, Apple-Silicon
   Metal backend) and a `deepagents-local` sandbox config; solve container→host networking
   (`host.docker.internal`). Keep the seam **OpenAI-compatible** so Ollama / other backends swap in —
   vLLM on Apple Silicon is younger than Ollama, so don't couple to it. Leans on 5.2 compaction (small
   local context windows make it a hard dependency, not a nicety).
-- **6.2 Eval / benchmarking harness** — compare **proposal quality + cost + latency** across models
-  (cheap-local vs frontier) on the same task, using the 5.3 RunReport metrics. The instrument that
-  tells us whether the thesis actually holds.
+- **6.2 Cheaper hosted providers** — wire **OpenAI** and other hosted APIs (cheaper-but-capable tiers)
+  behind the **same OpenAI-compatible model seam**: a per-provider model-construction path, a
+  registered `deepagents-<provider>` sandbox config, and the provider key passed through into the
+  container. The seam is already provider-agnostic (the driver takes a `model`), so this is mostly
+  config — its value is comparison fodder for 6.3 and a cheaper non-frontier baseline.
+- **6.3 Eval / benchmarking harness** — compare **proposal quality + cost + latency** across models
+  (local, cheaper-hosted, and frontier) on the same task, using the 5.3 RunReport metrics. The
+  instrument that tells us whether the thesis actually holds.
 
 ### Phase 7 — Service split & full containerization ⬜
 
@@ -350,12 +364,33 @@ added adapter, not a reshape.
   threaded through the API / `TaskConfig` while there is still only one tenant.
 - **Multi-tenancy engine (with Phase 7).** The real queue + worker model — commits stay **serialized
   per tenant** so the sole-mutator audit guarantee is preserved; the **store-engine upgrade** the
-  queue forces (SQLite is single-writer → Postgres, or per-tenant DBs); **tenant isolation**
-  (namespaced stores; no cross-tenant reads in retrieval / slices / object-provisioning) — the actual
-  hard part; and the async **submit → job_id → poll/fetch** API a standing, networked control plane
-  wants. Naturally siblings with the service split (7.1–7.2).
+  queue forces (SQLite is single-writer → Postgres, or per-tenant DBs) — the natural moment for
+  **object retention / GC** of bytes referenced only by terminal artifacts (**#9**, §5.5); **tenant
+  isolation** (namespaced stores; no cross-tenant reads in retrieval / slices / object-provisioning) —
+  the actual hard part; and the async **submit → job_id → poll/fetch** API a standing, networked
+  control plane wants. Naturally siblings with the service split (7.1–7.2).
 - **Not here:** authentication / authorization (still *further out*); parallel agents against one task
   (a related but separate concurrency concern, below).
+
+### Open issues → roadmap home
+
+Where each tracked issue folds in (so the backlog and the plan stay linked):
+
+| Issue | Folds into |
+| --- | --- |
+| **#3** standing control-plane data plane | 7.2 networked transport + the multi-tenancy engine |
+| **#5** spec sync: collapse §8.2 tool registry | *Further out* — doc housekeeping (already true in code) |
+| **#6** harness-bound executable tools | 5.4 sandbox tools & extensibility (the PDF-read tool) |
+| **#9** object retention / GC | multi-tenancy engine (with the store-engine upgrade) |
+| **#10** networked verifier transport | 7.2 networked transport |
+| **#11** LLM-judge reproducibility (§5.8) | 5.1 reliability hardening |
+| **#12** stamp workspace-contract version | 5.1 reliability hardening |
+| **#13** JSON-object proposal payloads | 5.2 agent-harness hardening |
+| **#27** multi-tenancy epic | the Multi-tenancy & run-control track |
+
+**Already done (closed):** **#2** (CI on every push/PR — now gates `main`/`develop` with branch
+protection) and **#8** (supersede-on-beat — the selection verdict names the incumbent it replaces,
+shipped in 4.2 and exercised live).
 
 ### Further out / seamed (spec §16)
 
@@ -363,6 +398,7 @@ Designed-for, not yet scheduled; each becomes an issue/epic when its time comes:
 
 - Authentication / authorization on the control plane (pairs with the multi-tenancy track above).
 - Parallel agents against one task (diversity / race — N sandboxes → 1 control plane).
+- Spec sync: collapse the §8.2 tool registry into operation signatures (**#5**) — already true in code.
 - Secrets / egress policy once local + networked services land.
 - True schema migration / regime transition (spec §15).
 - The soft-gate consulting domain (spec §14).
