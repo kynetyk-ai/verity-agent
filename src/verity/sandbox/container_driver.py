@@ -55,6 +55,7 @@ class DeepAgentsContainerDriver:
     image: str = "verity-sandbox:latest"
     docker_bin: str = "docker"
     data_sources: tuple[str, ...] = ()
+    tool_names: tuple[str, ...] = ()  # extra sandbox tools to bind, by registry name (5.4, #6)
     env_passthrough: tuple[str, ...] = ("ANTHROPIC_API_KEY",)
     extra_run_args: tuple[str, ...] = ()
     memory: str = "4g"
@@ -80,6 +81,10 @@ class DeepAgentsContainerDriver:
                 user_message=user_message,
                 operations=operations,
                 recursion_limit=self.recursion_limit,
+                # The soft wrap-up deadline is the container's hard timeout: the agent is nudged to
+                # finalize before the kill (5.2). The hard timeout stays the backstop.
+                deadline_s=self.timeout_s,
+                tool_names=self.tool_names,
             )
             (inputs_dir / "input.json").write_bytes(cycle.to_json())
             os.chmod(inputs_dir, 0o755)
