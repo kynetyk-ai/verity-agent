@@ -113,11 +113,19 @@ class ServedContext:
     separate field. ``tail`` is the volatile per-cycle tail (retrieval + goal). ``feedback`` is the
     correction from the previous cycle (a shape-error message or a refine defect list, §3.5), so the
     agent can fix formatting or produce a tracked revision.
+
+    ``workspace_objects`` are durable objects the control plane materializes **into the workspace**
+    this cycle as references the agent can build on (e.g. a prior accepted submission's script),
+    keyed ``role → filename → bytes`` (the filename may be a nested path within the role). Selected
+    by the task's object-provisioning policy in control-plane-native terms (status/recency) — never
+    verifier semantics. They land in a **writable** role and are **re-materialized every cycle**;
+    that the agent may edit them is harmless (the verifier judges the proposal, not the workspace).
     """
 
     system_prompt: str
     tail: str = ""
     feedback: str = ""
+    workspace_objects: Mapping[str, Mapping[str, bytes]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

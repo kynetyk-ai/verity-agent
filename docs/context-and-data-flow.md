@@ -527,6 +527,18 @@ loops and is **enforced per lineage at commit** (issue #17): once a lineage has 
 `run_commit(refine_exhausted=…)`). `_feedback_from` only emits `refine:` feedback on a `revised`
 outcome, so a rejected lineage is not invited to revise.
 
+**Feedback widened beyond §3.5 (issue #21).** `_feedback_from` also threads back a `rejected: …`
+reason (the rejecting gate's rationale) so the agent learns *why* a hard gate rejected it, and a
+`sandbox-error: …` reason when a cycle's sandbox produced no usable proposal. The latter is part of
+the **resilience** change: a sandbox failure (timeout / container non-zero exit / runaway recursion /
+no-proposal, all surfaced as `SandboxError`) is caught in `run_cycle`, recorded as a failed
+`IntakeResult` (`sandbox_error` set, nothing committed), the workspace is still regenerated, and the
+run continues — bounded by `OrchestrationPolicy.max_consecutive_sandbox_failures` (default 3), which
+raises `OrchestrationError` if that many cycles fail in a row (the counter resets on any proposing
+cycle). This is a deliberate, recorded widening of the §3.5 feedback channel (flagged for spec sync);
+feeding the *gate's* reason to the *proposer* does not touch the independence rule (§10), which only
+governs what a gate sees.
+
 ---
 
 ## 4. Boundary / isolation facts — traced to code

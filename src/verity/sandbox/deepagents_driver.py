@@ -32,6 +32,7 @@ from verity.control_plane.registries import OperationSignature
 from verity.control_plane.workspace import ProvisionedWorkspace
 from verity.logging import get_logger
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, ProposalDescriptor
+from verity.sandbox.errors import SandboxError
 
 __all__ = ["DeepAgentsInProcessDriver", "build_deepagents_agent", "run_agent"]
 
@@ -106,9 +107,16 @@ class DeepAgentsInProcessDriver:
             backend=backend,
         )
         log.info("deepagents_run", ops=[s.name for s in operations], root=str(workspace.root))
-        await asyncio.to_thread(
-            run_agent, agent, user_message, recursion_limit=self._recursion_limit
-        )
+        try:
+            await asyncio.to_thread(
+                run_agent, agent, user_message, recursion_limit=self._recursion_limit
+            )
+        except Exception as exc:
+            # A runaway loop (GraphRecursionError) or any in-loop failure becomes a cycle-level
+            # SandboxError, so the control plane can skip the cycle rather than abort the run (#21).
+            raise SandboxError(
+                f"in-process agent loop failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
 
 def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[..., str]:

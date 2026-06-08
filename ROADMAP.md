@@ -6,6 +6,10 @@ what's next?"* — `README.md` and `CLAUDE.md` point here.
 **MVP = spec v1.** The feature-engineering domain (spec §12) runs end-to-end and **all twelve §13
 acceptance criteria pass**. That is the finish line for this roadmap (Phase 4).
 
+> **Status: MVP reached ✅** — Phases 0–4 are done. All twelve §13 criteria pass as runnable checks
+> (`tests/test_feature_engineering_acceptance.py`); a `@live` run drives real Claude proposals scored
+> in a container on the stellar dataset. What remains is the post-MVP backlog below.
+
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
 every invariant — and prove it works against *bespoke, throwaway* agent/workspace and verifier
 stand-ins. The control plane is deliberately ignorant of how the agent and verifier work internally,
@@ -221,15 +225,49 @@ now, cheap open models later; ADR 0002). Built as two sprints behind one `Sandbo
 - **Exit ✅:** a real agent drives read→propose→gate→commit against the control plane; ephemerality and
   gold-data isolation hold across cycles, in-process and under container isolation.
 
-### Phase 4 — Feature-engineering domain (§12) → MVP ⬜
+### Phase 4 — Feature-engineering domain (§12) → MVP ✅
 
-The first real discovery run, and the MVP.
+The first real discovery run, and the MVP — the §12 domain on the real Kaggle stellar dataset
+(`feature-engineering-test/`), run for multiple proposal rounds against the live control plane. Two
+settled decisions shape it: the submitted **script trains end-to-end** and the verifier scores it on
+a **reserved hold-out** split from `train.csv` (leakage caught on the reserved set, §13.11); and the
+submission declares a **package list** the runner **pip-installs at run time** (network on; pinned
+versions for reproducibility). Built in sub-phases, each a tested, gate-green PR:
 
-- Real schema (`DatasetVersion` / `Submission` / harvested `Feature`); workspace tools + code-object
-  harvest; the objective gate (the verifier runs the submitted code and scores the trained model on
-  the **reserved verification dataset**, net of complexity, trial-count-deflated); the grounding gate
-  on harvested features; `refine` on a bad feature. *(§12)*
-- **Exit:** **all twelve §13 acceptance criteria pass → MVP reached.**
+- **4.1 Domain skeleton + data + object provisioning ✅** — `domains/feature_engineering.py`: the §12
+  schema (`DatasetVersion` root / `Submission` gated `{INCUMBENTS, REJECTED_LOG}` / `Feature` gated)
+  + `submit`/`revises`/`harvest` op signatures + the presence-only shape spec + domain instructions
+  (the script I/O contract). A **durable-object provisioning policy** (`ObjectProvisioningPolicy`,
+  modes `ALL`/`ALL_ACCEPTED`/`LAST_ACCEPTED`) on `TaskConfig`, resolved by the control plane in
+  control-plane-native terms (status/recency, **not** verifier semantics) and materialized into a
+  **writable** role via `ServedContext.workspace_objects` — **re-provisioned every cycle** (agent
+  edits never persist; read-only is reserved for gold data). A deterministic stdlib stratified split
+  (`tools/harness/dataset.py`). Offline tests + the per-mode policy + a two-cycle run that provisions
+  the prior accepted script. *(§9, §12)*
+- **4.2 The two `Submission` gates ✅** — `build_feature_engineering_verifier`: both gates over one
+  cached run of the submitted script (train on agent data, predict the reserved hold-out). The cheap
+  **runs-clean** gate (→ `tentative`) requires a clean exit + a well-formed prediction for every
+  reserved row; the hard **selection** gate (→ `accepted`) scores **balanced accuracy** net of a
+  per-feature complexity penalty, **deflated by the rejected-log** (the trial count), and must beat
+  the incumbent (status from the slice, scores from the verifier's own measurement ledger — so
+  independence holds). The `CodeRunner` gained a `requirements`/`network`/`env` path: pip-install the
+  declared deps into an `exec` tmpfs over outbound network (the no-deps default stays hardened). A
+  `@docker` test installs pandas and scores a real script end to end. *(§11, §12)*
+- **4.3 Harvested `Feature`s + grounding + refine ✅** — a domain `harvester` hook on `TaskConfig`
+  (`HarvestedChild`) + the control-plane harvest step: on acceptance it mints one `Feature` per
+  declared feature via a `harvest` operation (parent → child), carrying the parent's code sidecar, and
+  commits each through its own cheap **grounding** gate (genuinely defined by the code, else refused —
+  no implicit accept for `Feature` too, §13.6). A static **features-defined** check refines a
+  submission whose code omits a declared feature, naming it in the defects → a tracked revision with
+  intact lineage (§13.8). Ids/lineage are minted on the trusted side; the domain only declares
+  content. *(§12, §6, §7)*
+- **4.4 Live multi-round run + the twelve §13 criteria ✅** — `test_feature_engineering_acceptance`
+  runs **all twelve §13 criteria** as runnable checks on the feature-engineering domain through the
+  real control plane, verifier, and sandbox (offline, deterministic runner). A `@live` multi-round
+  demonstration (`test_feature_engineering_live`) drives real Claude proposals scored in a container
+  on the actual stellar dataset, improving on the provisioned incumbent — auto-skips without a key /
+  Docker / the dataset.
+- **Exit ✅:** **all twelve §13 acceptance criteria pass → MVP reached.**
 
 ---
 

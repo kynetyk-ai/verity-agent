@@ -32,6 +32,7 @@ self-contained and the registry simply stores and resolves them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from verity.control_plane.independence import StoreInput
@@ -50,6 +51,8 @@ __all__ = [
     "GatedTypeRegistry",
     "RetrievalPolicy",
     "DefaultRetrievalPolicy",
+    "ObjectProvisionMode",
+    "ObjectProvisioningPolicy",
     "RegistryError",
 ]
 
@@ -227,3 +230,122 @@ class DefaultRetrievalPolicy:
         candidates.sort(key=lambda a: a.created_at, reverse=True)
         candidates.sort(key=lambda a: _STATUS_RANK[a.status])
         return candidates[:limit]
+
+
+# ------------------------------------------------------ object-provisioning policy (durable refs)
+
+
+class ObjectProvisionMode(StrEnum):
+    """How many durable objects to materialize into the workspace as references each cycle.
+
+    Stated in **control-plane-native terms** (status + recency) — never verifier semantics. "Build
+    on the best prior script" is ``LAST_ACCEPTED`` over the gated type, not "provision the
+    incumbent" (the control plane does not know what an incumbent is).
+    """
+
+    NONE = "none"
+    ALL = "all"
+    ALL_ACCEPTED = "all_accepted"
+    LAST_ACCEPTED = "last_accepted"
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectProvisioningPolicy:
+    """Selects durable objects to drop into a writable workspace role each cycle (§3.4, §9).
+
+    The control plane resolves this against the store by **status/recency/type only** and reads the
+    selected artifacts' object sidecars via ``Store.get_object``. The result is materialized into
+    ``target_role`` (a writable role) under ``name_prefix`` and **re-materialized every cycle**, so
+    agent edits never persist. ``type_filter`` restricts selection to one artifact type;
+    ``max_objects`` bounds total objects so a large store cannot blow up the workspace.
+    """
+
+    mode: ObjectProvisionMode = ObjectProvisionMode.NONE
+    type_filter: str | None = None
+    target_role: str = "scratch"
+    name_prefix: str = "provided/"
+    max_objects: int = 16
+
+    def _select(self, store: Store) -> list[Artifact]:
+        if self.mode is ObjectProvisionMode.NONE:
+            return []
+        status = (
+            ArtifactStatus.ACCEPTED
+            if self.mode in (ObjectProvisionMode.ALL_ACCEPTED, ObjectProvisionMode.LAST_ACCEPTED)
+            else None
+        )
+        candidates = store.query_artifacts(type=self.type_filter, status=status)
+        candidates.sort(key=lambda a: a.created_at, reverse=True)  # most-recent first
+        if self.mode is ObjectProvisionMode.LAST_ACCEPTED:
+            return candidates[:1]
+        return candidates
+
+    def materialize(self, store: Store) -> dict[str, dict[str, bytes]]:
+        """Resolve the policy to ``{role: {name: bytes}}`` ready for ``ServedContext`` (§9).
+
+        Names are **ordered + meaningful** (issue #20): multi-object modes namespace each artifact
+        under a recency-ranked subdir ``<prefix><NN>-<id>/<name>`` (``01`` = newest), and
+        ``LAST_ACCEPTED`` stays flat (``<prefix><name>``) for the single-incumbent common case. A
+        ``<prefix>INDEX.md`` manifest always accompanies the bytes, describing each provisioned
+        artifact (rank, id, status, recency, type, score) so the agent can tell which incumbent is
+        newest/accepted/best to build on. Harvested object *names* stay domain-fixed; disambiguation
+        is the subdir scheme + manifest, so any name-flattening consumer must namespace.
+        """
+        single = self.mode is ObjectProvisionMode.LAST_ACCEPTED
+        role: dict[str, bytes] = {}
+        entries: list[_ManifestEntry] = []
+        for rank, artifact in enumerate(self._select(store), start=1):
+            subdir = "" if single else f"{rank:02d}-{artifact.id}/"
+            files: list[str] = []
+            for name, ref in artifact.objects:
+                if len(role) >= self.max_objects:
+                    break
+                key = f"{self.name_prefix}{subdir}{name}"
+                role[key] = store.get_object(ref.content_hash)
+                files.append(key)
+            if files:
+                score = _artifact_score(store, artifact)
+                entries.append(_ManifestEntry(rank, artifact, score, files))
+        if not role:
+            return {}
+        role[f"{self.name_prefix}INDEX.md"] = _render_manifest(self.mode, entries)
+        return {self.target_role: role}
+
+
+@dataclass(frozen=True, slots=True)
+class _ManifestEntry:
+    rank: int
+    artifact: Artifact
+    score: float | None
+    files: list[str]
+
+
+def _artifact_score(store: Store, artifact: Artifact) -> float | None:
+    """The artifact's best recorded gate score (e.g. the accepting selection score), or ``None``.
+
+    A recorded measurement — not verifier-internal state — so surfacing it keeps the control plane
+    generic (status/recency/recorded score), consistent with the no-verifier-semantics rule.
+    """
+    scores = [d.score for d in store.decisions_for(artifact.id) if d.score is not None]
+    return max(scores) if scores else None
+
+
+def _render_manifest(mode: ObjectProvisionMode, entries: list[_ManifestEntry]) -> bytes:
+    """A small Markdown index of the provisioned durable objects (issue #20)."""
+    lines = [
+        "# Provisioned durable objects",
+        "",
+        f"Selected by `{mode.value}` (status/recency, newest first). Build on the best/newest "
+        "incumbent rather than starting from scratch.",
+        "",
+        "| rank | artifact | type | status | created_at | score | files |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for entry in entries:
+        art = entry.artifact
+        score = f"{entry.score:.4f}" if entry.score is not None else "-"
+        lines.append(
+            f"| {entry.rank:02d} | {art.id} | {art.type} | {art.status.value} | "
+            f"{art.created_at} | {score} | {', '.join(entry.files)} |"
+        )
+    return ("\n".join(lines) + "\n").encode("utf-8")
