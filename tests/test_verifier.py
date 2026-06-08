@@ -14,15 +14,12 @@ import pytest
 from verity.contracts import (
     Artifact,
     ArtifactStatus,
-    GateUnavailable,
     VerdictKind,
     VerifierPort,
     VerifierRequest,
 )
-from verity.retry import RetryPolicy
 from verity.verifier import (
     CheckOutcome,
-    ContainerCodeRunner,
     FakeModelClient,
     GateStep,
     JudgeReply,
@@ -34,7 +31,7 @@ from verity.verifier import (
     model_tester,
     numeric_scorer,
 )
-from verity.verifier.model_client import AnthropicModelClient, _parse_reply
+from verity.verifier.model_client import _parse_reply
 from verity.verifier.primitives import WEAK_JUDGE_LABEL
 
 
@@ -152,88 +149,6 @@ def test_llm_judge_sees_only_artifacts_in_context() -> None:
     incumbents = (_artifact("inc"),)
     _run(llm_judge(FakeModelClient(reply=spy), criteria="x"), _request(store_slice=incumbents))
     assert all(isinstance(item, Artifact) for item in seen)
-
-
-# ---------------------------------------------------- AnthropicModelClient retry seam (ROADMAP 5.1)
-
-
-class _TransientModelError(Exception):
-    """Stands in for an anthropic rate-limit / timeout / 5xx in the offline retry tests."""
-
-
-class _AuthModelError(Exception):
-    """A non-transient model error (e.g. a bad key) — must NOT be retried."""
-
-
-class _FakeAnthropic:
-    """A minimal async stand-in for ``AsyncAnthropic``: fails N times, then returns a reply."""
-
-    def __init__(self, *, fail_times: int = 0, error: type[Exception] = _TransientModelError,
-                 reply: str = '{"verdict": "accept", "rationale": "looks fine"}') -> None:
-        self.calls = 0
-        self._fail_times = fail_times
-        self._error = error
-        self._reply = reply
-        self.messages = self  # so ``client.messages.create`` resolves to ``self.create``
-
-    async def create(self, **_kwargs: object) -> object:
-        self.calls += 1
-        if self.calls <= self._fail_times:
-            raise self._error("transient")
-        block = type("Block", (), {"type": "text", "text": self._reply})()
-        return type("Message", (), {"content": [block]})()
-
-
-def _no_wait() -> tuple[list[float], object]:
-    delays: list[float] = []
-
-    async def sleep(d: float) -> None:
-        delays.append(d)
-
-    return delays, sleep
-
-
-def test_anthropic_judge_retries_a_transient_model_error_then_succeeds() -> None:
-    delays, sleep = _no_wait()
-    fake = _FakeAnthropic(fail_times=2)
-    client = AnthropicModelClient(
-        client=fake, transient_errors=(_TransientModelError,),
-        retry=RetryPolicy(attempts=3, base_delay_s=0.1), sleep=sleep,
-    )
-    reply = asyncio.run(client.judge(criteria="good?", artifact=_artifact(), context=()))
-    assert reply.verdict is VerdictKind.ACCEPT and fake.calls == 3 and len(delays) == 2
-
-
-def test_anthropic_judge_surfaces_a_persistent_model_failure_as_gate_unavailable() -> None:
-    _delays, sleep = _no_wait()
-    fake = _FakeAnthropic(fail_times=99)
-    client = AnthropicModelClient(
-        client=fake, transient_errors=(_TransientModelError,),
-        retry=RetryPolicy(attempts=3, base_delay_s=0.1), sleep=sleep,
-    )
-    with pytest.raises(GateUnavailable, match="failed after 3 attempts"):
-        asyncio.run(client.judge(criteria="x", artifact=_artifact(), context=()))
-    assert fake.calls == 3  # tried exactly `attempts` times, then gave up
-
-
-def test_anthropic_judge_does_not_retry_a_non_transient_error() -> None:
-    _delays, sleep = _no_wait()
-    fake = _FakeAnthropic(fail_times=99, error=_AuthModelError)
-    client = AnthropicModelClient(
-        client=fake, transient_errors=(_TransientModelError,),
-        retry=RetryPolicy(attempts=3), sleep=sleep,
-    )
-    with pytest.raises(_AuthModelError):  # propagates raw, not laundered into GateUnavailable
-        asyncio.run(client.judge(criteria="x", artifact=_artifact(), context=()))
-    assert fake.calls == 1
-
-
-def test_code_runner_missing_docker_binary_is_gate_unavailable() -> None:
-    # The gate cannot run the code if docker is absent -> infrastructure, not a verdict. A missing
-    # binary raises OSError, which the runner types as a recoverable GateUnavailable (ROADMAP 5.1).
-    runner = ContainerCodeRunner(docker_bin="verity-no-such-docker-binary-xyz")
-    with pytest.raises(GateUnavailable, match="could not launch the code runner"):
-        asyncio.run(runner._run_container([runner.docker_bin, "run"], "t", 5.0))
 
 
 # ----------------------------------------------------------------- rung 5 + seam

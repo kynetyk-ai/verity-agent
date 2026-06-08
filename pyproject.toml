@@ -13,7 +13,6 @@ dependencies = [
 sandbox = [
     "deepagents>=0.6.8,<0.7",
     "langchain-openai>=0.2",
-    "pypdf>=4",  # the read_pdf sandbox tool (5.4); baked into the sandbox image
 ]
 
 [dependency-groups]
@@ -45,21 +44,9 @@ files = ["src"]
 
 # The Deep Agents sandbox driver imports an untyped third-party stack; it is quarantined to one
 # module (src/verity/sandbox/deepagents_driver.py) and the framework-neutral core stays strict-typed.
-# pypdf is a lazy import inside the read_pdf sandbox tool; it lives only in the `sandbox` extra, so a
-# CI type-check without that extra (mypy src) must tolerate it being absent.
 [[tool.mypy.overrides]]
-module = [
-    "deepagents.*", "langchain.*", "langchain_core.*", "langchain_openai.*", "langgraph.*",
-    "pypdf.*",
-]
+module = ["deepagents.*", "langchain.*", "langchain_core.*", "langchain_openai.*", "langgraph.*"]
 ignore_missing_imports = true
-
-# Without the `sandbox` extra installed (CI's `mypy src`), AgentMiddleware resolves to Any, and
-# strict mode forbids subclassing Any. The framework is the type authority here, so relax just this
-# one check for the quarantined driver; with the extra installed the real base class still applies.
-[[tool.mypy.overrides]]
-module = ["verity.sandbox.deepagents_driver"]
-disallow_subclassing_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
