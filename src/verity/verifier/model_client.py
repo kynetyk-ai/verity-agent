@@ -13,13 +13,15 @@ proposer's rationale (the slice is :class:`Artifact` only, by construction, §10
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from verity.contracts import Artifact, VerdictKind
+from verity.contracts import Artifact, GateUnavailable, VerdictKind
 from verity.logging import get_logger
+from verity.retry import RetryPolicy, retry_async
 from verity.verifier.errors import VerifierError
 
 if TYPE_CHECKING:  # the real backend is imported lazily so the package never hard-requires it
@@ -94,26 +96,48 @@ _SYSTEM = (
 )
 
 
+def _anthropic_transient_errors() -> tuple[type[BaseException], ...]:
+    """The Anthropic SDK errors worth retrying — rate-limits, timeouts, connection drops, 5xx."""
+    import anthropic
+
+    return (
+        anthropic.APITimeoutError,
+        anthropic.APIConnectionError,
+        anthropic.RateLimitError,
+        anthropic.InternalServerError,
+    )
+
+
 @dataclass
 class AnthropicModelClient:
     """A live :class:`ModelClient` backed by the Anthropic API (spec §3.6, §11 rung 4).
 
-    Integration-only — **not exercised by the unit suite** (which uses :class:`FakeModelClient`).
-    ``anthropic`` is imported lazily, so importing this module never requires the SDK or a key.
-    A non-JSON reply is a verifier *infrastructure* failure, not a judgment, so it raises rather
-    than laundering an unparseable response into an accept/reject.
+    Integration-only — the unit suite uses :class:`FakeModelClient`. ``anthropic`` is imported
+    lazily, so importing this module never requires the SDK or a key. A transient model failure
+    (rate-limit / timeout / 5xx) is retried with backoff (ROADMAP 5.1) and, if it still fails,
+    surfaces as a recoverable :class:`GateUnavailable` rather than aborting the run; a non-JSON
+    reply is a verifier *infrastructure* failure, not a judgment, so it raises rather than
+    laundering an unparseable response into an accept/reject. ``client`` / ``transient_errors`` /
+    ``sleep`` are injectable so the retry seam is unit-testable without the SDK or a live key.
     """
 
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 1024
-    _client: AsyncAnthropic | None = field(default=None, init=False, repr=False)
+    request_timeout_s: float = 60.0
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
+    client: Any | None = None  # AsyncAnthropic; injectable for tests, built lazily when None
+    transient_errors: tuple[type[BaseException], ...] = ()  # () -> the SDK's transient set
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
     def _ensure_client(self) -> AsyncAnthropic:
-        if self._client is None:
+        if self.client is None:
             from anthropic import AsyncAnthropic
 
-            self._client = AsyncAnthropic()
-        return self._client
+            self.client = AsyncAnthropic()
+        return self.client
+
+    def _transient(self) -> tuple[type[BaseException], ...]:
+        return self.transient_errors or _anthropic_transient_errors()
 
     async def judge(
         self, *, criteria: str, artifact: Artifact, context: tuple[Artifact, ...]
@@ -125,12 +149,25 @@ class AnthropicModelClient:
             f"Context ({len(context)} prior artifacts):\n"
             + "\n".join(f"- {a.id} [{a.status}] {a.payload!r}" for a in context)
         )
-        message = await client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": prompt}],
-        )
+
+        def _call() -> Awaitable[Any]:
+            return client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=self.request_timeout_s,
+            )
+
+        transient = self._transient()
+        try:
+            message = await retry_async(
+                _call, policy=self.retry, retry_on=transient, sleep=self.sleep, label="llm-judge",
+            )
+        except transient as exc:
+            raise GateUnavailable(
+                f"judge model call failed after {self.retry.attempts} attempts: {exc}"
+            ) from exc
         text = "".join(block.text for block in message.content if block.type == "text")
         return _parse_reply(text)
 

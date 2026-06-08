@@ -132,9 +132,16 @@ class DeepAgentsContainerDriver:
         return cmd
 
     async def _run_container(self, cmd: Sequence[str], *, name: str) -> None:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError as exc:
+            # A missing/unreachable docker binary would otherwise raise a raw OSError that bypasses
+            # the control plane's degrade-don't-crash catch; type it as a recoverable cycle (5.1).
+            raise SandboxError(
+                f"could not launch the sandbox container ({self.docker_bin}): {exc}"
+            ) from exc
         try:
             _out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
         except TimeoutError:

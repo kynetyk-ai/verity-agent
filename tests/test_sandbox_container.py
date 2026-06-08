@@ -32,6 +32,7 @@ from verity.control_plane.workspace import DefaultLayout
 from verity.domains.code import DATASET, build_code_domain
 from verity.sandbox.container_driver import DeepAgentsContainerDriver
 from verity.sandbox.container_io import CycleInput
+from verity.sandbox.errors import SandboxError
 from verity.sandbox.registration import build_container_sandbox
 from verity.verifier import FakeCodeRunner, RunResult, docker_available
 
@@ -50,6 +51,14 @@ def test_cycle_input_roundtrips() -> None:
     back = CycleInput.from_json(ci.to_json())
     assert back == ci
     assert back.deadline_s == 1500.0 and back.tool_names == ("read_pdf",)
+
+
+def test_a_missing_docker_binary_degrades_to_a_sandbox_error() -> None:
+    # No daemon needed: a non-existent binary makes create_subprocess_exec raise OSError, which the
+    # driver types as a recoverable SandboxError instead of a raw OSError aborting the run (5.1).
+    driver = DeepAgentsContainerDriver(model="m", docker_bin="verity-no-such-docker-binary-xyz")
+    with pytest.raises(SandboxError, match="could not launch the sandbox container"):
+        asyncio.run(driver._run_container([driver.docker_bin, "run"], name="t"))
 
 
 def test_docker_command_has_hostile_posture_with_network(tmp_path: Path) -> None:
