@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from langchain_core.messages import AIMessage
+from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.messages import AIMessage, HumanMessage
 
 from verity.control_plane.registries import OperationSignature
 from verity.control_plane.workspace import ProvisionedWorkspace
@@ -40,11 +42,62 @@ from verity.sandbox.descriptor import (
 )
 from verity.sandbox.errors import SandboxError
 
-__all__ = ["DeepAgentsInProcessDriver", "build_deepagents_agent", "run_agent"]
+__all__ = [
+    "DeepAgentsInProcessDriver",
+    "DeadlineMiddleware",
+    "build_deepagents_agent",
+    "run_agent",
+]
 
 log = get_logger("verity.sandbox.deepagents_driver")
 
 _DEFAULT_RECURSION_LIMIT = 80
+_DEADLINE_WARN_FRACTION = 0.8  # warn the agent once it is this far into its time budget
+
+
+class DeadlineMiddleware(AgentMiddleware):
+    """A soft-deadline nudge (ROADMAP 5.2): inject a wrap-up message before the hard timeout kills.
+
+    The hard sandbox timeout is the backstop; this biases the agent to *finalize* first. Once the
+    run is ``warn_fraction`` of the way through ``deadline_s`` (wall-clock), ``before_model``
+    injects a one-time wrap-up message telling the agent to submit. ``now`` injectable for tests.
+    """
+
+    def __init__(
+        self,
+        deadline_s: float,
+        *,
+        now: Callable[[], float] = time.monotonic,
+        warn_fraction: float = _DEADLINE_WARN_FRACTION,
+    ) -> None:
+        super().__init__()
+        self._deadline_s = deadline_s
+        self._now = now
+        self._warn_at = warn_fraction * deadline_s
+        self._start: float | None = None
+        self._warned = False
+
+    def before_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        self._start = self._now()
+        return None
+
+    def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        if self._start is None:
+            self._start = self._now()
+        elapsed = self._now() - self._start
+        if self._warned or elapsed < self._warn_at:
+            return None
+        self._warned = True
+        remaining = max(0, int(self._deadline_s - elapsed))
+        return {
+            "messages": [
+                HumanMessage(content=(
+                    f"Time budget almost spent: ~{remaining}s of {int(self._deadline_s)}s left. "
+                    "Stop exploring now — finalize your script, run it once to confirm it works, "
+                    "and submit your best proposal immediately."
+                ))
+            ]
+        }
 
 
 def build_deepagents_agent(
@@ -54,14 +107,23 @@ def build_deepagents_agent(
     outbox: Path,
     system_prompt: str,
     backend: Any,
+    extra_tools: Sequence[Any] = (),
+    middleware: Sequence[Any] = (),
+    deadline_s: float | None = None,
 ) -> Any:
     """Build the YOLO coding agent: Deep Agents' native tools + a propose tool per operation.
 
     ``backend`` decides the coding capability: a shell-capable backend (``LocalShellBackend``) gives
     a working ``execute``; a plain ``FilesystemBackend`` gives file tools only. ``outbox`` is where
-    the propose tools write the descriptor.
+    the propose tools write the descriptor. ``extra_tools`` are domain/task tools the adapter binds
+    (§8.2 seam, #6). ``middleware`` forwards to ``create_deep_agent``; when ``deadline_s`` is set a
+    :class:`DeadlineMiddleware` is appended. (Deep Agents auto-injects **summarization/compaction**
+    middleware into its base stack, so context compaction is already on — ROADMAP 5.2.)
     """
-    tools = [_make_propose_tool(sig, outbox) for sig in operations]
+    tools = [_make_propose_tool(sig, outbox) for sig in operations] + list(extra_tools)
+    stack = list(middleware)
+    if deadline_s is not None:
+        stack.append(DeadlineMiddleware(deadline_s))
     # The framework is opaque to us: treat the compiled agent as Any so its overloaded `invoke`
     # bridges cleanly through asyncio.to_thread / a direct call.
     agent: Any = create_deep_agent(
@@ -69,6 +131,7 @@ def build_deepagents_agent(
         tools=tools,
         system_prompt=system_prompt,
         backend=backend,
+        middleware=stack,
     )
     return agent
 

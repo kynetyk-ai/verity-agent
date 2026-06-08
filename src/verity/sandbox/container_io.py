@@ -35,6 +35,8 @@ class CycleInput:
     user_message: str
     operations: tuple[OperationSignature, ...]
     recursion_limit: int = 80
+    deadline_s: float | None = None  # soft wrap-up budget (5.2); usually the container hard timeout
+    tool_names: tuple[str, ...] = ()  # extra sandbox tools to bind, by registry name (5.4, #6)
 
     def to_json(self) -> bytes:
         return json.dumps(
@@ -46,6 +48,8 @@ class CycleInput:
                     for s in self.operations
                 ],
                 "recursion_limit": self.recursion_limit,
+                "deadline_s": self.deadline_s,
+                "tool_names": list(self.tool_names),
             }
         ).encode("utf-8")
 
@@ -61,4 +65,6 @@ class CycleInput:
             user_message=obj["user_message"],
             operations=operations,
             recursion_limit=int(obj.get("recursion_limit", 80)),
+            deadline_s=obj.get("deadline_s"),
+            tool_names=tuple(obj.get("tool_names", ())),
         )

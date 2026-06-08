@@ -45,6 +45,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage  # noqa: E402
 
 from verity.sandbox.deepagents_driver import (  # noqa: E402
+    DeadlineMiddleware,
     DeepAgentsInProcessDriver,
     _extract_telemetry,
     build_deepagents_agent,
@@ -270,3 +271,39 @@ def test_telemetry_flows_through_the_loop_into_the_run_report(tmp_path: Path) ->
     assert cycle.agent_telemetry is not None and cycle.agent_telemetry["model_steps"] >= 1
     assert report.agent_telemetry is not None  # the run total is populated (no longer a null slot)
     assert report.agent_telemetry["model_steps"] >= 1
+
+
+# --------------------------------------------------------------------------- 5.2 deadline hook
+
+
+def test_deadline_middleware_injects_a_wrap_up_once_past_the_threshold() -> None:
+    ticks = iter([0.0, 50.0, 85.0, 95.0])  # start, then three before_model calls
+    mw = DeadlineMiddleware(100.0, now=lambda: next(ticks), warn_fraction=0.8)
+    mw.before_agent(None, None)  # start = 0.0
+
+    assert mw.before_model(None, None) is None  # elapsed 50 < 80: no nudge yet
+    injected = mw.before_model(None, None)  # elapsed 85 >= 80: inject once
+    assert injected is not None
+    assert "submit" in injected["messages"][0].content  # the wrap-up nudge
+    assert mw.before_model(None, None) is None  # elapsed 95: already warned, silent
+
+
+def test_deadline_middleware_is_silent_with_no_budget_pressure() -> None:
+    mw = DeadlineMiddleware(1000.0, now=lambda: 0.0)
+    mw.before_agent(None, None)
+    assert mw.before_model(None, None) is None  # elapsed 0: nothing injected
+
+
+def test_agent_builds_with_a_deadline(tmp_path: Path) -> None:
+    # Smoke: building with a deadline (which appends DeadlineMiddleware) succeeds and keeps tools.
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    agent = build_deepagents_agent(
+        model=ToolCallingFakeModel(messages=iter([AIMessage(content="x")])),
+        operations=_note_schema().operations(),
+        outbox=outbox,
+        system_prompt="s",
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+        deadline_s=300.0,
+    )
+    assert "author" in set(agent.get_graph().nodes["tools"].data.tools_by_name)

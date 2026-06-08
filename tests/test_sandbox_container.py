@@ -44,9 +44,12 @@ def test_cycle_input_roundtrips() -> None:
         user_message="do it",
         operations=(OperationSignature("submit", ("Dataset",), "Submission"),),
         recursion_limit=42,
+        deadline_s=1500.0,  # soft wrap-up budget (5.2)
+        tool_names=("read_pdf",),  # extra sandbox tools by name (5.4)
     )
     back = CycleInput.from_json(ci.to_json())
     assert back == ci
+    assert back.deadline_s == 1500.0 and back.tool_names == ("read_pdf",)
 
 
 def test_docker_command_has_hostile_posture_with_network(tmp_path: Path) -> None:

@@ -80,6 +80,9 @@ class DeepAgentsContainerDriver:
                 user_message=user_message,
                 operations=operations,
                 recursion_limit=self.recursion_limit,
+                # The soft wrap-up deadline is the container's hard timeout: the agent is nudged to
+                # finalize before the kill (5.2). The hard timeout stays the backstop.
+                deadline_s=self.timeout_s,
             )
             (inputs_dir / "input.json").write_bytes(cycle.to_json())
             os.chmod(inputs_dir, 0o755)

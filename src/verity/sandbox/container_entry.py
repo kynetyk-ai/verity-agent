@@ -44,6 +44,7 @@ def main() -> None:
         outbox=Path(CONTAINER_OUTBOX),
         system_prompt=cycle.system_prompt,
         backend=backend,
+        deadline_s=cycle.deadline_s,
     )
     log.info("container_entry_run", model=model, ops=[s.name for s in cycle.operations])
     run_agent(
