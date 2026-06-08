@@ -182,17 +182,22 @@ def test_policy_last_accepted_takes_the_most_recent_accepted() -> None:
     policy = ObjectProvisioningPolicy(
         mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
     )
-    out = policy.materialize(_store_with_three())
-    # the rejected s3 is more recent but not accepted; s2 (latest accepted) wins, unnamespaced.
-    assert out == {"scratch": {"provided/submission.py": b"v2"}}
+    out = policy.materialize(_store_with_three())["scratch"]
+    # the rejected s3 is more recent but not accepted; s2 (latest accepted) wins, flat + a manifest.
+    assert out["provided/submission.py"] == b"v2"
+    assert "provided/INDEX.md" in out and b"s2" in out["provided/INDEX.md"]
 
 
-def test_policy_all_accepted_namespaces_by_artifact() -> None:
+def test_policy_all_accepted_ranks_by_recency_with_a_manifest() -> None:
     policy = ObjectProvisioningPolicy(
         mode=ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(_store_with_three())["scratch"]
-    assert out == {"provided/s1/submission.py": b"v1", "provided/s2/submission.py": b"v2"}
+    # newest-first ranked subdirs (01 = s2, the most recent accepted), plus the manifest.
+    assert out["provided/01-s2/submission.py"] == b"v2"
+    assert out["provided/02-s1/submission.py"] == b"v1"
+    manifest = out["provided/INDEX.md"].decode()
+    assert "| 01 | s2 |" in manifest and "| 02 | s1 |" in manifest  # ordered, meaningful
 
 
 def test_policy_all_includes_terminal_and_respects_cap() -> None:
@@ -200,7 +205,9 @@ def test_policy_all_includes_terminal_and_respects_cap() -> None:
         mode=ObjectProvisionMode.ALL, type_filter=SUBMISSION, max_objects=2
     )
     out = policy.materialize(_store_with_three())["scratch"]
-    assert len(out) == 2  # capped; the rejected one is eligible under ALL
+    # the cap bounds object files (2), but the manifest always rides along (metadata, not payload).
+    object_files = [k for k in out if not k.endswith("INDEX.md")]
+    assert len(object_files) == 2 and "provided/INDEX.md" in out
 
 
 # ----------------------------------------------------------- sandbox materializes + re-provisions

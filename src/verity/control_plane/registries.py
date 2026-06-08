@@ -281,17 +281,71 @@ class ObjectProvisioningPolicy:
         return candidates
 
     def materialize(self, store: Store) -> dict[str, dict[str, bytes]]:
-        """Resolve the policy to ``{role: {name: bytes}}`` ready for ``ServedContext`` (§9)."""
-        role: dict[str, bytes] = {}
+        """Resolve the policy to ``{role: {name: bytes}}`` ready for ``ServedContext`` (§9).
+
+        Names are **ordered + meaningful** (issue #20): multi-object modes namespace each artifact
+        under a recency-ranked subdir ``<prefix><NN>-<id>/<name>`` (``01`` = newest), and
+        ``LAST_ACCEPTED`` stays flat (``<prefix><name>``) for the single-incumbent common case. A
+        ``<prefix>INDEX.md`` manifest always accompanies the bytes, describing each provisioned
+        artifact (rank, id, status, recency, type, score) so the agent can tell which incumbent is
+        newest/accepted/best to build on. Harvested object *names* stay domain-fixed; disambiguation
+        is the subdir scheme + manifest, so any name-flattening consumer must namespace.
+        """
         single = self.mode is ObjectProvisionMode.LAST_ACCEPTED
-        for artifact in self._select(store):
+        role: dict[str, bytes] = {}
+        entries: list[_ManifestEntry] = []
+        for rank, artifact in enumerate(self._select(store), start=1):
+            subdir = "" if single else f"{rank:02d}-{artifact.id}/"
+            files: list[str] = []
             for name, ref in artifact.objects:
                 if len(role) >= self.max_objects:
                     break
-                key = f"{self.name_prefix}{name}" if single else (
-                    f"{self.name_prefix}{artifact.id}/{name}"
-                )
+                key = f"{self.name_prefix}{subdir}{name}"
                 role[key] = store.get_object(ref.content_hash)
+                files.append(key)
+            if files:
+                score = _artifact_score(store, artifact)
+                entries.append(_ManifestEntry(rank, artifact, score, files))
         if not role:
             return {}
+        role[f"{self.name_prefix}INDEX.md"] = _render_manifest(self.mode, entries)
         return {self.target_role: role}
+
+
+@dataclass(frozen=True, slots=True)
+class _ManifestEntry:
+    rank: int
+    artifact: Artifact
+    score: float | None
+    files: list[str]
+
+
+def _artifact_score(store: Store, artifact: Artifact) -> float | None:
+    """The artifact's best recorded gate score (e.g. the accepting selection score), or ``None``.
+
+    A recorded measurement — not verifier-internal state — so surfacing it keeps the control plane
+    generic (status/recency/recorded score), consistent with the no-verifier-semantics rule.
+    """
+    scores = [d.score for d in store.decisions_for(artifact.id) if d.score is not None]
+    return max(scores) if scores else None
+
+
+def _render_manifest(mode: ObjectProvisionMode, entries: list[_ManifestEntry]) -> bytes:
+    """A small Markdown index of the provisioned durable objects (issue #20)."""
+    lines = [
+        "# Provisioned durable objects",
+        "",
+        f"Selected by `{mode.value}` (status/recency, newest first). Build on the best/newest "
+        "incumbent rather than starting from scratch.",
+        "",
+        "| rank | artifact | type | status | created_at | score | files |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for entry in entries:
+        art = entry.artifact
+        score = f"{entry.score:.4f}" if entry.score is not None else "-"
+        lines.append(
+            f"| {entry.rank:02d} | {art.id} | {art.type} | {art.status.value} | "
+            f"{art.created_at} | {score} | {', '.join(entry.files)} |"
+        )
+    return ("\n".join(lines) + "\n").encode("utf-8")

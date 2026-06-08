@@ -37,6 +37,7 @@ from verity.contracts import (
     SandboxPort,
     ServedContext,
     VerdictBundle,
+    VerdictKind,
     VerifierPort,
     VerifierRequest,
 )
@@ -59,6 +60,7 @@ from verity.control_plane.store import (
     default_clock,
 )
 from verity.logging import get_logger
+from verity.sandbox.errors import SandboxError
 
 __all__ = [
     "IntakeResult",
@@ -67,6 +69,7 @@ __all__ = [
     "ControlPlane",
     "ControlPlaneError",
     "UnknownTask",
+    "OrchestrationError",
 ]
 
 log = get_logger("verity.control_plane.api")
@@ -80,20 +83,26 @@ class UnknownTask(ControlPlaneError):
     """Raised when an operation references a task that was never configured."""
 
 
+class OrchestrationError(ControlPlaneError):
+    """Raised when a run aborts on too many consecutive sandbox failures (§3.4)."""
+
+
 @dataclass(frozen=True, slots=True)
 class IntakeResult:
     """The outcome of submitting one proposal (spec §3.4 intake).
 
-    ``entered_protocol`` is False exactly when the proposal was malformed: then ``shape_error``
-    carries the correction and **nothing was recorded** (no object harvested, no `proposed` row,
-    no decision — §7.0). Otherwise ``commit`` is the §7 result and ``harvested`` maps each outbox
-    object's name to its content-addressed reference.
+    ``entered_protocol`` is False exactly when the proposal was malformed *or* the sandbox produced
+    no usable proposal this cycle. On a malformed proposal ``shape_error`` carries the correction;
+    on a sandbox failure ``sandbox_error`` carries the reason. In both cases **nothing is recorded**
+    (no object harvested, no `proposed` row, no decision — §7.0). Otherwise ``commit`` is the §7
+    result and ``harvested`` maps each outbox object's name to its content-addressed reference.
     """
 
     entered_protocol: bool
     shape_error: ShapeError | None = None
     commit: CommitResult | None = None
     harvested: dict[str, ObjectRef] = field(default_factory=dict)
+    sandbox_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,11 +113,15 @@ class OrchestrationPolicy:
     ``refine_cap`` bounds how many times a single lineage may be sent back to refine before it
     terminates in ``rejected`` (so an un-satisfiable artifact cannot loop forever, §12 seam).
     ``stop_on_accept`` ends the run as soon as an artifact is accepted (useful for tests/demos).
+    ``max_consecutive_sandbox_failures`` bounds how many cycles in a row may fail to produce a
+    proposal (a timed-out / crashed / runaway sandbox) before the run aborts, so a wholly-broken
+    sandbox cannot spin to ``max_cycles``; the counter resets on any cycle that does propose.
     """
 
     max_cycles: int = 20
     refine_cap: int = 3
     stop_on_accept: bool = False
+    max_consecutive_sandbox_failures: int = 3
 
     def should_continue(self, *, cycles_run: int) -> bool:
         return cycles_run < self.max_cycles
@@ -359,10 +372,21 @@ class ControlPlane:
     # -- cycle control: the orchestration loop (§3.4) -----------------------------
 
     async def run_cycle(self, task_id: str, *, goal: str, feedback: str = "") -> IntakeResult:
-        """One read → propose → gate → commit cycle, then regenerate the sandbox (§3.5, §10)."""
+        """One read → propose → gate → commit cycle, then regenerate the sandbox (§3.5, §10).
+
+        A sandbox that fails to yield a usable proposal this cycle (a timed-out / crashed / runaway
+        agent, or one that proposed nothing — all surfaced as :class:`SandboxError`) does **not**
+        abort the run: it is recorded as a failed cycle and the workspace is still regenerated, so a
+        single bad cycle cannot destroy a multi-round session (§3.4; issue #21).
+        """
         task = self._task(task_id)
         await self.serve_context(task_id, goal=goal, feedback=feedback)
-        envelope = await task.sandbox.collect_proposal()
+        try:
+            envelope = await task.sandbox.collect_proposal()
+        except SandboxError as exc:
+            log.warning("sandbox_cycle_failed", task_id=task_id, error=str(exc))
+            await task.sandbox.regenerate()  # discard the broken workspace; next cycle starts fresh
+            return IntakeResult(entered_protocol=False, sandbox_error=str(exc))
         result = await self.submit_proposal(task_id, envelope)
         # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
         await task.sandbox.regenerate()
@@ -377,16 +401,29 @@ class ControlPlane:
         results: list[IntakeResult] = []
         feedback = ""
         cycles = 0
+        consecutive_failures = 0
         while self._policy.should_continue(cycles_run=cycles):
             result = await self.run_cycle(task_id, goal=goal, feedback=feedback)
             results.append(result)
             cycles += 1
-            if (
-                self._policy.stop_on_accept
-                and result.commit is not None
-                and result.commit.status is ArtifactStatus.ACCEPTED
-            ):
-                break
+            if result.sandbox_error is not None:
+                # A failed cycle: bound runaway failure, else feed the reason back and continue.
+                consecutive_failures += 1
+                cap = self._policy.max_consecutive_sandbox_failures
+                if cap and consecutive_failures >= cap:
+                    log.error("run_aborted_sandbox_failures", task_id=task_id, failures=cap)
+                    raise OrchestrationError(
+                        f"aborting run after {consecutive_failures} consecutive sandbox failures "
+                        f"(last: {result.sandbox_error})"
+                    )
+            else:
+                consecutive_failures = 0
+                if (
+                    self._policy.stop_on_accept
+                    and result.commit is not None
+                    and result.commit.status is ArtifactStatus.ACCEPTED
+                ):
+                    break
             feedback = _feedback_from(result)
         log.info("run_complete", task_id=task_id, cycles=cycles)
         return results
@@ -418,10 +455,31 @@ class ControlPlane:
 
 
 def _feedback_from(result: IntakeResult) -> str:
-    """Render the cycle's correction for the next served context (a shape-error or refine, §3.5)."""
+    """Render the cycle's correction for the next served context (§3.5, widened — issue #21).
+
+    Beyond §3.5's shape-error and refine, this also threads back a **sandbox failure** reason (so a
+    timed-out / runaway agent is told to produce one complete proposal) and a **rejection** reason
+    (so the agent learns *why* a hard gate rejected it — previously a reject threaded nothing).
+    Feeding the gate's reason back to the proposer is independent of the gate's own inputs (§10).
+    """
+    if result.sandbox_error is not None:
+        return (
+            f"sandbox-error: your previous attempt did not produce a valid submission "
+            f"({result.sandbox_error}); produce exactly one complete proposal within the budget"
+        )
     if not result.entered_protocol and result.shape_error is not None:
         return f"shape-error: {result.shape_error.message}"
     commit = result.commit
     if commit is not None and commit.outcome is CommitOutcome.REVISED and commit.defects:
         return "refine: " + ", ".join(commit.defects)
+    if commit is not None and commit.outcome is CommitOutcome.REJECTED:
+        return f"rejected: {_rejection_reason(commit)}"
     return ""
+
+
+def _rejection_reason(commit: CommitResult) -> str:
+    """The rejecting gate's rationale, for next-cycle feedback (§7, issue #21)."""
+    for decision in commit.decisions:
+        if decision.verdict is VerdictKind.REJECT:
+            return decision.rationale
+    return "the submission did not clear a gate"

@@ -469,13 +469,8 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     )
     asyncio.run(cp.configure(config))
 
-    from verity.sandbox import SandboxError
-
-    # A slow agent can exceed the sandbox timeout, which today aborts the whole run (issue #21), so
-    # tolerate it and assert on what actually committed to the store, not on a clean run() return.
-    try:
-        asyncio.run(cp.run("fe", goal="Improve balanced accuracy on the stellar dataset."))
-    except SandboxError:
-        pass
+    # A slow agent that exceeds the sandbox timeout is now a skipped cycle, not a crashed run (#21),
+    # so run() returns normally; assert on what committed across the cycles.
+    asyncio.run(cp.run("fe", goal="Improve balanced accuracy on the stellar dataset."))
     accepted = store.query_artifacts(type=SUBMISSION, status=ArtifactStatus.ACCEPTED)
     assert accepted, "no accepted submission across the live run"
