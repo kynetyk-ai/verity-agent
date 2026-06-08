@@ -20,10 +20,14 @@ from dataclasses import dataclass
 from verity.contracts import JSONValue
 from verity.sandbox.errors import SandboxError
 
-__all__ = ["RESERVED_PROPOSAL_NAME", "ProposalDescriptor"]
+__all__ = ["RESERVED_PROPOSAL_NAME", "RESERVED_TELEMETRY_NAME", "ProposalDescriptor"]
 
 # The reserved outbox filename the propose tool writes; filtered out of the harvested object set.
 RESERVED_PROPOSAL_NAME = "__proposal__.json"
+
+# The reserved outbox filename the agent loop writes its telemetry to (tokens / steps / model);
+# harvested + split out like the proposal descriptor, so it never becomes an object attachment.
+RESERVED_TELEMETRY_NAME = "__telemetry__.json"
 
 
 @dataclass(frozen=True, slots=True)

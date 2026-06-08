@@ -67,6 +67,11 @@ Non-negotiable working norms for this repo:
 - **Always work on a branch.** Never commit directly to `main`; branch, then open a PR.
 - **Never open a PR on buggy or embarrassing code.** It runs, it's tested, and it's clean before it
   goes up for review. A PR is a finished thought, not a work-in-progress dump.
+- **Your sprint unit is a commit not a PR**, the user prefers larger substantive PRs vs a many small
+  and hard to follow PRs.  Plan a commit schedule, get the user's input on when something deserves a PR.
+- **We've run an error hardening audit** and we don't want to end up with the same mess.  Right good code 
+  with robust error handling during development - that means when possible error handingly with obvious error
+  typed, retry handling etc.  If you can't predict errors make let the code fail quickly.
 
 ## Status
 

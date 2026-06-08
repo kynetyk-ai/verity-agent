@@ -63,15 +63,23 @@ def build_deepagents_sandbox(
     root: Path,
     model: Any,
     proposer_identity: str = "deepagents-inprocess",
+    sandbox_tools: tuple[str, ...] = (),
+    step_budget: int | None = None,
     **kwargs: Any,
 ) -> AgentSandbox:
-    """An **in-process** Deep Agents sandbox (tests/dev). Requires the ``sandbox`` extra."""
+    """An **in-process** Deep Agents sandbox (tests/dev). Requires the ``sandbox`` extra.
+
+    ``sandbox_tools`` names extra (non-propose) tools the agent gets, resolved from the sandbox tool
+    registry (5.4, #6). ``step_budget`` caps per-cycle model steps (5.1); None = framework limit.
+    """
     from verity.sandbox.deepagents_driver import DeepAgentsInProcessDriver
 
     return build_sandbox(
         schema=schema,
         root=root,
-        driver=DeepAgentsInProcessDriver(model=model),
+        driver=DeepAgentsInProcessDriver(
+            model=model, tool_names=sandbox_tools, step_budget=step_budget
+        ),
         proposer_identity=proposer_identity,
         **kwargs,
     )
@@ -84,11 +92,21 @@ def build_container_sandbox(
     model: str,
     image: str = "verity-sandbox:latest",
     data_sources: tuple[str, ...] = (),
+    sandbox_tools: tuple[str, ...] = (),
+    step_budget: int | None = None,
     proposer_identity: str | None = None,
     **kwargs: Any,
 ) -> AgentSandbox:
-    """A **container-isolated** Deep Agents sandbox — safe YOLO arbitrary-code execution."""
-    driver = DeepAgentsContainerDriver(model=model, image=image, data_sources=data_sources)
+    """A **container-isolated** Deep Agents sandbox — safe YOLO arbitrary-code execution.
+
+    ``sandbox_tools`` names extra (non-propose) tools, resolved in-container from the tool registry
+    (5.4, #6); the names ride ``CycleInput.tool_names``. ``step_budget`` caps per-cycle model steps
+    (5.1); None = framework limit only.
+    """
+    driver = DeepAgentsContainerDriver(
+        model=model, image=image, data_sources=data_sources, tool_names=sandbox_tools,
+        step_budget=step_budget,
+    )
     return build_sandbox(
         schema=schema,
         root=root,

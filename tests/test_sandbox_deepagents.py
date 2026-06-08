@@ -45,7 +45,11 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage  # noqa: E402
 
 from verity.sandbox.deepagents_driver import (  # noqa: E402
+    DeadlineMiddleware,
     DeepAgentsInProcessDriver,
+    StepBudgetExceeded,
+    StepBudgetMiddleware,
+    _extract_telemetry,
     build_deepagents_agent,
 )
 
@@ -221,3 +225,145 @@ def test_live_claude_authors_an_accepted_note(tmp_path: Path) -> None:
     assert result.commit is not None and result.commit.outcome is CommitOutcome.ACCEPTED
     got = store.get_artifact("note-1")
     assert got is not None and got.status is ArtifactStatus.ACCEPTED
+
+
+# --------------------------------------------------------------------------- 5.3b telemetry
+
+
+def test_extract_telemetry_sums_usage_and_counts_steps() -> None:
+    # Two model steps: one with a tool call + usage, one final answer with usage.
+    result = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "author", "args": {}, "id": "c1"}],
+                usage_metadata={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+                response_metadata={"model_name": "claude-x"},
+            ),
+            AIMessage(
+                content="done",
+                usage_metadata={"input_tokens": 130, "output_tokens": 5, "total_tokens": 135},
+                response_metadata={"model_name": "claude-x"},
+            ),
+        ]
+    }
+    telemetry = _extract_telemetry(result)
+    assert telemetry == {
+        "input_tokens": 230, "output_tokens": 25, "total_tokens": 255,
+        "model_steps": 2, "tool_calls": 1, "model": "claude-x",
+    }
+
+
+def test_extract_telemetry_is_null_safe_for_a_usage_less_model() -> None:
+    result = {"messages": [AIMessage(content="hi")]}  # no usage_metadata, no tool calls
+    telemetry = _extract_telemetry(result)
+    assert telemetry["model_steps"] == 1 and telemetry["total_tokens"] == 0
+    assert telemetry["model"] is None  # never assumed
+
+
+def test_telemetry_flows_through_the_loop_into_the_run_report(tmp_path: Path) -> None:
+    # A real in-process Deep Agents run with the fake model writes __telemetry__.json, harvested
+    # onto the envelope and surfaced in the RunReport (tokens 0 with the fake model, steps counted).
+    cp, store = _configure(tmp_path, ToolCallingFakeModel(messages=iter(_author_call("a note"))))
+    _seed_source(store, "src-1")
+    asyncio.run(cp.run_cycle("t1", goal="author a note from src-1"))
+
+    report = cp.run_report("t1")
+    cycle = report.cycles[0]
+    assert cycle.agent_telemetry is not None and cycle.agent_telemetry["model_steps"] >= 1
+    assert report.agent_telemetry is not None  # the run total is populated (no longer a null slot)
+    assert report.agent_telemetry["model_steps"] >= 1
+
+
+# --------------------------------------------------------------------------- 5.2 deadline hook
+
+
+def test_deadline_middleware_injects_a_wrap_up_once_past_the_threshold() -> None:
+    ticks = iter([0.0, 50.0, 85.0, 95.0])  # start, then three before_model calls
+    mw = DeadlineMiddleware(100.0, now=lambda: next(ticks), warn_fraction=0.8)
+    mw.before_agent(None, None)  # start = 0.0
+
+    assert mw.before_model(None, None) is None  # elapsed 50 < 80: no nudge yet
+    injected = mw.before_model(None, None)  # elapsed 85 >= 80: inject once
+    assert injected is not None
+    assert "submit" in injected["messages"][0].content  # the wrap-up nudge
+    assert mw.before_model(None, None) is None  # elapsed 95: already warned, silent
+
+
+def test_deadline_middleware_is_silent_with_no_budget_pressure() -> None:
+    mw = DeadlineMiddleware(1000.0, now=lambda: 0.0)
+    mw.before_agent(None, None)
+    assert mw.before_model(None, None) is None  # elapsed 0: nothing injected
+
+
+def test_agent_builds_with_a_deadline(tmp_path: Path) -> None:
+    # Smoke: building with a deadline (which appends DeadlineMiddleware) succeeds and keeps tools.
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    agent = build_deepagents_agent(
+        model=ToolCallingFakeModel(messages=iter([AIMessage(content="x")])),
+        operations=_note_schema().operations(),
+        outbox=outbox,
+        system_prompt="s",
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+        deadline_s=300.0,
+    )
+    assert "author" in set(agent.get_graph().nodes["tools"].data.tools_by_name)
+
+
+def test_step_budget_middleware_nudges_then_halts() -> None:
+    mw = StepBudgetMiddleware(5, warn_fraction=0.8)  # warn at step 4, halt past step 5
+    assert mw.before_model(None, None) is None  # step 1
+    assert mw.before_model(None, None) is None  # step 2
+    assert mw.before_model(None, None) is None  # step 3
+    injected = mw.before_model(None, None)  # step 4: the one-time wrap-up nudge
+    assert injected is not None and "submit" in injected["messages"][0].content
+    assert mw.before_model(None, None) is None  # step 5: within budget, already warned
+    with pytest.raises(StepBudgetExceeded, match="budget exhausted"):
+        mw.before_model(None, None)  # step 6: over budget -> hard stop
+
+
+def test_step_budget_middleware_is_silent_well_under_budget() -> None:
+    mw = StepBudgetMiddleware(100)
+    for _ in range(3):
+        assert mw.before_model(None, None) is None
+
+
+def test_agent_builds_with_a_step_budget(tmp_path: Path) -> None:
+    # Smoke: building with a step budget (appends StepBudgetMiddleware) succeeds and keeps tools.
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    agent = build_deepagents_agent(
+        model=ToolCallingFakeModel(messages=iter([AIMessage(content="x")])),
+        operations=_note_schema().operations(),
+        outbox=outbox,
+        system_prompt="s",
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+        step_budget=10,
+    )
+    assert "author" in set(agent.get_graph().nodes["tools"].data.tools_by_name)
+
+
+# --------------------------------------------------------------------------- 5.4 sandbox tools
+
+
+def test_extra_tools_are_bound_when_selected(tmp_path: Path) -> None:
+    from verity.sandbox.tools import resolve_tools
+
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)
+    fake = ToolCallingFakeModel(messages=iter([AIMessage(content="x")]))
+
+    without = build_deepagents_agent(
+        model=fake, operations=_note_schema().operations(), outbox=outbox,
+        system_prompt="s", backend=backend,
+    )
+    assert "read_pdf" not in set(without.get_graph().nodes["tools"].data.tools_by_name)
+
+    with_tool = build_deepagents_agent(
+        model=fake, operations=_note_schema().operations(), outbox=outbox,
+        system_prompt="s", backend=backend, extra_tools=resolve_tools(("read_pdf",)),
+    )
+    bound = set(with_tool.get_graph().nodes["tools"].data.tools_by_name)
+    assert "read_pdf" in bound and "author" in bound  # the seam tool + the propose tool coexist

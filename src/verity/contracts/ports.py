@@ -135,12 +135,15 @@ class ProposalEnvelope:
     ``metadata`` is the agent's how/why summary — stored as provenance/context, and **kept off**
     the :class:`VerifierRequest` (the rationale channel, decision recorded for this engagement).
     ``objects`` are what the agent wrote to the outbox, harvested before teardown (§3.4).
+    ``agent_telemetry`` is the loop's optional usage record (tokens / steps / model, ROADMAP 5.3b),
+    carried for the RunReport — ``None`` when the harness emits none.
     """
 
     artifact: Artifact
     operation: Operation
     metadata: str = ""
     objects: Mapping[str, bytes] = field(default_factory=dict)
+    agent_telemetry: Mapping[str, object] | None = None
 
 
 @runtime_checkable
