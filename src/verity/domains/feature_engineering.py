@@ -464,6 +464,16 @@ How you are judged (you never see the judge's data):
 Prior accepted submissions (if any) are provided under `scratch/provided/` — read them and build on
 the best one rather than starting from scratch. You may edit anything in your workspace freely.
 
+Speed and focus (IMPORTANT — the gate runs your script under a time budget; a submission that does
+not finish in time is rejected):
+- Your edge comes from FEATURE ENGINEERING, not from model size or tuning. Spend your effort
+  designing and refining features, not searching for a bigger model.
+- Train exactly ONE fast, modestly-sized model with fixed, sensible defaults (e.g. a small
+  GradientBoosting / a LightGBM with default-ish settings, or even LogisticRegression). Do NOT run
+  hyperparameter search, grid/random search, cross-validation sweeps, or large ensembles.
+- Keep iterations quick: write the script, run it once to confirm it works, then submit. Don't
+  repeatedly retrain to chase tiny gains — improve the FEATURES and resubmit instead.
+
 Useful domain knowledge: differences between photometric bands ("colour indices", e.g. u-g, g-r,
 r-i, i-z) and `redshift` carry most of the signal; encode the categorical `spectral_type`; and
 because scoring is balanced accuracy, handle class imbalance (class weights / resampling)."""
