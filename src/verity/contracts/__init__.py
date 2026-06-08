@@ -12,6 +12,7 @@ machinery, the registries) stay in :mod:`verity.control_plane`; only what crosse
 
 from __future__ import annotations
 
+from verity.contracts.errors import GateUnavailable
 from verity.contracts.model import (
     Artifact,
     ArtifactStatus,
@@ -62,4 +63,6 @@ __all__ = [
     "ProviderError",
     "SANDBOX_PROVIDERS",
     "VERIFIER_PROVIDERS",
+    # errors
+    "GateUnavailable",
 ]

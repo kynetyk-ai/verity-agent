@@ -4,11 +4,13 @@ The living path from an empty repo to **MVP**. This is the canonical answer to *
 what's next?"* — `README.md` and `CLAUDE.md` point here.
 
 **MVP = spec v1.** The feature-engineering domain (spec §12) runs end-to-end and **all twelve §13
-acceptance criteria pass**. That is the finish line for this roadmap (Phase 4).
+acceptance criteria pass** — the MVP finish line (Phase 4). The arc then continues into the
+**Post-MVP roadmap** (Phases 5–7) below.
 
 > **Status: MVP reached ✅** — Phases 0–4 are done. All twelve §13 criteria pass as runnable checks
 > (`tests/test_feature_engineering_acceptance.py`); a `@live` run drives real Claude proposals scored
-> in a container on the stellar dataset. What remains is the post-MVP backlog below.
+> in a container on the stellar dataset. Next: the Post-MVP roadmap (reliability & observability →
+> open models → service split) at the end of this file.
 
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
 every invariant — and prove it works against *bespoke, throwaway* agent/workspace and verifier
@@ -43,8 +45,10 @@ These hold in every phase (see `CLAUDE.md` → *Coding habits*):
 
 - **uv** for everything; **structured logging from day one**; **tests alongside the code**.
 - **Branch + PR** for all changes; **never a PR on buggy or embarrassing code.**
-- **Container-per-service readiness** — control plane, sandbox, and verifier each build into their
-  own image; nothing defeats that portability.
+- **Container-per-service readiness** — the architecture keeps each service independently imageable
+  (async ports, no shared mutable state). Today the **sandbox** ships its own image; the control
+  plane and verifier run in-process and are imaged when the service split lands (Post-MVP Phase 7,
+  issues #3 / #10).
 - **Spec-traceability** — implementation decisions cite the spec section (`§N`) they realize; the
   vendored `spec/` tree is authoritative.
 - **Invariants are property tests**, not prose aspirations (spec §5).
@@ -271,13 +275,145 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
 
 ---
 
-## Explicitly deferred past MVP
+## Post-MVP roadmap
 
-Designed-for, not built before MVP (spec §16 seams). Each becomes a tracked issue/epic when its time
-comes:
+MVP (spec v1) is reached; this is the path beyond, **sequenced by dependency**. Reliability and
+observability come first so the later phases are measurable and debuggable; the open-model payoff
+follows; the full service split is last and largest. Each sub-item becomes a tracked GitHub issue as
+it activates (roadmap hygiene).
 
-- Multi-tenancy and authentication on the control plane.
+### Phase 5 — Reliability & observability ✅
+
+Harden the loop and make it measurable before scaling models or splitting services.
+
+- **5.1 Error-handling & reliability hardening ✅** — the loop now degrades-don't-crash on *both*
+  sides. A `GateUnavailable` (transient verifier/runner infrastructure, or a dispatch hung past a
+  backstop) is a recorded, fed-back failed cycle, symmetric with the sandbox side (#21); the
+  consecutive-failure breaker counts it too. Transient model + Docker calls retry with bounded
+  backoff (a shared `retry_async`), and a missing/broken daemon is a typed error, not a raw crash.
+  The commit path is **atomic** across its decision rows + terminal status. **#12** stamps the
+  workspace-contract / orientation version into the store (with an orientation digest) like the
+  schema version (§3.4). **#13** enforces JSON-object proposal payloads at intake (+ an optional
+  per-operation required-keys schema). A per-cycle **step budget** (`StepBudgetMiddleware`) nudges
+  then hard-stops a non-converging agent. "A failed step is recorded, not fatal" is a property test.
+  Durable failure-provenance (recording failed cycles in the store, not just the in-memory
+  `RunReport`) is split out as **#32**.
+  - *Deferred — LLM-judge reproducibility (**#11**, §5.8).* The `llm_judge` primitive + `ModelClient`
+    port exist and are unit-tested (against `FakeModelClient`), but the judge sits in **no live gate
+    stack** and `AnthropicModelClient` is integration-only — so determinism / reproducibility
+    discipline has nothing to bite on yet; its utility is theoretical. Build it out **when** we expand
+    the verifier primitives *or* stand up an LLM-judge in a real domain's gate stack (a natural fit for
+    Phase 6's cheap / local models). Until then the primitive stays frozen as a tested seam.
+- **5.2 Agent-harness hardening ✅** — **soft-deadline signal** shipped: a `DeadlineMiddleware`
+  pre-model-step hook injects a one-shot "≈Xs of Ys remaining — finalize and submit now" once past
+  0.8 of the budget, so a long cycle yields a rushed-but-real proposal instead of being killed (the
+  hard sandbox timeout stays the backstop; the control plane supplies the budget via
+  `CycleInput.deadline_s`, the harness injects it). **Context compaction** confirmed already on —
+  `create_deep_agent` auto-injects `SummarizationMiddleware`. Tool-call / step budgets and **#13**
+  JSON-object payload enforcement were folded into 5.1 (both delivered there).
+- **5.3 Metrics foundation — the store-derived `RunReport` ✅** — score-agnostic JSON projection of the
+  store (the audit record): per-cycle outcomes (accept / reject / revise / refine / sandbox-fail),
+  supersessions, trial counts, object-store growth, and cycle / gate / sandbox latencies (**5.3a**),
+  plus **agent-loop telemetry** (tokens / model-steps / tool-calls / model) carried back from the
+  sandbox through a reserved outbox file and summed per run (**5.3b**). All fields nullable — the
+  consumer parses, the control plane does not assume a numeric score. Live emission + a dashboard come
+  later (7.3).
+- **5.4 Sandbox tools & extensibility ✅** — the `ToolBinding` seam (**#6**): a
+  `SANDBOX_TOOL_REGISTRY` + `resolve_tools()` that binds non-propose, **executable** tools into the
+  agent's harness by name (the control plane declares *what* a task gets via `sandbox_tools`; the
+  adapter binds *how*; names — not callables — cross the container boundary). First concrete tool:
+  **`read_pdf`**, so the agent can read PDFs in its read-only roles.
+
+### Phase 6 — Model breadth: open, local & cheaper hosted ⬜ *(the thesis payoff)*
+
+"Good proposals from cheap models" is the point of the whole approach — make it real across local /
+open weights *and* cheaper hosted APIs.
+
+- **6.1 Local model via vllm-mlx** — stand up **vllm-mlx** (OpenAI-compatible server, Apple-Silicon
+  Metal backend) and a `deepagents-local` sandbox config; solve container→host networking
+  (`host.docker.internal`). Keep the seam **OpenAI-compatible** so Ollama / other backends swap in —
+  vLLM on Apple Silicon is younger than Ollama, so don't couple to it. Leans on 5.2 compaction (small
+  local context windows make it a hard dependency, not a nicety).
+- **6.2 Cheaper hosted providers** — wire **OpenAI** and other hosted APIs (cheaper-but-capable tiers)
+  behind the **same OpenAI-compatible model seam**: a per-provider model-construction path, a
+  registered `deepagents-<provider>` sandbox config, and the provider key passed through into the
+  container. The seam is already provider-agnostic (the driver takes a `model`), so this is mostly
+  config — its value is comparison fodder for 6.3 and a cheaper non-frontier baseline.
+- **6.3 Eval / benchmarking harness** — compare **proposal quality + cost + latency** across models
+  (local, cheaper-hosted, and frontier) on the same task, using the 5.3 RunReport metrics. The
+  instrument that tells us whether the thesis actually holds.
+
+### Phase 7 — Service split & full containerization ⬜
+
+The biggest, most deferrable: make each service independently deployable.
+
+- **7.1 Service entrypoints + images** — `__main__` / server entrypoints + Dockerfiles for the
+  **control plane** and **verifier** (today only the sandbox is imaged), so each builds into its own
+  image even before the wire exists.
+- **7.2 Networked transport** — a wire serialization + transport adapter so the async ports cross a
+  network instead of an in-process call (they were built for exactly this): the standing
+  control-plane data plane (**#3**) and the networked verifier (**#10**). The four-service split
+  (workspace promoted out of the sandbox) lands here.
+- **7.3 Live telemetry + panel** — OpenTelemetry / Prometheus emission from each service and a metrics
+  dashboard over the 5.3 RunReport signals.
+
+### Woven through Phases 6–7
+
+- **Code-runner hardening / generalization** — a declarative runner config (image, network policy,
+  resource + output caps, mount layout, deps strategy), an offline / pinned-wheels install option to
+  reclaim reproducibility, and a cleaner validity-rung vs scoring-rung split. Revisits the accepted
+  network-on tradeoff.
+
+### Multi-tenancy & run-control (a track spanning Phases 5 → 7)
+
+The control plane grows into a multi-tenant **job server**. The typed-provenance store stays the
+system of record (artifacts / operations / decisions / objects) — this adds the *operational* layer
+*around* it, not a second copy of it. Built **seams-first, engine-later**, so multi-tenancy is an
+added adapter, not a reshape.
+
+- **Run-control seams (with Phase 5).** A `JobQueue` port (`enqueue` / `claim` / `complete` /
+  `status`) with a trivial **in-process default** (run synchronously, as today); a `RunRecord` /
+  run-results store keyed by `(tenant_id, run_id)` that holds the **5.3 RunReport** + run status +
+  *pointers* to the accepted artifacts (operational metadata referencing the provenance store, **not**
+  a copy of it — the RunReport read-side and this store are the same thing); and a `tenant_id`
+  threaded through the API / `TaskConfig` while there is still only one tenant.
+- **Multi-tenancy engine (with Phase 7).** The real queue + worker model — commits stay **serialized
+  per tenant** so the sole-mutator audit guarantee is preserved; the **store-engine upgrade** the
+  queue forces (SQLite is single-writer → Postgres, or per-tenant DBs) — the natural moment for
+  **object retention / GC** of bytes referenced only by terminal artifacts (**#9**, §5.5); **tenant
+  isolation** (namespaced stores; no cross-tenant reads in retrieval / slices / object-provisioning) —
+  the actual hard part; and the async **submit → job_id → poll/fetch** API a standing, networked
+  control plane wants. Naturally siblings with the service split (7.1–7.2).
+- **Not here:** authentication / authorization (still *further out*); parallel agents against one task
+  (a related but separate concurrency concern, below).
+
+### Open issues → roadmap home
+
+Where each tracked issue folds in (so the backlog and the plan stay linked):
+
+| Issue | Folds into |
+| --- | --- |
+| **#3** standing control-plane data plane | 7.2 networked transport + the multi-tenancy engine |
+| **#5** spec sync: collapse §8.2 tool registry | *Further out* — doc housekeeping (already true in code) |
+| **#6** harness-bound executable tools | 5.4 sandbox tools & extensibility (the PDF-read tool) |
+| **#9** object retention / GC | multi-tenancy engine (with the store-engine upgrade) |
+| **#10** networked verifier transport | 7.2 networked transport |
+| **#11** LLM-judge reproducibility (§5.8) | 5.1 reliability hardening |
+| **#12** stamp workspace-contract version | 5.1 reliability hardening |
+| **#13** JSON-object proposal payloads | 5.2 agent-harness hardening |
+| **#27** multi-tenancy epic | the Multi-tenancy & run-control track |
+
+**Already done (closed):** **#2** (CI on every push/PR — now gates `main`/`develop` with branch
+protection) and **#8** (supersede-on-beat — the selection verdict names the incumbent it replaces,
+shipped in 4.2 and exercised live).
+
+### Further out / seamed (spec §16)
+
+Designed-for, not yet scheduled; each becomes an issue/epic when its time comes:
+
+- Authentication / authorization on the control plane (pairs with the multi-tenancy track above).
 - Parallel agents against one task (diversity / race — N sandboxes → 1 control plane).
-- The four-service split (workspace promoted out of the sandbox).
+- Spec sync: collapse the §8.2 tool registry into operation signatures (**#5**) — already true in code.
+- Secrets / egress policy once local + networked services land.
 - True schema migration / regime transition (spec §15).
 - The soft-gate consulting domain (spec §14).
