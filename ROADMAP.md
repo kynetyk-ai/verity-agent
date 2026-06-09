@@ -375,19 +375,34 @@ the CI gate.
 > `vllm-metal` tracks newer model architectures — it is the tidier host-model story on macOS. Tracked
 > as **#40** under the woven model-server hardening track.
 
-### Phase 7 — Service split & full containerization ⬜
+### Phase 7 — Service split & full containerization 🚧
 
-The biggest, most deferrable: make each service independently deployable.
+The biggest, most deferrable: make each service independently deployable. **Headline done and
+live-validated** — the verifier runs as a standing HTTP service the control plane drives over the
+wire, with **no `ControlPlane` change** (the async ports paid off). The whole transport seam is
+CI-provable via an in-process loopback; the real two-container run is proven against the built image.
 
-- **7.1 Service entrypoints + images** — `__main__` / server entrypoints + Dockerfiles for the
-  **control plane** and **verifier** (today only the sandbox is imaged), so each builds into its own
-  image even before the wire exists.
-- **7.2 Networked transport** — a wire serialization + transport adapter so the async ports cross a
-  network instead of an in-process call (they were built for exactly this): the standing
-  control-plane data plane (**#3**) and the networked verifier (**#10**). The four-service split
-  (workspace promoted out of the sandbox) lands here.
-- **7.3 Live telemetry + panel** — OpenTelemetry / Prometheus emission from each service and a metrics
-  dashboard over the 5.3 RunReport signals.
+- **7.1 Service entrypoints + images ✅ (verifier)** — `verifier/__main__.py` serves the
+  advisory verifier over HTTP (uvicorn); `Dockerfile.verifier` builds it (core + `service` extra, no
+  deepagents). The built image serves `/health` + `/provision` live. *Deferred:* the **control-plane**
+  entrypoint/image (its outward data-plane API #3 is a separate design) and the sandbox-as-server.
+- **7.2 Networked transport ✅ (verifier path)** — a JSON **wire codec** for every boundary type
+  (`contracts/wire.py`, object bytes inline-base64, rationale segregation structural) + a **transport
+  seam** (`transport/`): `Transport` + an error-classifying envelope (boundary errors cross as
+  themselves; `GateUnavailable`/`SandboxError` recoverable), `Remote*` clients / `*Server` hosts, a
+  **loopback** transport (CI) and an **HTTP/FastAPI** transport. The **networked verifier (#10)** is
+  live; degrade-don't-crash survives the hop (a killed verifier mid-run → recorded gate failure, run
+  continues). *Deferred:* the standing control-plane data plane (**#3**) and the **four-service split**
+  (workspace out of the sandbox).
+- **7.3 Live telemetry + panel ✅ (emission)** — `telemetry.py`: a `MetricsSink` + `export_run_report`
+  (outcome / gate-decision counters, per-cycle latency histograms, run-total gauges) over the 5.3
+  RunReport, with a `Null` default (opt-in) and a lazy **Prometheus** sink (`telemetry` extra) + a
+  structlog→metrics processor. *Deferred:* the Grafana dashboard itself + OpenTelemetry sink + wiring a
+  scrape into the service entrypoints.
+- **Multi-tenancy & run-control seams ✅** — `JobQueue` port + in-process default, a `RunRecord` store
+  keyed by `(tenant_id, run_id)` over the RunReport, and `tenant_id` threaded through `TaskConfig` /
+  the report (single default tenant). Seams-first; the engine (real queue + workers, store upgrade,
+  tenant isolation, **#27**/**#9**) is the deferred adapter swap.
 
 ### Woven through Phases 6–7
 

@@ -23,6 +23,11 @@ service = [
     "uvicorn>=0.30",
     "httpx>=0.27",
 ]
+# Metrics emission (Phase 7.3): a service exposes a Prometheus scrape over the RunReport signals.
+# Opt-in — the lean core stays metrics-free (the default sink is a no-op).
+telemetry = [
+    "prometheus-client>=0.20",
+]
 
 [dependency-groups]
 dev = [
@@ -61,6 +66,8 @@ module = [
     "pypdf.*",
     # The `service` extra (Phase 7.2 transport): absent in CI's `mypy src`, so tolerate them missing.
     "fastapi.*", "uvicorn.*", "httpx.*", "starlette.*",
+    # The `telemetry` extra (Phase 7.3): lazy Prometheus import, absent in CI's `mypy src`.
+    "prometheus_client.*",
 ]
 ignore_missing_imports = true
 
