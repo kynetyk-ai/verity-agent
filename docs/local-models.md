@@ -86,7 +86,7 @@ container-facing OpenAI endpoint, while running the GPU work (vllm-metal) on the
 thing to "a separate, managed model container" that Metal allows, and the tidier option **when it
 works for your model**.
 
-> **Known issue (2026-06, revisit for hardening).** We tried DMR first as the cleaner solution but its
+> **Known issue (2026-06, revisit for hardening — tracked as #40).** We tried DMR first as the cleaner solution but its
 > `vllm-metal` backend **failed `EngineCore` initialization on Qwen3.6** (`docker model logs` →
 > "Engine core initialization failed") — the architecture is too new for that backend build. We fell
 > back to **Ollama** (below), which ran the same model fine. DMR is worth revisiting once its

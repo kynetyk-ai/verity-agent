@@ -364,8 +364,8 @@ the CI gate.
 > the *cleaner, Docker-managed* way to host the local model, but it **failed `EngineCore`
 > initialization on Qwen3.6** (architecture too new for that backend build) and we fell back to
 > Ollama. The seam already supports DMR (any `*.docker.internal` gateway). Worth revisiting once DMR's
-> `vllm-metal` tracks newer model architectures — it is the tidier host-model story on macOS. Candidate
-> for a tracked GitHub issue under the woven model-server hardening track.
+> `vllm-metal` tracks newer model architectures — it is the tidier host-model story on macOS. Tracked
+> as **#40** under the woven model-server hardening track.
 
 ### Phase 7 — Service split & full containerization ⬜
 
