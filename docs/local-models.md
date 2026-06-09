@@ -80,10 +80,19 @@ on the Metal GPU. The **only** container is Verity's sandbox, reaching *out* to 
 
 ## Server examples (interchangeable)
 
-### Docker Model Runner (DMR) — recommended on macOS
+### Docker Model Runner (DMR) — the cleaner managed path (with a current caveat)
 DMR gives the model a **Docker-managed lifecycle** (pull / schedule / start-stop) and a
 container-facing OpenAI endpoint, while running the GPU work (vllm-metal) on the host — the closest
-thing to "a separate, managed model container" that Metal allows.
+thing to "a separate, managed model container" that Metal allows, and the tidier option **when it
+works for your model**.
+
+> **Known issue (2026-06, revisit for hardening).** We tried DMR first as the cleaner solution but its
+> `vllm-metal` backend **failed `EngineCore` initialization on Qwen3.6** (`docker model logs` →
+> "Engine core initialization failed") — the architecture is too new for that backend build. We fell
+> back to **Ollama** (below), which ran the same model fine. DMR is worth revisiting once its
+> `vllm-metal` tracks newer architectures; the Verity seam already supports it unchanged. To sanity-check
+> DMR itself, pull a model it documents (e.g. `mlx-community/Llama-3.2-1B-Instruct-4bit`) — if that
+> loads, the failure is model-specific, not your DMR install.
 
 ```
 docker model install-runner --backend vllm        # one-time: the vLLM/Metal backend

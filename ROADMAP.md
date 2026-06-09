@@ -337,11 +337,11 @@ crosses the container boundary as env vars (Anthropic byte-identical to before),
 the spec's key by name and adds `--add-host=host.docker.internal:host-gateway` only for host-local
 endpoints, and both drivers resolve a spec at their own edge.
 
-- **6.1 Local / self-hosted model ✅ (code)** — `local_spec(...)` + a `deepagents-local` config over a
-  **generic OpenAI-compatible endpoint** reached via `host.docker.internal`; **not** coupled to any one
-  server (vLLM / vLLM-mlx, Ollama, llama.cpp interchangeable — see `docs/local-models.md`). Leans on
-  5.2 compaction for small local context windows. *Pending:* the `@live`/`@docker` smoke against a
-  running host server (opt-in via `VERITY_LOCAL_MODEL`).
+- **6.1 Local / self-hosted model ✅ (code + live-validated)** — `local_spec(...)` + a
+  `deepagents-local` config over a **generic OpenAI-compatible endpoint** reached via
+  `host.docker.internal`; **not** coupled to any one server (vLLM / vLLM-mlx, Ollama, llama.cpp
+  interchangeable — see `docs/local-models.md`). Leans on 5.2 compaction for small local context
+  windows. **Live-validated 2026-06-08** (Ollama, see below).
 - **6.2 Cheaper hosted providers ✅ (code), live deferred** — `openai_spec(...)` + a `deepagents-openai`
   config behind the same seam; `OPENAI_API_KEY` forwarded automatically, no host gateway. The `@live`
   smoke is written and **auto-skips until a key exists** (no live OpenAI call was made — deferred per
@@ -352,9 +352,20 @@ endpoints, and both drivers resolve a spec at their own edge.
   `Comparison` (outcomes, accepted-count, tokens, cost, best-score, latencies). `tools/benchmark_models.py`
   is the live cross-model entrypoint. The instrument that tells us whether the thesis holds.
 
-*Live validation (the remaining paired step):* (1) a host-local OpenAI-compatible server → run the
-local `@live` smoke + `tools/benchmark_models.py`; (2) an `OPENAI_API_KEY` → run the deferred hosted
-smoke. Both are manual (Docker + image + a real model), outside the CI gate.
+*Live validation:* **(1) local — done (2026-06-08).** `qwen3.6:27b-coding-mxfp8` (Ollama on an M3
+Ultra) drove the full read→propose→gate→commit loop to an accepted commit; the head-to-head benchmark
+ran — both frontier and local accepted, local **$0.00** vs sonnet **$0.23**, ~1.5× latency. N=1 on a
+trivial task, so it validates the *pipeline + that a cheap model can drive the loop*, not
+quality-under-pressure (a real test wants the **scoring FE domain §12 over multiple cycles**).
+**(2) hosted OpenAI — pending a key.** Both paths are manual (Docker + image + a real model), outside
+the CI gate.
+
+> **Revisit for hardening — Docker Model Runner (DMR).** We first tried DMR's `vllm-metal` backend as
+> the *cleaner, Docker-managed* way to host the local model, but it **failed `EngineCore`
+> initialization on Qwen3.6** (architecture too new for that backend build) and we fell back to
+> Ollama. The seam already supports DMR (any `*.docker.internal` gateway). Worth revisiting once DMR's
+> `vllm-metal` tracks newer model architectures — it is the tidier host-model story on macOS. Candidate
+> for a tracked GitHub issue under the woven model-server hardening track.
 
 ### Phase 7 — Service split & full containerization ⬜
 
