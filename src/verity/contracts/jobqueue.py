@@ -7,8 +7,9 @@ behaves like today (a run executes synchronously; the queue just records its sta
 behind this port, not a reshape (spec §16, "designed-for, not built now").
 
 It lives in :mod:`verity.contracts` because, like the other ports, it is a cross-service contract
-owned by none of them. Jobs are keyed by ``(tenant_id, run_id)`` from the outset so tenant scoping
-slots in without changing the surface.
+owned by none of them. A job has its own ``job_id`` and *carries* the run it schedules
+(``tenant_id`` + ``run_id``), so tenant scoping is keyed in from the outset. See
+``docs/glossary.md`` for task vs. run vs. job.
 """
 
 from __future__ import annotations
@@ -33,7 +34,12 @@ class JobStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Job:
-    """A unit of run-work, keyed by ``(tenant_id, run_id)``. ``payload`` is opaque to the queue."""
+    """A unit of run-work: identified by ``job_id``, scheduling the run ``(tenant_id, run_id)``.
+
+    ``payload`` is opaque to the queue (the run inputs a worker needs). A job *is not* the run — it
+    is the run enqueued for a worker; ``JobStatus`` is its scheduling lifecycle, distinct from the
+    artifact lifecycle (see ``docs/glossary.md``).
+    """
 
     job_id: str
     tenant_id: str

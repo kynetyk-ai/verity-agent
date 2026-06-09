@@ -22,24 +22,29 @@ __all__ = ["RunRecord", "RunRecordStore", "InMemoryRunRecordStore"]
 
 @dataclass(frozen=True, slots=True)
 class RunRecord:
-    """Operational metadata for one run, keyed by ``(tenant_id, run_id)``.
+    """Operational metadata for one **run**, identified by ``(tenant_id, run_id)``.
 
-    ``accepted_artifact_ids`` point into the provenance store (the audit record), not a copy of it.
-    ``status`` is a free string (``"complete"`` / ``"aborted"`` / …) the consumer interprets.
+    ``task_id`` records **which task (configuration)** this run executed — a run is one *execution*
+    of a task, so task and run are distinct identities (see ``docs/glossary.md``). ``run_id`` is the
+    run's own id; ``status`` is a free string (``"complete"`` / ``"aborted"`` / …) the consumer
+    reads; ``accepted_artifact_ids`` point into the provenance store (the audit record), not a copy.
     """
 
     tenant_id: str
+    task_id: str
     run_id: str
     status: str
     report: RunReport
     accepted_artifact_ids: tuple[str, ...] = ()
 
     @classmethod
-    def from_report(cls, report: RunReport, *, status: str, run_id: str | None = None) -> RunRecord:
-        """Build from a ``RunReport`` (tenant from the report; run_id defaults to the task_id)."""
+    def from_report(cls, report: RunReport, *, run_id: str, status: str) -> RunRecord:
+        """Build from a ``RunReport``. ``run_id`` is **required**: a run's identity is distinct from
+        the task it ran (task != run), so the caller mints it, never reusing the ``task_id``."""
         return cls(
             tenant_id=report.tenant_id,
-            run_id=run_id if run_id is not None else report.task_id,
+            task_id=report.task_id,
+            run_id=run_id,
             status=status,
             report=report,
             accepted_artifact_ids=tuple(a["id"] for a in report.summary.accepted),
@@ -48,6 +53,7 @@ class RunRecord:
     def to_dict(self) -> dict[str, Any]:
         return {
             "tenant_id": self.tenant_id,
+            "task_id": self.task_id,
             "run_id": self.run_id,
             "status": self.status,
             "accepted_artifact_ids": list(self.accepted_artifact_ids),
@@ -57,11 +63,15 @@ class RunRecord:
 
 @runtime_checkable
 class RunRecordStore(Protocol):
-    """Put / get / list run records, scoped by tenant (the run-results read side)."""
+    """Put / get / list run records, scoped by tenant (the run-results read side).
+
+    ``list`` optionally filters by ``task_id`` — "which runs belong to this task" — since a task may
+    be run more than once (task : run is 1 : many).
+    """
 
     def put(self, record: RunRecord) -> None: ...
     def get(self, tenant_id: str, run_id: str) -> RunRecord | None: ...
-    def list(self, tenant_id: str) -> list[RunRecord]: ...
+    def list(self, tenant_id: str, *, task_id: str | None = None) -> list[RunRecord]: ...
 
 
 class InMemoryRunRecordStore:
@@ -76,5 +86,8 @@ class InMemoryRunRecordStore:
     def get(self, tenant_id: str, run_id: str) -> RunRecord | None:
         return self._records.get((tenant_id, run_id))
 
-    def list(self, tenant_id: str) -> list[RunRecord]:
-        return [r for r in self._records.values() if r.tenant_id == tenant_id]
+    def list(self, tenant_id: str, *, task_id: str | None = None) -> list[RunRecord]:
+        return [
+            r for r in self._records.values()
+            if r.tenant_id == tenant_id and (task_id is None or r.task_id == task_id)
+        ]
