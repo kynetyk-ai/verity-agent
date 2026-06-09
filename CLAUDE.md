@@ -84,5 +84,11 @@ Non-negotiable working norms for this repo:
 
 ## Status
 
-Greenfield scaffold — no implementation code yet. **Stack: Python, managed with uv** (see
-*Coding habits*). Set further conventions here as the first service lands.
+**Post-MVP.** Phases 0–5 are complete: the control plane, the verifier service + gate-primitive SDK,
+the sandbox service (in-process + container Deep Agents), and the feature-engineering domain (§12)
+that reached MVP against the twelve §13 acceptance criteria — plus the Phase 5 reliability &
+observability hardening (degrade-don't-crash on both boundaries, typed errors, retries, atomic
+commits, the store-derived `RunReport`). **Next: Phase 6 — model breadth** (open / local / cheaper
+hosted models), the thesis payoff. See [ROADMAP.md](ROADMAP.md) for the live plan.
+
+**Stack: Python, managed with uv** (see *Coding habits*).

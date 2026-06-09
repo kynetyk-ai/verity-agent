@@ -12,6 +12,7 @@ from verity.sandbox.core import AgentSandbox
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, ProposalDescriptor
 from verity.sandbox.driver import SandboxDriver
 from verity.sandbox.errors import SandboxError
+from verity.sandbox.model_spec import ModelSpec, coerce_model, resolve_model
 
 __all__ = [
     "AgentSandbox",
@@ -19,4 +20,7 @@ __all__ = [
     "ProposalDescriptor",
     "RESERVED_PROPOSAL_NAME",
     "SandboxError",
+    "ModelSpec",
+    "resolve_model",
+    "coerce_model",
 ]

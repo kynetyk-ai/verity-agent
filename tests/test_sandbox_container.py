@@ -33,6 +33,8 @@ from verity.domains.code import DATASET, build_code_domain
 from verity.sandbox.container_driver import DeepAgentsContainerDriver
 from verity.sandbox.container_io import CycleInput
 from verity.sandbox.errors import SandboxError
+from verity.sandbox.model_spec import ModelSpec
+from verity.sandbox.providers import DEFAULT_LOCAL_BASE_URL, local_spec, openai_spec
 from verity.sandbox.registration import build_container_sandbox
 from verity.verifier import FakeCodeRunner, RunResult, docker_available
 
@@ -100,6 +102,55 @@ def test_env_passthrough_forwards_keys(tmp_path: Path, monkeypatch: pytest.Monke
     assert cmd.count("ANTHROPIC_API_KEY") == 1 and "sk-test" not in " ".join(cmd)
 
 
+def test_docker_command_anthropic_spec_is_unchanged(tmp_path: Path) -> None:
+    # A plain provider string (no ModelSpec) must produce today's exact model env and NO --add-host,
+    # so Phase 6 leaves the Anthropic path byte-identical (guards the posture test above).
+    workspace = DefaultLayout().provision(tmp_path / "ws", {})
+    driver = DeepAgentsContainerDriver(model="anthropic:claude-sonnet-4-6", image=_SANDBOX_IMAGE)
+    cmd = driver.docker_command(workspace, tmp_path / "in", name="n")
+    assert "VERITY_SANDBOX_MODEL=anthropic:claude-sonnet-4-6" in cmd
+    assert "--add-host=host.docker.internal:host-gateway" not in cmd
+    assert not any(a.startswith("VERITY_SANDBOX_BASE_URL=") for a in cmd)
+
+
+def test_docker_command_local_spec_adds_host_gateway_and_forwards_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An OpenAI-compatible local endpoint: the container needs --add-host to reach the host server,
+    # the base_url rides as an env var, and the spec's own key env is forwarded by name (5.1/6.1).
+    monkeypatch.setenv("LOCAL_KEY", "sk-local")
+    workspace = DefaultLayout().provision(tmp_path / "ws", {})
+    spec = ModelSpec(
+        "openai-compatible", "qwen2.5-coder",
+        base_url="http://host.docker.internal:8000/v1", api_key_env="LOCAL_KEY",
+    )
+    driver = DeepAgentsContainerDriver(model="unused", spec=spec, image=_SANDBOX_IMAGE)
+    cmd = driver.docker_command(workspace, tmp_path / "in", name="n")
+    joined = " ".join(cmd)
+    assert "--add-host=host.docker.internal:host-gateway" in cmd
+    assert "VERITY_SANDBOX_MODEL=openai-compatible:qwen2.5-coder" in cmd
+    assert "VERITY_SANDBOX_BASE_URL=http://host.docker.internal:8000/v1" in cmd
+    # the key is forwarded by name only (value stays in the daemon env)
+    assert cmd.count("LOCAL_KEY") == 1 and "sk-local" not in joined
+
+
+def test_docker_command_openai_spec_forwards_key_no_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A cheaper hosted OpenAI model (6.2): native openai:<model> path, OPENAI_API_KEY forwarded by
+    # name, public endpoint so NO --add-host and NO base_url env.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    workspace = DefaultLayout().provision(tmp_path / "ws", {})
+    driver = DeepAgentsContainerDriver(
+        model="unused", spec=openai_spec("gpt-4o-mini"), image=_SANDBOX_IMAGE
+    )
+    cmd = driver.docker_command(workspace, tmp_path / "in", name="n")
+    assert "VERITY_SANDBOX_MODEL=openai:gpt-4o-mini" in cmd
+    assert "--add-host=host.docker.internal:host-gateway" not in cmd
+    assert not any(a.startswith("VERITY_SANDBOX_BASE_URL=") for a in cmd)
+    assert cmd.count("OPENAI_API_KEY") == 1 and "sk-openai" not in " ".join(cmd)
+
+
 # ----------------------------------------------------------------- real container (Docker + live)
 
 
@@ -114,25 +165,17 @@ def _sandbox_image_present() -> bool:
     return done.returncode == 0
 
 
-@pytest.mark.docker
-@pytest.mark.live
-@pytest.mark.skipif(
-    not (docker_available() and _sandbox_image_present() and os.environ.get("ANTHROPIC_API_KEY")),
-    reason="needs Docker, the verity-sandbox image, and ANTHROPIC_API_KEY",
-)
-def test_container_sandbox_commits_a_submission_end_to_end(tmp_path: Path) -> None:
+def _assert_container_commits_submission(sandbox: object) -> None:
+    """Drive one end-to-end submission cycle through ``sandbox`` and assert it commits ACCEPTED.
+
+    Shared by the Anthropic and local-model live smokes — the only thing that differs is the model
+    behind the sandbox; the task, verifier, and assertions are identical.
+    """
     domain = build_code_domain(FakeCodeRunner(script=lambda _r: RunResult(0, "", "")))
     store = SqliteStore()
     store.propose(
         Artifact("ds", DATASET, {"n": 10}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
         Operation("op-ds", "load", (), "ds", OperationStatus.SUCCESS, "t0"),
-    )
-    sandbox = build_container_sandbox(
-        schema=domain.schema,
-        root=tmp_path / "ws",
-        model="anthropic:claude-sonnet-4-6",
-        image=_SANDBOX_IMAGE,
-        id_source=lambda: "sub-1",
     )
     sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
     vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
@@ -166,3 +209,63 @@ def test_container_sandbox_commits_a_submission_end_to_end(tmp_path: Path) -> No
     assert result.commit is not None and result.commit.outcome is CommitOutcome.ACCEPTED
     got = store.get_artifact("sub-1")
     assert got is not None and got.status is ArtifactStatus.ACCEPTED
+
+
+@pytest.mark.docker
+@pytest.mark.live
+@pytest.mark.skipif(
+    not (docker_available() and _sandbox_image_present() and os.environ.get("ANTHROPIC_API_KEY")),
+    reason="needs Docker, the verity-sandbox image, and ANTHROPIC_API_KEY",
+)
+def test_container_sandbox_commits_a_submission_end_to_end(tmp_path: Path) -> None:
+    sandbox = build_container_sandbox(
+        schema=build_code_domain(FakeCodeRunner(script=lambda _r: RunResult(0, "", ""))).schema,
+        root=tmp_path / "ws",
+        model="anthropic:claude-sonnet-4-6",
+        image=_SANDBOX_IMAGE,
+        id_source=lambda: "sub-1",
+    )
+    _assert_container_commits_submission(sandbox)
+
+
+@pytest.mark.docker
+@pytest.mark.live
+@pytest.mark.skipif(
+    not (docker_available() and _sandbox_image_present() and os.environ.get("VERITY_LOCAL_MODEL")),
+    reason="needs Docker, the verity-sandbox image, a host-local OpenAI-compatible server, and "
+    "VERITY_LOCAL_MODEL set to the served model name (optionally VERITY_LOCAL_MODEL_BASE_URL)",
+)
+def test_container_sandbox_commits_via_local_model(tmp_path: Path) -> None:
+    # The thesis smoke (6.1): the same submission cycle, driven by a host-local OpenAI-compatible
+    # model reached over host.docker.internal. Opt-in via env (any vLLM/Ollama/llama.cpp server).
+    base_url = os.environ.get("VERITY_LOCAL_MODEL_BASE_URL", DEFAULT_LOCAL_BASE_URL)
+    sandbox = build_container_sandbox(
+        schema=build_code_domain(FakeCodeRunner(script=lambda _r: RunResult(0, "", ""))).schema,
+        root=tmp_path / "ws",
+        model="unused",
+        model_spec=local_spec(os.environ["VERITY_LOCAL_MODEL"], base_url=base_url),
+        image=_SANDBOX_IMAGE,
+        id_source=lambda: "sub-1",
+    )
+    _assert_container_commits_submission(sandbox)
+
+
+@pytest.mark.docker
+@pytest.mark.live
+@pytest.mark.skipif(
+    not (docker_available() and _sandbox_image_present() and os.environ.get("OPENAI_API_KEY")),
+    reason="needs Docker, the verity-sandbox image, and OPENAI_API_KEY",
+)
+def test_container_sandbox_commits_via_openai(tmp_path: Path) -> None:
+    # Deferred hosted smoke (6.2): the same submission cycle on a cheaper hosted OpenAI model. Ready
+    # to run the moment a key exists; auto-skips today (no live OpenAI call in the Phase 6 work).
+    model = os.environ.get("VERITY_OPENAI_MODEL", "gpt-4o-mini")
+    sandbox = build_container_sandbox(
+        schema=build_code_domain(FakeCodeRunner(script=lambda _r: RunResult(0, "", ""))).schema,
+        root=tmp_path / "ws",
+        model="unused",
+        model_spec=openai_spec(model),
+        image=_SANDBOX_IMAGE,
+        id_source=lambda: "sub-1",
+    )
+    _assert_container_commits_submission(sandbox)

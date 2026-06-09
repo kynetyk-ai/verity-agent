@@ -21,7 +21,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from verity.control_plane.registries import OperationSignature
@@ -33,6 +33,7 @@ from verity.sandbox.container_io import (
     CycleInput,
 )
 from verity.sandbox.errors import SandboxError
+from verity.sandbox.model_spec import ModelSpec
 
 __all__ = ["DeepAgentsContainerDriver"]
 
@@ -46,12 +47,16 @@ _ENTRYPOINT = ("python", "-m", "verity.sandbox.container_entry")
 class DeepAgentsContainerDriver:
     """Runs the Deep Agents loop in a fresh, network-enabled, non-root container per cycle (YOLO).
 
-    ``model`` is the provider string passed to the container (e.g. ``anthropic:claude-sonnet-4-6``).
-    ``data_sources`` are host paths mounted read-only into ``/work/data``. ``env_passthrough`` names
-    env vars (the model key) forwarded into the container.
+    ``model`` is the provider string passed to the container (e.g. ``anthropic:claude-sonnet-4-6``);
+    for a richer target (a custom ``base_url`` for a local / OpenAI-compatible endpoint) pass a
+    :class:`~verity.sandbox.model_spec.ModelSpec` as ``spec`` instead — when absent, ``spec`` is
+    derived from ``model`` (Phase 6). ``data_sources`` are host paths mounted read-only into
+    ``/work/data``. ``env_passthrough`` names env vars (the model key) forwarded into the container;
+    the spec's own key env var is forwarded automatically.
     """
 
     model: str
+    spec: ModelSpec | None = None  # richer model target; derived from `model` when None (Phase 6)
     image: str = "verity-sandbox:latest"
     docker_bin: str = "docker"
     data_sources: tuple[str, ...] = ()
@@ -65,7 +70,9 @@ class DeepAgentsContainerDriver:
     timeout_s: float = 1800.0
     recursion_limit: int = 80
     step_budget: int | None = None  # per-cycle model-step budget (5.1); None = framework limit only
-    _docker_env: dict[str, str] = field(default_factory=dict)
+
+    def _spec(self) -> ModelSpec:
+        return self.spec or ModelSpec.from_provider_string(self.model)
 
     async def run(
         self,
@@ -118,11 +125,23 @@ class DeepAgentsContainerDriver:
             host = Path(src)
             cmd += ["-v", f"{host}:{CONTAINER_WORKSPACE}/data/{host.name}:ro"]
         cmd += ["-v", f"{inputs_dir}:{CONTAINER_INPUT_DIR}:ro"]
-        for var in self.env_passthrough:
+        spec = self._spec()
+        # Forward the spec's own API-key env var (by name; the value stays in the daemon env) on top
+        # of the configured passthrough, so a new provider's key rides without extra config.
+        key_env = spec.key_env()
+        passthrough = list(self.env_passthrough)
+        if key_env and key_env not in passthrough:
+            passthrough.append(key_env)
+        for var in passthrough:
             if os.environ.get(var):
                 cmd += ["-e", var]
+        # Reach a model server on the Docker host (local OpenAI-compatible endpoint) — only when the
+        # spec's base_url points at host.docker.internal, so the Anthropic/hosted paths stay as-is.
+        if spec.needs_host_gateway:
+            cmd += ["--add-host=host.docker.internal:host-gateway"]
+        for key, value in spec.to_env().items():  # VERITY_SANDBOX_MODEL (+ BASE_URL/KEY_ENV/EXTRA)
+            cmd += ["-e", f"{key}={value}"]
         cmd += [
-            "-e", f"VERITY_SANDBOX_MODEL={self.model}",
             "-e", "HOME=/tmp",
             "-e", "PYTHONUNBUFFERED=1",
             "-e", "PYTHONDONTWRITEBYTECODE=1",

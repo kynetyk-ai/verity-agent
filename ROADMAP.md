@@ -324,24 +324,37 @@ Harden the loop and make it measurable before scaling models or splitting servic
   adapter binds *how*; names — not callables — cross the container boundary). First concrete tool:
   **`read_pdf`**, so the agent can read PDFs in its read-only roles.
 
-### Phase 6 — Model breadth: open, local & cheaper hosted ⬜ *(the thesis payoff)*
+### Phase 6 — Model breadth: open, local & cheaper hosted 🚧 *(the thesis payoff)*
 
 "Good proposals from cheap models" is the point of the whole approach — make it real across local /
-open weights *and* cheaper hosted APIs.
+open weights *and* cheaper hosted APIs. **Code landed and offline-green; live validation is the
+remaining paired step** (stand up a local server / supply an OpenAI key — see below).
 
-- **6.1 Local model via vllm-mlx** — stand up **vllm-mlx** (OpenAI-compatible server, Apple-Silicon
-  Metal backend) and a `deepagents-local` sandbox config; solve container→host networking
-  (`host.docker.internal`). Keep the seam **OpenAI-compatible** so Ollama / other backends swap in —
-  vLLM on Apple Silicon is younger than Ollama, so don't couple to it. Leans on 5.2 compaction (small
-  local context windows make it a hard dependency, not a nicety).
-- **6.2 Cheaper hosted providers** — wire **OpenAI** and other hosted APIs (cheaper-but-capable tiers)
-  behind the **same OpenAI-compatible model seam**: a per-provider model-construction path, a
-  registered `deepagents-<provider>` sandbox config, and the provider key passed through into the
-  container. The seam is already provider-agnostic (the driver takes a `model`), so this is mostly
-  config — its value is comparison fodder for 6.3 and a cheaper non-frontier baseline.
-- **6.3 Eval / benchmarking harness** — compare **proposal quality + cost + latency** across models
-  (local, cheaper-hosted, and frontier) on the same task, using the 5.3 RunReport metrics. The
-  instrument that tells us whether the thesis actually holds.
+The seam is a typed, provider-agnostic **`ModelSpec`** (`provider`, `model`, `base_url`,
+`api_key_env`, `extra`) + a lazy **`resolve_model`**: no `base_url` → the bare `provider:model` string
+(Anthropic unchanged); a `base_url` → a `ChatOpenAI` pointed at any OpenAI-compatible endpoint. It
+crosses the container boundary as env vars (Anthropic byte-identical to before), the driver forwards
+the spec's key by name and adds `--add-host=host.docker.internal:host-gateway` only for host-local
+endpoints, and both drivers resolve a spec at their own edge.
+
+- **6.1 Local / self-hosted model ✅ (code)** — `local_spec(...)` + a `deepagents-local` config over a
+  **generic OpenAI-compatible endpoint** reached via `host.docker.internal`; **not** coupled to any one
+  server (vLLM / vLLM-mlx, Ollama, llama.cpp interchangeable — see `docs/local-models.md`). Leans on
+  5.2 compaction for small local context windows. *Pending:* the `@live`/`@docker` smoke against a
+  running host server (opt-in via `VERITY_LOCAL_MODEL`).
+- **6.2 Cheaper hosted providers ✅ (code), live deferred** — `openai_spec(...)` + a `deepagents-openai`
+  config behind the same seam; `OPENAI_API_KEY` forwarded automatically, no host gateway. The `@live`
+  smoke is written and **auto-skips until a key exists** (no live OpenAI call was made — deferred per
+  the no-key constraint). Other hosted providers swap in by config.
+- **6.3 Eval / benchmarking harness ✅** — `src/verity/eval/` runs the **same task across model arms**
+  and projects **quality + cost + latency** from the 5.3 `RunReport`: a nullable `cost_usd` + a small
+  overridable pricing table (cost lives in the eval module, the control plane stays dollar-free), and a
+  `Comparison` (outcomes, accepted-count, tokens, cost, best-score, latencies). `tools/benchmark_models.py`
+  is the live cross-model entrypoint. The instrument that tells us whether the thesis holds.
+
+*Live validation (the remaining paired step):* (1) a host-local OpenAI-compatible server → run the
+local `@live` smoke + `tools/benchmark_models.py`; (2) an `OPENAI_API_KEY` → run the deferred hosted
+smoke. Both are manual (Docker + image + a real model), outside the CI gate.
 
 ### Phase 7 — Service split & full containerization ⬜
 
