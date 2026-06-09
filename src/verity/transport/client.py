@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
+from verity.contracts.errors import GateUnavailable
 from verity.contracts.model import VerdictBundle
 from verity.contracts.ports import ProposalEnvelope, ServedContext, VerifierRequest
 from verity.contracts.wire import (
@@ -21,7 +23,8 @@ from verity.contracts.wire import (
     verdict_bundle_from_dict,
     verifier_request_to_dict,
 )
-from verity.transport.base import Transport
+from verity.sandbox.errors import SandboxError
+from verity.transport.base import Transport, TransportUnavailable
 from verity.transport.envelope import parse_result
 
 __all__ = ["RemoteVerifier", "RemoteSandbox"]
@@ -36,7 +39,12 @@ class RemoteVerifier:
 
     async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         body = json.dumps(verifier_request_to_dict(request)).encode("utf-8")
-        result = parse_result(await self.transport.request("dispatch", body))
+        # An unreachable verifier is a recoverable infra failure (GateUnavailable), not a crash —
+        # exactly as a local verifier whose backend exhausted its retries (ROADMAP 5.1).
+        try:
+            result = parse_result(await self.transport.request("dispatch", body))
+        except TransportUnavailable as exc:
+            raise GateUnavailable(f"verifier unreachable: {exc}") from exc
         return verdict_bundle_from_dict(result)
 
     async def provision(self) -> None:
@@ -57,16 +65,23 @@ class RemoteSandbox:
 
     transport: Transport
 
+    async def _call(self, method: str, body: bytes = b"") -> Any:
+        # An unreachable sandbox is a recoverable infra failure (SandboxError), not a crash (#21).
+        try:
+            return parse_result(await self.transport.request(method, body))
+        except TransportUnavailable as exc:
+            raise SandboxError(f"sandbox unreachable: {exc}") from exc
+
     async def serve_context(self, context: ServedContext) -> None:
         body = json.dumps(served_context_to_dict(context)).encode("utf-8")
-        parse_result(await self.transport.request("serve_context", body))
+        await self._call("serve_context", body)
 
     async def collect_proposal(self) -> ProposalEnvelope:
-        result = parse_result(await self.transport.request("collect_proposal", b""))
+        result = await self._call("collect_proposal")
         return proposal_envelope_from_dict(result)
 
     async def regenerate(self) -> None:
-        parse_result(await self.transport.request("regenerate", b""))
+        await self._call("regenerate")
 
     async def provision(self) -> None:
         parse_result(await self.transport.request("provision", b""))

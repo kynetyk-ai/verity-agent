@@ -27,3 +27,12 @@ class TransportError(RuntimeError):
     control plane's degrade-don't-crash classification survives the hop. ``TransportError`` is the
     fallback for everything the protocol itself could not carry.
     """
+
+
+class TransportUnavailable(TransportError):
+    """The peer could not be reached (connection refused / timed out before any envelope).
+
+    A client maps this to its own *recoverable* boundary error — a remote verifier to
+    ``GateUnavailable``, a remote sandbox to ``SandboxError`` — so an unreachable service degrades
+    the cycle rather than crashing the run, exactly as a local infra failure would.
+    """
