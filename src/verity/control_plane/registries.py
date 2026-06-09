@@ -245,12 +245,19 @@ class ObjectProvisionMode(StrEnum):
     Stated in **control-plane-native terms** (status + recency) — never verifier semantics. "Build
     on the best prior script" is ``LAST_ACCEPTED`` over the gated type, not "provision the
     incumbent" (the control plane does not know what an incumbent is).
+
+    ``LAST_REVISED_OR_ACCEPTED`` extends ``LAST_ACCEPTED`` to also pick up an in-flight ``revised``
+    submission: it provisions the single most-recent artifact whose status is ``accepted`` *or*
+    ``revised`` (issue #51). On a refine cycle the latest such artifact is the just-revised one, so
+    the agent **edits its prior script** instead of reconstructing it from the defect text alone;
+    after an accept it behaves like ``LAST_ACCEPTED``. Still pure status/recency, no gate semantics.
     """
 
     NONE = "none"
     ALL = "all"
     ALL_ACCEPTED = "all_accepted"
     LAST_ACCEPTED = "last_accepted"
+    LAST_REVISED_OR_ACCEPTED = "last_revised_or_accepted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +280,15 @@ class ObjectProvisioningPolicy:
     def _select(self, store: Store) -> list[Artifact]:
         if self.mode is ObjectProvisionMode.NONE:
             return []
+        if self.mode is ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED:
+            # The agent's most recent submission worth iterating on: the in-flight refine target
+            # (revised) or the accepted incumbent — so a refine cycle edits its prior script (#51).
+            active = {ArtifactStatus.ACCEPTED, ArtifactStatus.REVISED}
+            candidates = [
+                a for a in store.query_artifacts(type=self.type_filter) if a.status in active
+            ]
+            candidates.sort(key=lambda a: a.created_at, reverse=True)
+            return candidates[:1]
         status = (
             ArtifactStatus.ACCEPTED
             if self.mode in (ObjectProvisionMode.ALL_ACCEPTED, ObjectProvisionMode.LAST_ACCEPTED)
@@ -295,7 +311,9 @@ class ObjectProvisioningPolicy:
         newest/accepted/best to build on. Harvested object *names* stay domain-fixed; disambiguation
         is the subdir scheme + manifest, so any name-flattening consumer must namespace.
         """
-        single = self.mode is ObjectProvisionMode.LAST_ACCEPTED
+        single = self.mode in (
+            ObjectProvisionMode.LAST_ACCEPTED, ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED
+        )
         role: dict[str, bytes] = {}
         entries: list[_ManifestEntry] = []
         for rank, artifact in enumerate(self._select(store), start=1):
