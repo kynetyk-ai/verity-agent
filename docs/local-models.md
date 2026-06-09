@@ -9,23 +9,42 @@ interchangeable. This is the thesis payoff — *good proposals from cheap models
 
 Verity holds **no** model runtime — no weights, no inference, just an OpenAI-compatible HTTP client.
 The model server is an independent service the sandbox reaches **over the network** at a `base_url`;
-its lifecycle is fully decoupled from Verity:
+its lifecycle is fully decoupled from Verity. The **target** shape is the model server in its **own
+container** (or a remote endpoint) — and on Linux with an NVIDIA GPU it is exactly that.
+
+### Why a host process on macOS (a hardware constraint, not the design we'd choose)
+
+**On macOS / Apple Silicon the model server cannot run in a container — this is platform-imposed, not
+ideal.** Docker Desktop runs containers in a Linux VM with **no Metal GPU passthrough**, and the
+Apple-Silicon inference engines (MLX) are Metal-only. So the GPU-bound model server *must* run as a
+**host process**, and Verity's sandbox container networks *out* to it. We accept this only because the
+alternative on a Mac is no GPU at all. The decoupling itself is unchanged — only *where the server
+lives* differs; the `base_url` seam is identical.
+
+Verified topology of a local run (Ollama on an M3 Ultra, Phase 6 validation):
 
 ```
-┌─────────────────────────┐         ┌──────────────────────────────┐
-│  model server (HOST)    │  HTTP   │  Verity sandbox (CONTAINER)  │
-│  vLLM-mlx / DMR / Ollama│ ◀─────▶ │  ChatOpenAI -> base_url      │
-│  Metal GPU, OpenAI /v1  │         │  (no model code, just a URL) │
-└─────────────────────────┘         └──────────────────────────────┘
-        host.docker.internal  ◀── the container reaches the host via the Docker gateway
+HOST (macOS, Metal GPU)                          DOCKER (Linux VM — no GPU)
+┌──────────────────────────────────┐            ┌─────────────────────────────┐
+│ Ollama.app  (native host process)│            │ verity-sandbox  (container) │
+│  ├─ ollama serve                 │   HTTP     │  the agent loop             │
+│  ├─ ollama runner --mlx-engine ◀─┼────────────┤  ChatOpenAI → base_url      │
+│  │     (Metal GPU inference)     │            │  http://host.docker.internal│
+│  └─ LISTEN 127.0.0.1:11434       │            │              :11434/v1      │
+└──────────────────────────────────┘            └─────────────────────────────┘
+        ▲                                         the ONLY container in the loop
+        └─ Docker Desktop maps host.docker.internal → host loopback;
+           the driver adds --add-host=host.docker.internal:host-gateway
 ```
 
-> **On macOS the model server runs as a host process, not a Docker container** — Docker Desktop's
-> Linux VM has no Metal GPU passthrough, and MLX is Metal-only. This is not a coupling compromise;
-> it *is* the decoupled design (an external networked service), the platform just forbids putting
-> that particular service in a container. The same seam serves a truly-containerized or remote model
-> service unchanged once the GPU lives where it *can* be containerized (a Linux/CUDA host, or a
-> hosted endpoint) — only the `base_url` differs.
+The model server (Ollama, vLLM-mlx, or Docker Model Runner) is **not** in Docker — it's a host process
+on the Metal GPU. The **only** container is Verity's sandbox, reaching *out* to the host. The
+`127.0.0.1` bind is fine because Docker Desktop forwards `host.docker.internal` to the host loopback.
+
+> **This is a concession to the platform, not the target architecture.** The moment the model service
+> runs where GPUs *are* containerizable — a Linux/CUDA host, or a hosted endpoint (the Phase 7 service
+> split) — it becomes a real container / remote service with **no Verity change**, just a different
+> `base_url`.
 
 ## How it fits together
 
