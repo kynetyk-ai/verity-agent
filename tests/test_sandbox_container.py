@@ -34,7 +34,7 @@ from verity.sandbox.container_driver import DeepAgentsContainerDriver
 from verity.sandbox.container_io import CycleInput
 from verity.sandbox.errors import SandboxError
 from verity.sandbox.model_spec import ModelSpec
-from verity.sandbox.providers import DEFAULT_LOCAL_BASE_URL, local_spec
+from verity.sandbox.providers import DEFAULT_LOCAL_BASE_URL, local_spec, openai_spec
 from verity.sandbox.registration import build_container_sandbox
 from verity.verifier import FakeCodeRunner, RunResult, docker_available
 
@@ -134,6 +134,23 @@ def test_docker_command_local_spec_adds_host_gateway_and_forwards_key(
     assert cmd.count("LOCAL_KEY") == 1 and "sk-local" not in joined
 
 
+def test_docker_command_openai_spec_forwards_key_no_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A cheaper hosted OpenAI model (6.2): native openai:<model> path, OPENAI_API_KEY forwarded by
+    # name, public endpoint so NO --add-host and NO base_url env.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    workspace = DefaultLayout().provision(tmp_path / "ws", {})
+    driver = DeepAgentsContainerDriver(
+        model="unused", spec=openai_spec("gpt-4o-mini"), image=_SANDBOX_IMAGE
+    )
+    cmd = driver.docker_command(workspace, tmp_path / "in", name="n")
+    assert "VERITY_SANDBOX_MODEL=openai:gpt-4o-mini" in cmd
+    assert "--add-host=host.docker.internal:host-gateway" not in cmd
+    assert not any(a.startswith("VERITY_SANDBOX_BASE_URL=") for a in cmd)
+    assert cmd.count("OPENAI_API_KEY") == 1 and "sk-openai" not in " ".join(cmd)
+
+
 # ----------------------------------------------------------------- real container (Docker + live)
 
 
@@ -227,6 +244,27 @@ def test_container_sandbox_commits_via_local_model(tmp_path: Path) -> None:
         root=tmp_path / "ws",
         model="unused",
         model_spec=local_spec(os.environ["VERITY_LOCAL_MODEL"], base_url=base_url),
+        image=_SANDBOX_IMAGE,
+        id_source=lambda: "sub-1",
+    )
+    _assert_container_commits_submission(sandbox)
+
+
+@pytest.mark.docker
+@pytest.mark.live
+@pytest.mark.skipif(
+    not (docker_available() and _sandbox_image_present() and os.environ.get("OPENAI_API_KEY")),
+    reason="needs Docker, the verity-sandbox image, and OPENAI_API_KEY",
+)
+def test_container_sandbox_commits_via_openai(tmp_path: Path) -> None:
+    # Deferred hosted smoke (6.2): the same submission cycle on a cheaper hosted OpenAI model. Ready
+    # to run the moment a key exists; auto-skips today (no live OpenAI call in the Phase 6 work).
+    model = os.environ.get("VERITY_OPENAI_MODEL", "gpt-4o-mini")
+    sandbox = build_container_sandbox(
+        schema=build_code_domain(FakeCodeRunner(script=lambda _r: RunResult(0, "", ""))).schema,
+        root=tmp_path / "ws",
+        model="unused",
+        model_spec=openai_spec(model),
         image=_SANDBOX_IMAGE,
         id_source=lambda: "sub-1",
     )

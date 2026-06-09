@@ -22,7 +22,7 @@ from typing import Any
 
 from verity.sandbox.model_spec import ModelSpec
 
-__all__ = ["DEFAULT_LOCAL_BASE_URL", "LOCAL_PROVIDER", "local_spec"]
+__all__ = ["DEFAULT_LOCAL_BASE_URL", "LOCAL_PROVIDER", "local_spec", "openai_spec"]
 
 # A host-local OpenAI-compatible server, reached from inside the sandbox container via the Docker
 # host gateway. The port is the common default; override per server (Ollama serves on 11434).
@@ -50,3 +50,13 @@ def local_spec(
         api_key_env=api_key_env,
         extra=extra,
     )
+
+
+def openai_spec(model: str, **extra: Any) -> ModelSpec:
+    """A :class:`ModelSpec` for a cheaper **hosted OpenAI** model (Phase 6.2).
+
+    No ``base_url`` -> the native ``openai:<model>`` path (langchain ``init_chat_model``), so
+    ``OPENAI_API_KEY`` is forwarded automatically (the provider's default key env) and no host
+    gateway is added. ``model`` is the OpenAI model id, e.g. ``"gpt-4o-mini"``.
+    """
+    return ModelSpec(provider="openai", model=model, extra=extra)

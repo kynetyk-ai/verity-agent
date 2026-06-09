@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from verity.sandbox.providers import DEFAULT_LOCAL_BASE_URL, local_spec
+from verity.sandbox.providers import DEFAULT_LOCAL_BASE_URL, local_spec, openai_spec
 
 
 def test_local_spec_targets_the_host_gateway_keyless() -> None:
@@ -32,3 +32,12 @@ def test_local_spec_roundtrips_through_env() -> None:
 
     spec = local_spec("qwen2.5-coder", api_key_env="LOCAL_KEY", temperature=0)
     assert ModelSpec.from_env(spec.to_env()) == spec
+
+
+def test_openai_spec_is_native_with_default_key_no_gateway() -> None:
+    spec = openai_spec("gpt-4o-mini")
+    assert spec.provider == "openai" and spec.model == "gpt-4o-mini"
+    assert spec.base_url is None  # hosted -> the native openai:<model> path, no base_url
+    assert spec.needs_host_gateway is False  # public endpoint, no --add-host
+    assert spec.key_env() == "OPENAI_API_KEY"  # forwarded automatically
+    assert spec.to_env() == {"VERITY_SANDBOX_MODEL": "openai:gpt-4o-mini"}
