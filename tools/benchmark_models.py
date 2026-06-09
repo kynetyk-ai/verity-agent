@@ -84,12 +84,15 @@ async def _build_task(label: str, model_spec: ModelSpec) -> ConfiguredTask:
 def _arms(args: argparse.Namespace) -> list[BenchmarkArm]:
     arms: list[BenchmarkArm] = []
     if not args.no_anthropic:
-        spec = ModelSpec.from_provider_string(args.anthropic_model)
-        arms.append(BenchmarkArm("anthropic", lambda: _build_task("anthropic", spec)))
+        a_spec = ModelSpec.from_provider_string(args.anthropic_model)
+        # Bind the spec per-arm (default arg) so the lambda doesn't capture a later-rebound `spec`.
+        arms.append(BenchmarkArm("anthropic", lambda s=a_spec: _build_task("anthropic", s)))
     if args.local_model:
-        spec = local_spec(args.local_model, base_url=args.local_base_url)
+        l_spec = local_spec(args.local_model, base_url=args.local_base_url)
         arms.append(
-            BenchmarkArm("local", lambda: _build_task("local", spec), price=ModelPrice(0.0, 0.0))
+            BenchmarkArm(
+                "local", lambda s=l_spec: _build_task("local", s), price=ModelPrice(0.0, 0.0)
+            )
         )
     return arms
 

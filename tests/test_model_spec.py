@@ -67,7 +67,17 @@ def test_key_env_resolves_explicit_then_provider_default() -> None:
     assert ModelSpec("openai-compatible", "llama").key_env() is None  # keyless
 
 
-def test_needs_host_gateway_only_for_host_local_base_url() -> None:
+def test_gateway_host_for_host_local_dmr_and_public() -> None:
+    # host.docker.internal -> mapped; Docker Model Runner's model-runner.docker.internal -> mapped
+    # (the generalization to any *.docker.internal); a public endpoint / Anthropic -> None.
+    assert _LOCAL.gateway_host == "host.docker.internal"
+    dmr = ModelSpec("openai-compatible", "m", base_url="http://model-runner.docker.internal/engines/v1")
+    assert dmr.gateway_host == "model-runner.docker.internal"
+    assert ModelSpec("openai", "gpt-4o", base_url="https://api.openai.com/v1").gateway_host is None
+    assert _ANTHROPIC.gateway_host is None
+
+
+def test_needs_host_gateway_tracks_gateway_host() -> None:
     assert _LOCAL.needs_host_gateway is True
     assert _ANTHROPIC.needs_host_gateway is False
     hosted = ModelSpec("openai", "gpt-4o", base_url="https://api.openai.com/v1")
