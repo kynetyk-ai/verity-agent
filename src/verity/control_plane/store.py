@@ -40,6 +40,7 @@ from verity.contracts.model import (
     Payload,
     VerdictKind,
 )
+from verity.contracts.wire import OBJECT_REF_MARKER
 from verity.logging import get_logger
 
 __all__ = [
@@ -261,7 +262,8 @@ CREATE INDEX IF NOT EXISTS idx_operations_output ON operations(output_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_artifact ON decisions(artifact_id);
 """
 
-_OBJECT_MARKER = "__object_ref__"
+# The ObjectRef payload tag, shared with the wire codec so on-disk and on-wire encodings agree.
+_OBJECT_MARKER = OBJECT_REF_MARKER
 
 
 def _dump_objects(objects: tuple[tuple[str, ObjectRef], ...]) -> str:
