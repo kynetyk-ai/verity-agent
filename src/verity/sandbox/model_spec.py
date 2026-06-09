@@ -25,6 +25,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
+from urllib.parse import urlparse
 
 __all__ = ["ModelSpec", "resolve_model", "coerce_model"]
 
@@ -78,9 +79,25 @@ class ModelSpec:
         return _DEFAULT_KEY_ENV.get(self.provider)
 
     @property
+    def gateway_host(self) -> str | None:
+        """The ``*.docker.internal`` hostname to map to the host gateway, or ``None``.
+
+        Any ``*.docker.internal`` name (``host.docker.internal``; Docker Model Runner's
+        ``model-runner.docker.internal``; …) is a Docker Desktop special host alias for the machine
+        the daemon runs on; a container needs ``--add-host=<it>:host-gateway`` to resolve it
+        (required on Linux, a no-op on macOS). Public endpoints return ``None``.
+        """
+        if self.base_url is None:
+            return None
+        host = urlparse(self.base_url).hostname
+        if host is None:  # base_url without a scheme — best-effort token scan
+            host = self.base_url.split("/", 1)[0].split(":", 1)[0] or None
+        return host if host and host.endswith(".docker.internal") else None
+
+    @property
     def needs_host_gateway(self) -> bool:
-        """True iff the endpoint is on the Docker host (so the container needs ``--add-host``)."""
-        return self.base_url is not None and "host.docker.internal" in self.base_url
+        """True iff the endpoint is a Docker-host-internal address (needs ``--add-host``)."""
+        return self.gateway_host is not None
 
     def to_env(self) -> dict[str, str]:
         """Project to env vars for the container boundary (only set fields are emitted)."""

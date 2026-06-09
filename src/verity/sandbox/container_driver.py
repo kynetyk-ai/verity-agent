@@ -135,10 +135,11 @@ class DeepAgentsContainerDriver:
         for var in passthrough:
             if os.environ.get(var):
                 cmd += ["-e", var]
-        # Reach a model server on the Docker host (local OpenAI-compatible endpoint) — only when the
-        # spec's base_url points at host.docker.internal, so the Anthropic/hosted paths stay as-is.
-        if spec.needs_host_gateway:
-            cmd += ["--add-host=host.docker.internal:host-gateway"]
+        # Reach a model server on the Docker host (a local OpenAI-compatible endpoint, or Docker
+        # Model Runner's model-runner.docker.internal) — only when the spec's base_url is a
+        # *.docker.internal host, so the Anthropic/hosted paths stay as-is.
+        if (gateway := spec.gateway_host) is not None:
+            cmd += [f"--add-host={gateway}:host-gateway"]
         for key, value in spec.to_env().items():  # VERITY_SANDBOX_MODEL (+ BASE_URL/KEY_ENV/EXTRA)
             cmd += ["-e", f"{key}={value}"]
         cmd += [

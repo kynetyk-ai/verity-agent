@@ -134,6 +134,19 @@ def test_docker_command_local_spec_adds_host_gateway_and_forwards_key(
     assert cmd.count("LOCAL_KEY") == 1 and "sk-local" not in joined
 
 
+def test_docker_command_maps_dmr_gateway_host(tmp_path: Path) -> None:
+    # Docker Model Runner's container hostname (model-runner.docker.internal) is also a
+    # *.docker.internal host -> the driver maps THAT host, not a hardcoded host.docker.internal.
+    workspace = DefaultLayout().provision(tmp_path / "ws", {})
+    spec = ModelSpec(
+        "openai-compatible", "qwen3", base_url="http://model-runner.docker.internal/engines/v1"
+    )
+    driver = DeepAgentsContainerDriver(model="unused", spec=spec, image=_SANDBOX_IMAGE)
+    cmd = driver.docker_command(workspace, tmp_path / "in", name="n")
+    assert "--add-host=model-runner.docker.internal:host-gateway" in cmd
+    assert "--add-host=host.docker.internal:host-gateway" not in cmd
+
+
 def test_docker_command_openai_spec_forwards_key_no_gateway(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

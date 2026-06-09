@@ -5,13 +5,36 @@ host — a local open-weights model instead of a frontier API. The system depend
 OpenAI-compatible HTTP contract, **not** on any specific server: vLLM, Ollama, and llama.cpp are
 interchangeable. This is the thesis payoff — *good proposals from cheap models*.
 
+## Architecture: the model server is a separate, networked service
+
+Verity holds **no** model runtime — no weights, no inference, just an OpenAI-compatible HTTP client.
+The model server is an independent service the sandbox reaches **over the network** at a `base_url`;
+its lifecycle is fully decoupled from Verity:
+
+```
+┌─────────────────────────┐         ┌──────────────────────────────┐
+│  model server (HOST)    │  HTTP   │  Verity sandbox (CONTAINER)  │
+│  vLLM-mlx / DMR / Ollama│ ◀─────▶ │  ChatOpenAI -> base_url      │
+│  Metal GPU, OpenAI /v1  │         │  (no model code, just a URL) │
+└─────────────────────────┘         └──────────────────────────────┘
+        host.docker.internal  ◀── the container reaches the host via the Docker gateway
+```
+
+> **On macOS the model server runs as a host process, not a Docker container** — Docker Desktop's
+> Linux VM has no Metal GPU passthrough, and MLX is Metal-only. This is not a coupling compromise;
+> it *is* the decoupled design (an external networked service), the platform just forbids putting
+> that particular service in a container. The same seam serves a truly-containerized or remote model
+> service unchanged once the GPU lives where it *can* be containerized (a Linux/CUDA host, or a
+> hosted endpoint) — only the `base_url` differs.
+
 ## How it fits together
 
 - A `ModelSpec` with a `base_url` (instead of a bare `provider:model` string) targets an
   OpenAI-compatible endpoint. `local_spec(...)` (in `verity.sandbox.providers`) is the ready-made
   constructor.
-- The sandbox container has **outbound network on**, and when the `base_url` points at
-  `host.docker.internal` the driver automatically adds `--add-host=host.docker.internal:host-gateway`
+- The sandbox container has **outbound network on**, and when the `base_url` is any
+  `*.docker.internal` host (`host.docker.internal`, or Docker Model Runner's
+  `model-runner.docker.internal`) the driver automatically adds `--add-host=<that-host>:host-gateway`
   so the container can reach a server on your host.
 - Most local servers are keyless; the resolver sends a placeholder `EMPTY` key (the vLLM/Ollama
   convention). Set `api_key_env` if your server requires a key.
@@ -38,12 +61,41 @@ interchangeable. This is the thesis payoff — *good proposals from cheap models
 
 ## Server examples (interchangeable)
 
-### vLLM (incl. vLLM-mlx on Apple Silicon)
-OpenAI-compatible server, Metal backend on Apple Silicon. Serve on `:8000`; the default
-`local_spec` `base_url` already matches:
+### Docker Model Runner (DMR) — recommended on macOS
+DMR gives the model a **Docker-managed lifecycle** (pull / schedule / start-stop) and a
+container-facing OpenAI endpoint, while running the GPU work (vllm-metal) on the host — the closest
+thing to "a separate, managed model container" that Metal allows.
+
 ```
-local_spec("qwen2.5-coder")  # -> http://host.docker.internal:8000/v1
+docker model install-runner --backend vllm        # one-time: the vLLM/Metal backend
+docker desktop enable model-runner --tcp 12434     # expose the OpenAI API on the host
+docker model pull <mlx-community/...-model>         # MLX safetensors model
 ```
+
+Point Verity at it via the host gateway (reuses the standard path, **no Verity change**):
+```
+local_spec("<model>", base_url="http://host.docker.internal:12434/engines/v1")
+```
+DMR also publishes the in-container hostname `http://model-runner.docker.internal/engines/v1`; the
+driver maps it automatically (it is a `*.docker.internal` host), so that `base_url` works too.
+
+> **Verify tool-calling control.** Our propose seam needs *structured* `tool_calls`. With raw
+> `vllm-mlx serve` you set the parser explicitly (below); confirm DMR's vLLM backend does the same
+> for your model before relying on it — use the pre-flight check below.
+
+### vLLM-mlx (raw, on Apple Silicon) — full tool-parser control
+OpenAI-compatible server, Metal backend. **Tool-calling is off by default and the propose seam needs
+it**, so enable the parser explicitly:
+```
+vllm-mlx serve unsloth/Qwen3.6-27B-MLX-8bit --port 8000 \
+    --continuous-batching --enable-auto-tool-choice --tool-call-parser qwen3_coder
+```
+```
+local_spec("unsloth/Qwen3.6-27B-MLX-8bit")  # -> http://host.docker.internal:8000/v1
+```
+(8-bit 27B is ~35 GB of weights → wants ~48 GB+ unified memory; drop to a 4-bit MLX repo on a 32 GB
+Mac. Note: `mxfp8` is an *Ollama* quant tag — there is no MXFP8 *MLX* build; the 8-bit MLX repo is the
+faithful substitute.)
 
 ### Ollama
 Ollama serves an OpenAI-compatible API on port `11434`. Override the `base_url` and port:
@@ -54,6 +106,32 @@ local_spec("qwen2.5-coder", base_url="http://host.docker.internal:11434/v1")
 ### llama.cpp / any other
 Anything that speaks the OpenAI `/v1` contract works — set `base_url` to its host/port.
 
+## Pre-flight: prove reachability + tool-calling before a full agent run
+
+Debug the network and the tool-call parsing **in isolation**, so a failure is unambiguous (a failed
+agent cycle is a slow, noisy way to discover the server can't emit `tool_calls`).
+
+```
+# 1) reachable from the host?
+curl http://localhost:8000/v1/models                  # (or :12434/engines/v1/models for DMR)
+
+# 2) reachable from inside a container (the real path)?
+docker run --rm --add-host=host.docker.internal:host-gateway curlimages/curl \
+    http://host.docker.internal:8000/v1/models
+
+# 3) does it return STRUCTURED tool_calls (not the call buried in message content)?
+curl http://localhost:8000/v1/chat/completions -H 'content-type: application/json' -d '{
+  "model": "<model>", "messages": [{"role":"user","content":"call ping with x=1"}],
+  "tools": [{"type":"function","function":{"name":"ping",
+    "parameters":{"type":"object","properties":{"x":{"type":"integer"}}}}}],
+  "tool_choice": "auto"}'
+# PASS = the reply has choices[0].message.tool_calls; FAIL = the call is plain text in .content
+```
+
+Step 3 directly tests the known Qwen3-coder tool-parsing flakiness (vLLM #22975). If it fails, the
+propose seam will show **accepted-count = 0** even though the model "runs" — fix the parser flag (or
+switch to raw `vllm-mlx serve` for control) before benchmarking.
+
 ## Notes
 
 - **Small context windows.** Local/open models often have a smaller window than frontier models; the
@@ -62,5 +140,6 @@ Anything that speaks the OpenAI `/v1` contract works — set `base_url` to its h
 - **Tool-calling quality varies.** The propose seam needs the model to emit tool calls reliably;
   weaker models will show up as a low accepted-count in the eval harness (Phase 6.3) — that *is* the
   measurement, not a bug.
-- **Linux vs macOS.** `--add-host=host.docker.internal:host-gateway` is required on Linux (Docker
-  20.10+) and a harmless no-op on macOS/Docker Desktop, where the hostname resolves automatically.
+- **Linux vs macOS.** The `--add-host=<host>:host-gateway` the driver adds is required on Linux
+  (Docker 20.10+) and a harmless no-op on macOS/Docker Desktop, where `*.docker.internal` resolves
+  automatically.
