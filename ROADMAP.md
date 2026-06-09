@@ -377,32 +377,96 @@ the CI gate.
 
 ### Phase 7 — Service split & full containerization 🚧
 
-The biggest, most deferrable: make each service independently deployable. **Headline done and
-live-validated** — the verifier runs as a standing HTTP service the control plane drives over the
-wire, with **no `ControlPlane` change** (the async ports paid off). The whole transport seam is
-CI-provable via an in-process loopback; the real two-container run is proven against the built image.
+The biggest, most deferrable: make each service independently deployable. The **seams are done and
+live-validated** (7.1–7.3 + the multi-tenancy seams): the verifier runs as a standing HTTP service the
+control plane drives over the wire, with **no `ControlPlane` change** (the async ports paid off); the
+transport seam is CI-provable via an in-process loopback and proven against the built image.
+
+**The full-containerization architecture is now settled by
+[ADR 0003](docs/adr/0003-control-plane-and-ephemeral-worker-provisioning.md):** a long-lived control
+plane that runs sandbox/verifier work as **ephemeral, per-cycle, isolated workers** behind a
+backend-agnostic provisioning seam (local Docker now, k8s later). Two decisions matter for the
+roadmap: the per-cycle path is **batch-job workers** (`launch(input) → wait → harvest → destroy`), not
+standing servers — which **supersedes the deferred "sandbox-as-server"** (we will not build it); and
+the **control plane stays agnostic** — provisioning lives in a neutral `provisioning/` package behind
+the ports, never on the CP's surface. **7.4 is the live edge** and ends at the full-containerization
+done-line: the FE run driven entirely by control-plane configuration, no ad-hoc wiring.
 
 - **7.1 Service entrypoints + images ✅ (verifier)** — `verifier/__main__.py` serves the
   advisory verifier over HTTP (uvicorn); `Dockerfile.verifier` builds it (core + `service` extra, no
-  deepagents). The built image serves `/health` + `/provision` live. *Deferred:* the **control-plane**
-  entrypoint/image (its outward data-plane API #3 is a separate design) and the sandbox-as-server.
+  deepagents). The built image serves `/health` + `/provision` live. *Re-homed:* the **control-plane**
+  entrypoint/image is absorbed into **7.4** (the worker-driven CP); the outward data-plane API (**#3**)
+  is the Multi-tenancy & run-control track. *Superseded by ADR 0003:* the sandbox-as-server (the
+  per-cycle path is batch-job workers — 7.4).
 - **7.2 Networked transport ✅ (verifier path)** — a JSON **wire codec** for every boundary type
   (`contracts/wire.py`, object bytes inline-base64, rationale segregation structural) + a **transport
   seam** (`transport/`): `Transport` + an error-classifying envelope (boundary errors cross as
   themselves; `GateUnavailable`/`SandboxError` recoverable), `Remote*` clients / `*Server` hosts, a
   **loopback** transport (CI) and an **HTTP/FastAPI** transport. The **networked verifier (#10)** is
   live; degrade-don't-crash survives the hop (a killed verifier mid-run → recorded gate failure, run
-  continues). *Deferred:* the standing control-plane data plane (**#3**) and the **four-service split**
-  (workspace out of the sandbox).
+  continues). *Reused:* the transport + `wire.py` are the seam for a **future launched-verifier-worker**
+  (ADR g — not the FE batch path). *Re-homed:* the standing control-plane data plane (**#3**) →
+  Multi-tenancy & run-control track. *Deferred (designed-for):* the **four-service split** (workspace
+  out of the sandbox, §16).
 - **7.3 Live telemetry + panel ✅ (emission)** — `telemetry.py`: a `MetricsSink` + `export_run_report`
   (outcome / gate-decision counters, per-cycle latency histograms, run-total gauges) over the 5.3
   RunReport, with a `Null` default (opt-in) and a lazy **Prometheus** sink (`telemetry` extra) + a
-  structlog→metrics processor. *Deferred:* the Grafana dashboard itself + OpenTelemetry sink + wiring a
-  scrape into the service entrypoints.
+  structlog→metrics processor. *Deferred (ADR k — the telemetry push sink):* the Grafana dashboard +
+  OpenTelemetry sink + wiring a scrape; under the worker model, workers ship labelled structured logs
+  (`{tenant, run, cycle, role}`) and a fleet sink aggregates them.
 - **Multi-tenancy & run-control seams ✅** — `JobQueue` port + in-process default, a `RunRecord` store
   keyed by `(tenant_id, run_id)` over the RunReport, and `tenant_id` threaded through `TaskConfig` /
   the report (single default tenant). Seams-first; the engine (real queue + workers, store upgrade,
   tenant isolation, **#27**/**#9**) is the deferred adapter swap.
+
+- **7.4 Worker provisioning → full containerization, FE via config (ADR 0003) ⬜** — the live edge.
+  Realize ADR 0003: sandbox/verifier per-cycle work runs as **ephemeral, isolated, batch-job workers**
+  behind a neutral `WorkerBackend` seam, ending at the **done-line: the FE run driven entirely by
+  control-plane configuration, no ad-hoc wiring** (today it is hand-wired in
+  `tools/benchmark_models.py:_build_fe_task`). Built fresh off `develop`. **Genericity invariant (held
+  throughout):** the control plane stays agnostic — it talks only to `SandboxPort`/`VerifierPort` via
+  the registry; provisioning lives in a **neutral `provisioning/` package** the CP never imports, and
+  is **registration/deployment config, never `TaskConfig`**; FE-specifics are confined to a
+  domain-layer registration builder. Each sprint a green, focused commit (suite green at every step):
+  - **a. Provisioning contract** — `provisioning/backend.py`: the `WorkerBackend` Protocol
+    (`launch/status/wait/logs/stop/destroy/list/reap` + optional `recover` + `run_to_completion` = the
+    batch path) + `WorkerSpec` (labels `{harness,tenant,job,run,cycle,role,config}`, image, command,
+    env, mounts, `input_files`, limits, `runtime="runc"`, network, timeout). Imports nothing
+    service/domain. Unit-tested; unconsumed.
+  - **b. `DockerBackend`** (riskiest — security argv) — `provisioning/docker.py`: ONE parameterized
+    hostile-posture `docker run` builder driven by `WorkerSpec`, replacing the two duplicated builders;
+    `--label` per key; `list`/`reap` by label; structured launch/destroy audit logs; subprocess (no
+    docker SDK); `runtime` knob default `runc` (gVisor `runsc` opt-in, ADR i). **Byte-level argv-pin
+    tests for both postures** (sandbox network-on / code-runner `--network=none`) before deleting the
+    old builders; a `@docker` smoke.
+  - **c. Backend-backed sandbox driver** — `BackendSandboxDriver` (in `sandbox/`) over the existing
+    `CycleInput` + `container_entry` (reused unchanged); `DeepAgentsContainerDriver` becomes a thin
+    wrapper.
+  - **d. Backend-backed code-runner** (the untrusted-code-isolation resolution) — `BackendCodeRunner`
+    (in `verifier/`): untrusted submitted code runs in a backend-launched, **labelled, isolated
+    worker**, never an in-process subprocess. The FE verifier's gate **logic stays trusted + held
+    across the run** (its in-memory incumbent ledger forbids per-cycle disposal); `reserved_labels`
+    (the answer key) never enters any worker.
+  - **e. `InProcessBackend`** — `provisioning/inprocess.py`: the trivial backend, so the *same
+    declarative config* selects `backend_key="inprocess"` vs `"docker"` and the capstone runs in the
+    default offline suite.
+  - **f. Declarative wiring at the registration layer** (kills the ad-hoc wiring) — a
+    `ProvisioningConfig` (backend + per-role spec templates) consumed by a generic registration helper
+    + an FE-domain registration builder; replaces `_build_fe_task`. `TaskConfig` and `ControlPlane`
+    unchanged.
+  - **g. FE-via-config acceptance** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
+    built purely from declarative config + a backend selection; asserts an accepted `Submission`, the
+    no-cross-cycle-bleed property (§3.5), untrusted code in a `{role:code-runner}`-labelled worker, and
+    `reserved_labels` absent from every worker. Green on `InProcessBackend` (offline) and
+    `DockerBackend` (`@docker`, `@live` for the real model).
+  - **h. Placed seams** — `tenant_id`/`run_id`/`cycle` in worker labels; a `RunRecord` at run end; a
+    label-reaper + `verity-reaper` entrypoint (ADR e).
+  - *Deferred (placed seams, per ADR 0003 — see the tracks below):* the reconciliation-loop + per-tenant
+    concurrency engine (ADR c/h) = the Multi-tenancy engine + "parallel agents against one task"; the
+    `K8sBackend` (a second impl of the same port); the **launched-verifier-worker** for FE (precondition:
+    move the incumbent ledger into the store + re-read incumbents inside the commit `transaction()`,
+    ADR j); rootless + `docker-socket-proxy` posture and a Ryuk-style GC death-switch (deployment config,
+    ADR f); gVisor/microVM (`WorkerSpec.runtime`, ADR i).
 
 ### Woven through Phases 6–7
 
@@ -441,7 +505,11 @@ added adapter, not a reshape.
   **object retention / GC** of bytes referenced only by terminal artifacts (**#9**, §5.5); **tenant
   isolation** (namespaced stores; no cross-tenant reads in retrieval / slices / object-provisioning) —
   the actual hard part; and the async **submit → job_id → poll/fetch** API a standing, networked
-  control plane wants. Naturally siblings with the service split (7.1–7.2).
+  control plane wants (the re-homed **#3** data plane). Naturally siblings with the service split
+  (7.1–7.4). **This is the home for ADR 0003's deferred concurrency engine:** the level-triggered
+  reconciliation loop + per-tenant concurrency slots/fairness (ADR c/h), and the commit-under-concurrency
+  correctness (re-read incumbents inside the commit `transaction()`, ADR j). The `WorkerBackend` (7.4)
+  is the seam it drives; a **`K8sBackend`** is the second impl of that port for a cluster deployment.
 - **Not here:** authentication / authorization (still *further out*); parallel agents against one task
   (a related but separate concurrency concern, below).
 
@@ -470,7 +538,9 @@ shipped in 4.2 and exercised live).
 Designed-for, not yet scheduled; each becomes an issue/epic when its time comes:
 
 - Authentication / authorization on the control plane (pairs with the multi-tenancy track above).
-- Parallel agents against one task (diversity / race — N sandboxes → 1 control plane).
+- Parallel agents against one task (diversity / race — N sandboxes → 1 control plane). The 7.4
+  worker model + labels (`run`, `cycle`) are the placed seam (ADR 0003); building it = the concurrency
+  engine in the Multi-tenancy track above.
 - Spec sync: collapse the §8.2 tool registry into operation signatures (**#5**) — already true in code.
 - Secrets / egress policy once local + networked services land.
 - True schema migration / regime transition (spec §15).
