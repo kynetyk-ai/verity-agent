@@ -23,10 +23,16 @@ import httpx
 from fastapi import FastAPI, Request, Response
 
 from verity.transport.base import Transport, TransportUnavailable
+from verity.transport.client import RemoteVerifier
 from verity.transport.envelope import RECOVERABLE_KINDS
 from verity.transport.server import SandboxServer, VerifierServer
 
-__all__ = ["HttpTransport", "build_asgi_app", "status_for_envelope"]
+__all__ = [
+    "HttpTransport",
+    "build_asgi_app",
+    "status_for_envelope",
+    "build_remote_verifier",
+]
 
 _RECOVERABLE_STATUS = 503
 _FATAL_STATUS = 422
@@ -34,21 +40,36 @@ _FATAL_STATUS = 422
 
 @dataclass(slots=True)
 class HttpTransport(Transport):
-    """A :class:`Transport` over HTTP. ``client`` is an ``httpx.AsyncClient`` (caller-owned)."""
+    """A :class:`Transport` over HTTP.
+
+    By default each request uses a **fresh** ``httpx.AsyncClient`` — deliberate, because the control
+    plane drives a dispatch on a *different* event loop than it configured on (``configure`` runs in
+    one ``asyncio.run``, the dispatch on a background loop), and one async client cannot span loops
+    ("Event loop is closed"). A verifier call is once per cycle, so a per-request connection is a
+    negligible cost for that robustness. ``client`` may be injected (an ASGI client in tests) — then
+    it is reused and the caller owns its lifecycle.
+    """
 
     base_url: str
-    client: httpx.AsyncClient
+    client: httpx.AsyncClient | None = None
+    timeout_s: float = 30.0
 
     async def request(self, method: str, body: bytes) -> bytes:
+        url = f"{self.base_url}/{method}"
         try:
-            response = await self.client.post(f"{self.base_url}/{method}", content=body)
+            if self.client is not None:
+                response = await self.client.post(url, content=body)
+            else:
+                async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+                    response = await client.post(url, content=body)
         except httpx.HTTPError as exc:  # connection refused / timed out — the peer is unreachable
             raise TransportUnavailable(f"{type(exc).__name__}: {exc}") from exc
         # The body is the envelope (valid even on a 503 from our own server); the client parses it.
         return response.content
 
     async def aclose(self) -> None:
-        await self.client.aclose()
+        if self.client is not None:
+            await self.client.aclose()
 
 
 def status_for_envelope(reply: bytes) -> int:
@@ -61,6 +82,18 @@ def status_for_envelope(reply: bytes) -> int:
         return 200
     kind = (obj.get("error") or {}).get("kind", "")
     return _RECOVERABLE_STATUS if kind in RECOVERABLE_KINDS else _FATAL_STATUS
+
+
+def build_remote_verifier(base_url: str, *, timeout_s: float = 30.0) -> RemoteVerifier:
+    """A control-plane-side ``VerifierPort`` over HTTP at ``base_url``.
+
+    Register it as a ``ProviderRegistry`` factory (``verifier_key="remote"``) so a task dispatches
+    to a networked verifier with no control-plane change::
+
+        url = os.environ["VERITY_VERIFIER_URL"]
+        vp.register("remote", lambda: build_remote_verifier(url))
+    """
+    return RemoteVerifier(HttpTransport(base_url=base_url.rstrip("/"), timeout_s=timeout_s))
 
 
 def build_asgi_app(server: VerifierServer | SandboxServer) -> FastAPI:
