@@ -8,14 +8,14 @@
   (`RunRecord` keyed by `(tenant_id, run_id)`), and `tenant_id` on `TaskConfig`.
 - **Supersedes the topology (not the contracts) of** the un-merged `feat/containerized-services-gvisor`
   branch (S1–S4): its transport seam and CP-as-service are reused; its *single standing sandbox
-  service* is replaced by *per-run launched workers* (see "Relationship to existing work").
+  service* is replaced by *launched, run-scoped workers* (see "Relationship to existing work").
 
 ## Context
 
 We are moving from "three services in a Compose file" to the deployment shape the spec always
-designed for: **a long-lived control plane that schedules many concurrent, ephemeral, per-run
-sandbox and verifier instances**, deployable to our own tenancy. Four requirements drive this, and
-none may be foreclosed by what we build first:
+designed for: **a long-lived control plane that schedules many concurrent, ephemeral, per-cycle
+(run-scoped) sandbox and verifier instances**, deployable to our own tenancy. Four requirements drive
+this, and none may be foreclosed by what we build first:
 
 1. **The control plane is long-lived and may manage many jobs at once,** across multiple tasks.
 2. **A task (configuration) may use any sandbox or verifier in the registry** — swapping them is
@@ -62,6 +62,17 @@ inside it."**
 
 ## Decision
 
+### Vocabulary: run vs cycle (and a worker's lifetime)
+
+These are **distinct** in the codebase (`docs/glossary.md`) and this ADR uses them precisely. A
+**run** is one *execution* of a task (`ControlPlane.run`); a **cycle** is one
+`read → propose → gate → commit` *iteration within* a run (`run_cycle`) — i.e. one proposal attempt. A
+run **contains** cycles (`OrchestrationPolicy.max_cycles` bounds it; `cycles_run` counts them). The
+consequence for provisioning: a worker is **scoped to a run in *identity*** (its labels carry the run)
+but, under the default per-cycle disposal (d.4), its **lifetime is one *cycle*** — destroyed and
+relaunched each proposal. Where this ADR says "per-run worker" it means the *alternative* in (d.4):
+one worker spanning a whole run, flushing internally each cycle.
+
 ### (a) A backend-agnostic `WorkerBackend` port — the provisioning seam
 
 Introduce one new port the control plane depends on for *provisioning*, distinct from the existing
@@ -73,7 +84,7 @@ nothing about gates, provenance, or policy (those stay in the control plane, per
 class WorkerBackend(Protocol):
     # provision / lifecycle  (the "Deployment" layer)
     def launch(self, spec: WorkerSpec) -> WorkerHandle: ...   # create + start; spec carries the
-                                                              # labels {tenant, job, run, role},
+                                                              # labels {tenant, job, run, cycle, role},
                                                               # image, config-key, env, mounts, limits,
                                                               # and the OCI runtime (default plain;
                                                               # see "Isolation posture")
@@ -107,7 +118,9 @@ SWE-ReX/CRI deployment-vs-runtime split, applied to our ports.
 ### (b) Labels are the universal key
 
 Every worker is stamped, at launch, with a composite identity as labels:
-`{harness: verity, tenant: <t>, job: <j>, run: <r>, role: sandbox|verifier, config: <key>}`. **All
+`{harness: verity, tenant: <t>, job: <j>, run: <r>, cycle: <n>, role: sandbox|verifier, config: <key>}`.
+The `cycle` ordinal matters under per-cycle disposal (d.4): consecutive workers of the *same* run are
+distinct units, so GC and addressing never alias cycle *N*'s worker with cycle *N+1*'s. **All
 selection, concurrency accounting, and garbage collection become label queries** — and those map
 *identically* onto Docker label filters and Kubernetes label selectors. This is how Testcontainers
 (`sessionId`), GitLab Runner, and k8s all do it, and it is what makes the Docker→k8s swap mechanical.
@@ -119,13 +132,19 @@ desired state, read observed state, drive the diff, repeat.
 
 ```
 each tick / on a job event:
-  desired = runs that should have a live worker     # from the JobQueue + the provenance store
+  # one live worker per ACTIVE RUN, for that run's CURRENT CYCLE (run != cycle; see Vocabulary)
+  desired = {(run, run.current_cycle) for run in active_runs}   # from the JobQueue + the store
   actual  = backend.list({harness: verity})
-  for run in desired - actual:  backend.launch(spec_for(run))   # (re)generate a clean worker
-  for w   in actual  - desired: backend.destroy(w)              # reap workers with no owning run
-  enforce per-tenant concurrency slots before launching         # (h)
+  for (run, cycle) in desired - actual:  backend.launch(spec_for(run, cycle))  # (re)generate clean
+  for w in actual - desired:             backend.destroy(w)     # reap (a finished cycle, or no owning run)
+  enforce per-tenant concurrency slots before launching         # slots count concurrent RUNS — (h)
   periodically: backend.reap(stale-selector)                    # belt-and-suspenders GC
 ```
+
+Per-cycle disposal makes the launch/destroy churn *within* a run: when run *R* finishes cycle *N*
+(worker destroyed after harvest+commit), the control plane advances *R* to cycle *N+1* and the next
+tick launches a fresh worker for it. Slots bound concurrent **runs**; regeneration happens per
+**cycle**.
 
 Because the loop is **level-triggered and idempotent**, "throw the worker away and rebuild it from the
 store" is a *routine* operation, not an exceptional one — which is precisely why the §3.5 regeneration
@@ -219,12 +238,13 @@ the boundary today** — rootless + proxy + audit are defense-in-depth on top of
 
 ### (g) Sandbox and verifier are symmetric ephemeral workers
 
-Both are launched per-run via the `WorkerBackend`, distinguished only by their `role` label, and
-driven over their respective ports (`SandboxPort` / `VerifierPort`). This honours the decision that
-verifiers get the same per-run treatment as sandboxes. It is consistent with §3.6 ("the verifier is
-**queue-fronted and async**"): a per-run verifier instance is one valid shape, and a shared
-queue-fronted verifier *pool* is simply a backend that returns a handle to a pooled instance instead
-of launching a fresh one — the abstraction accommodates both without the control plane knowing which.
+Both are launched by the `WorkerBackend` (per cycle by default, scoped to the run — see Vocabulary),
+distinguished only by their `role` label, and driven over their respective ports
+(`SandboxPort` / `VerifierPort`). This honours the decision that verifiers get the same ephemeral
+treatment as sandboxes. It is consistent with §3.6 ("the verifier is **queue-fronted and async**"): a
+freshly-launched verifier worker is one valid shape, and a shared queue-fronted verifier *pool* is
+simply a backend that returns a handle to a pooled instance instead of launching a fresh one — the
+abstraction accommodates both without the control plane knowing which.
 
 ### (h) Concurrency and multi-tenancy bounds live in the orchestrator
 
@@ -290,7 +310,7 @@ aggregation — it is not optional. Decision:
 
 - **Workers already emit structured logs** (`structlog` JSON to stdout) and the agent already ships
   `__telemetry__.json` per cycle (harvested into the `RunReport`). Stamp both with the
-  `{tenant, run, role}` labels at the source.
+  `{tenant, run, cycle, role}` labels at the source.
 - **`logs()` on `WorkerBackend`** is for *pull* (debugging a specific worker); **a telemetry/log sink**
   is for *push* aggregation across the fleet. The control plane (or the worker) ships structured
   events to a sink — stdout-collected by the platform on k8s; an explicit sink (a log shipper / the
@@ -363,7 +383,7 @@ designed-for, not built.
   Docker DNS anyway.
 - **Informs, doesn't block:** the dropped `SubprocessCodeRunner` question (FE untrusted-code
   execution) becomes a *worker* like any other — the verifier's code execution is just another
-  per-run worker the backend launches and isolates, which resolves the isolation regression that
+  launched worker the backend isolates, which resolves the isolation regression that
   killed it: the isolation is the worker boundary (gVisor container / k8s Pod), provisioned by the
   trusted backend, not an in-process subprocess.
 
@@ -385,7 +405,7 @@ a registration or a backend swap.
 - **Local-now, k8s-later is real, not aspirational:** the same control-plane loop and the same worker
   contracts run on a Docker host today and a cluster later by swapping one port implementation.
 - **Concurrency and multi-tenancy are unblocked structurally** without being built — the cardinality
-  (per-run workers, labelled, slot-bounded) is correct from day one.
+  (ephemeral per-cycle workers, run-scoped, labelled, slot-bounded) is correct from day one.
 - **The regeneration invariant is strengthened**, not weakened: it becomes a structural property of
   worker disposal + reconciliation, asserted by a property test against every backend.
 - **No anti-pattern, but no false comfort either:** privilege is concentrated in one logged choke
@@ -419,9 +439,9 @@ External review surfaced six items; the load-bearing ones are now decided in the
   reap is correct; `recover` only saves the re-run and is deferrable. (For a system *without* atomic
   commit + harvest-ordering, `recover` could be a correctness requirement — Verity's commit discipline
   is what downgrades it.)
-- **Verifier shape — default per-run instance** (symmetric with the sandbox, (g)); a shared
-  queue-fronted pool (§3.6) is a backend variant the abstraction already permits, adopted only if
-  standing up a verifier worker per run proves too costly.
+- **Verifier shape — default a freshly-launched verifier worker per cycle** (symmetric with the
+  sandbox, (g)); a shared queue-fronted pool (§3.6) is a backend variant the abstraction already
+  permits, adopted only if launching a verifier worker per cycle proves too costly.
 - **Scheduler placement — in-process now** (resolved by (l)); the `WorkerBackend` port keeps extraction
   to a `RemoteWorkerBackend` registration later.
 
