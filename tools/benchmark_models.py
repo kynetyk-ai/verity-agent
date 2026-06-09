@@ -178,8 +178,10 @@ async def _build_fe_task(
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator, sandbox_key="fe", verifier_key="fe",
         harvester=domain.harvester,
+        # Provision the agent's latest submission — its in-flight `revised` refine target or the
+        # accepted incumbent — so a refine cycle edits its prior script, not a rebuild (#51).
         object_provisioning=ObjectProvisioningPolicy(
-            mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+            mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
         ),
     )
     await cp.configure(config)

@@ -210,6 +210,31 @@ def test_policy_all_includes_terminal_and_respects_cap() -> None:
     assert len(object_files) == 2 and "provided/INDEX.md" in out
 
 
+def test_policy_last_revised_or_accepted_picks_the_in_flight_revised() -> None:
+    # The agent's most-recent submission is `revised` (its refine target). Provision THAT so the
+    # next cycle edits it, not just the older accepted incumbent or nothing at all (#51).
+    store = SqliteStore()
+    _seed_with_object(store, art_id="s1", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"accepted", ts="t1")
+    _seed_with_object(store, art_id="s2", status=ArtifactStatus.REVISED,
+                      name=ENTRYPOINT, data=b"refining", ts="t2")
+    policy = ObjectProvisioningPolicy(
+        mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(store)["scratch"]
+    assert out["provided/submission.py"] == b"refining"  # the in-flight revised, not the accepted
+    assert b"s2" in out["provided/INDEX.md"]
+
+
+def test_policy_last_revised_or_accepted_falls_back_to_accepted() -> None:
+    # With no in-flight revised it behaves like LAST_ACCEPTED, ignoring the more-recent rejected.
+    policy = ObjectProvisioningPolicy(
+        mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(_store_with_three())["scratch"]
+    assert out["provided/submission.py"] == b"v2"  # s2 (latest accepted); rejected s3 ignored
+
+
 # ----------------------------------------------------------- sandbox materializes + re-provisions
 
 
