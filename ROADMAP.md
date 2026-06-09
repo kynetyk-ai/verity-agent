@@ -353,10 +353,18 @@ endpoints, and both drivers resolve a spec at their own edge.
   is the live cross-model entrypoint. The instrument that tells us whether the thesis holds.
 
 *Live validation:* **(1) local — done (2026-06-08).** `qwen3.6:27b-coding-mxfp8` (Ollama on an M3
-Ultra) drove the full read→propose→gate→commit loop to an accepted commit; the head-to-head benchmark
-ran — both frontier and local accepted, local **$0.00** vs sonnet **$0.23**, ~1.5× latency. N=1 on a
-trivial task, so it validates the *pipeline + that a cheap model can drive the loop*, not
-quality-under-pressure (a real test wants the **scoring FE domain §12 over multiple cycles**).
+Ultra) drove the full read→propose→gate→commit loop to an accepted commit. Two benchmarks
+(`tools/benchmark_models.py`, local vs frontier sonnet on identical data):
+> - **Trivial code task:** parity — both accepted, local **$0.00** vs **$0.23**, ~1.5× latency.
+> - **Scored FE domain (§12), 3 refine cycles:** the gap is real — frontier reached **0.910** balanced
+>   accuracy (2 accepted), the local model landed **0 accepted** (all 3 cycles stuck at the
+>   `features-defined` *refine* gate; scripts ran clean but never cleared the bar), at ~3× latency and
+>   more tokens. So *good proposals from cheap models* held for easy work and **not** for this hard
+>   task/model. *Observation (parked, not now):* the local arm got **stuck on one gate's refine loop**,
+>   not failing randomly — likely the **prompt + the `refine`/`revise` feedback being too terse for a
+>   limited-reasoning model** to act on, rather than a hard ceiling. A prompt/feedback-tuning question,
+>   not a blocker.
+
 **(2) hosted OpenAI — pending a key.** Both paths are manual (Docker + image + a real model), outside
 the CI gate.
 
@@ -387,6 +395,17 @@ The biggest, most deferrable: make each service independently deployable.
   resource + output caps, mount layout, deps strategy), an offline / pinned-wheels install option to
   reclaim reproducibility, and a cleaner validity-rung vs scoring-rung split. Revisits the accepted
   network-on tradeoff.
+- **Configuration guide + a Claude Agent Skill for setting up the system** — now that the configuration
+  surface has stabilized through Phase 6, make standing up a new task / domain / model low-friction.
+  (a) A **configuration guide** in `docs/` covering the whole surface: building a domain (schema +
+  gate pipeline + shape validator + harvester), registering a sandbox via `ModelSpec` /
+  `local_spec` / `openai_spec`, registering a verifier + code runner, assembling a `TaskConfig`, the
+  `OrchestrationPolicy` (cycles / refine cap / stop-on-accept), and mounting data via
+  `static_contents` vs `data_sources` (the §13.12 isolation note). (b) A **Claude Agent Skill** that
+  scaffolds that configuration interactively — gathers the task/domain/model intent and emits a
+  working registration + `TaskConfig` (and a benchmark arm), so a user (or Claude) can wire a new
+  domain or model arm without reverse-engineering the test setups. The live-validation work
+  (`docs/local-models.md`, `tools/benchmark_models.py`) is the seed material.
 
 ### Multi-tenancy & run-control (a track spanning Phases 5 → 7)
 
