@@ -33,6 +33,7 @@ from verity.domains.code import DATASET, build_code_domain
 from verity.sandbox.container_driver import DeepAgentsContainerDriver
 from verity.sandbox.container_io import CycleInput
 from verity.sandbox.errors import SandboxError
+from verity.sandbox.model_spec import ModelSpec
 from verity.sandbox.registration import build_container_sandbox
 from verity.verifier import FakeCodeRunner, RunResult, docker_available
 
@@ -98,6 +99,38 @@ def test_env_passthrough_forwards_keys(tmp_path: Path, monkeypatch: pytest.Monke
     cmd = driver.docker_command(workspace, tmp_path / "in", name="n")
     # the key is forwarded by name (value stays in the daemon env, never on the argv)
     assert cmd.count("ANTHROPIC_API_KEY") == 1 and "sk-test" not in " ".join(cmd)
+
+
+def test_docker_command_anthropic_spec_is_unchanged(tmp_path: Path) -> None:
+    # A plain provider string (no ModelSpec) must produce today's exact model env and NO --add-host,
+    # so Phase 6 leaves the Anthropic path byte-identical (guards the posture test above).
+    workspace = DefaultLayout().provision(tmp_path / "ws", {})
+    driver = DeepAgentsContainerDriver(model="anthropic:claude-sonnet-4-6", image=_SANDBOX_IMAGE)
+    cmd = driver.docker_command(workspace, tmp_path / "in", name="n")
+    assert "VERITY_SANDBOX_MODEL=anthropic:claude-sonnet-4-6" in cmd
+    assert "--add-host=host.docker.internal:host-gateway" not in cmd
+    assert not any(a.startswith("VERITY_SANDBOX_BASE_URL=") for a in cmd)
+
+
+def test_docker_command_local_spec_adds_host_gateway_and_forwards_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An OpenAI-compatible local endpoint: the container needs --add-host to reach the host server,
+    # the base_url rides as an env var, and the spec's own key env is forwarded by name (5.1/6.1).
+    monkeypatch.setenv("LOCAL_KEY", "sk-local")
+    workspace = DefaultLayout().provision(tmp_path / "ws", {})
+    spec = ModelSpec(
+        "openai-compatible", "qwen2.5-coder",
+        base_url="http://host.docker.internal:8000/v1", api_key_env="LOCAL_KEY",
+    )
+    driver = DeepAgentsContainerDriver(model="unused", spec=spec, image=_SANDBOX_IMAGE)
+    cmd = driver.docker_command(workspace, tmp_path / "in", name="n")
+    joined = " ".join(cmd)
+    assert "--add-host=host.docker.internal:host-gateway" in cmd
+    assert "VERITY_SANDBOX_MODEL=openai-compatible:qwen2.5-coder" in cmd
+    assert "VERITY_SANDBOX_BASE_URL=http://host.docker.internal:8000/v1" in cmd
+    # the key is forwarded by name only (value stays in the daemon env)
+    assert cmd.count("LOCAL_KEY") == 1 and "sk-local" not in joined
 
 
 # ----------------------------------------------------------------- real container (Docker + live)

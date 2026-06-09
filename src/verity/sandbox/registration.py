@@ -23,6 +23,7 @@ from verity.control_plane.registries import SchemaRegistry
 from verity.sandbox.container_driver import DeepAgentsContainerDriver
 from verity.sandbox.core import AgentSandbox
 from verity.sandbox.driver import SandboxDriver
+from verity.sandbox.model_spec import ModelSpec
 
 __all__ = [
     "build_sandbox",
@@ -90,6 +91,7 @@ def build_container_sandbox(
     schema: SchemaRegistry,
     root: Path,
     model: str,
+    model_spec: ModelSpec | None = None,
     image: str = "verity-sandbox:latest",
     data_sources: tuple[str, ...] = (),
     sandbox_tools: tuple[str, ...] = (),
@@ -99,19 +101,21 @@ def build_container_sandbox(
 ) -> AgentSandbox:
     """A **container-isolated** Deep Agents sandbox — safe YOLO arbitrary-code execution.
 
-    ``sandbox_tools`` names extra (non-propose) tools, resolved in-container from the tool registry
-    (5.4, #6); the names ride ``CycleInput.tool_names``. ``step_budget`` caps per-cycle model steps
-    (5.1); None = framework limit only.
+    ``model`` is the provider string; pass ``model_spec`` for a richer target (a local /
+    OpenAI-compatible endpoint with a ``base_url``) — Phase 6. ``sandbox_tools`` names extra
+    (non-propose) tools, resolved in-container from the tool registry (5.4, #6); the names ride
+    ``CycleInput.tool_names``. ``step_budget`` caps per-cycle model steps (5.1; None = no cap).
     """
+    spec = model_spec or ModelSpec.from_provider_string(model)
     driver = DeepAgentsContainerDriver(
-        model=model, image=image, data_sources=data_sources, tool_names=sandbox_tools,
-        step_budget=step_budget,
+        model=model, spec=model_spec, image=image, data_sources=data_sources,
+        tool_names=sandbox_tools, step_budget=step_budget,
     )
     return build_sandbox(
         schema=schema,
         root=root,
         driver=driver,
-        proposer_identity=proposer_identity or f"deepagents-container:{model}",
+        proposer_identity=proposer_identity or f"deepagents-container:{spec.provider_string()}",
         **kwargs,
     )
 

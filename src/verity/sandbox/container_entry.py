@@ -22,18 +22,21 @@ from verity.sandbox.container_io import (
     CycleInput,
 )
 from verity.sandbox.deepagents_driver import build_deepagents_agent, run_agent
+from verity.sandbox.model_spec import ModelSpec, resolve_model
 from verity.sandbox.tools import resolve_tools
 
 log = get_logger("verity.sandbox.container_entry")
 
-_DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 _EXECUTE_TIMEOUT_S = 1500
 
 
 def main() -> None:
     configure_logging(json_output=True)
     cycle = CycleInput.from_json(Path(CONTAINER_INPUT_PATH).read_bytes())
-    model = os.environ.get("VERITY_SANDBOX_MODEL", _DEFAULT_MODEL)
+    # Reconstruct the model target from env (a bare provider string for Anthropic, or an
+    # OpenAI-compatible endpoint with a base_url) and resolve it for create_deep_agent (Phase 6).
+    spec = ModelSpec.from_env(os.environ)
+    model = resolve_model(spec)
     # Shell-capable backend: the agent's native `execute` runs code IN the container (the container
     # is the isolation). This replaces the old custom run_shell tool.
     backend = LocalShellBackend(
@@ -49,7 +52,12 @@ def main() -> None:
         step_budget=cycle.step_budget,
         extra_tools=resolve_tools(cycle.tool_names),
     )
-    log.info("container_entry_run", model=model, ops=[s.name for s in cycle.operations])
+    log.info(
+        "container_entry_run",
+        model=spec.provider_string(),
+        base_url=spec.base_url,
+        ops=[s.name for s in cycle.operations],
+    )
     run_agent(
         agent, cycle.user_message,
         recursion_limit=cycle.recursion_limit, outbox=Path(CONTAINER_OUTBOX),
