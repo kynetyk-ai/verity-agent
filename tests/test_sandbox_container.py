@@ -34,6 +34,7 @@ from verity.sandbox.container_driver import DeepAgentsContainerDriver
 from verity.sandbox.container_io import CycleInput
 from verity.sandbox.errors import SandboxError
 from verity.sandbox.model_spec import ModelSpec
+from verity.sandbox.providers import DEFAULT_LOCAL_BASE_URL, local_spec
 from verity.sandbox.registration import build_container_sandbox
 from verity.verifier import FakeCodeRunner, RunResult, docker_available
 
@@ -147,25 +148,17 @@ def _sandbox_image_present() -> bool:
     return done.returncode == 0
 
 
-@pytest.mark.docker
-@pytest.mark.live
-@pytest.mark.skipif(
-    not (docker_available() and _sandbox_image_present() and os.environ.get("ANTHROPIC_API_KEY")),
-    reason="needs Docker, the verity-sandbox image, and ANTHROPIC_API_KEY",
-)
-def test_container_sandbox_commits_a_submission_end_to_end(tmp_path: Path) -> None:
+def _assert_container_commits_submission(sandbox: object) -> None:
+    """Drive one end-to-end submission cycle through ``sandbox`` and assert it commits ACCEPTED.
+
+    Shared by the Anthropic and local-model live smokes — the only thing that differs is the model
+    behind the sandbox; the task, verifier, and assertions are identical.
+    """
     domain = build_code_domain(FakeCodeRunner(script=lambda _r: RunResult(0, "", "")))
     store = SqliteStore()
     store.propose(
         Artifact("ds", DATASET, {"n": 10}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
         Operation("op-ds", "load", (), "ds", OperationStatus.SUCCESS, "t0"),
-    )
-    sandbox = build_container_sandbox(
-        schema=domain.schema,
-        root=tmp_path / "ws",
-        model="anthropic:claude-sonnet-4-6",
-        image=_SANDBOX_IMAGE,
-        id_source=lambda: "sub-1",
     )
     sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
     vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
@@ -199,3 +192,42 @@ def test_container_sandbox_commits_a_submission_end_to_end(tmp_path: Path) -> No
     assert result.commit is not None and result.commit.outcome is CommitOutcome.ACCEPTED
     got = store.get_artifact("sub-1")
     assert got is not None and got.status is ArtifactStatus.ACCEPTED
+
+
+@pytest.mark.docker
+@pytest.mark.live
+@pytest.mark.skipif(
+    not (docker_available() and _sandbox_image_present() and os.environ.get("ANTHROPIC_API_KEY")),
+    reason="needs Docker, the verity-sandbox image, and ANTHROPIC_API_KEY",
+)
+def test_container_sandbox_commits_a_submission_end_to_end(tmp_path: Path) -> None:
+    sandbox = build_container_sandbox(
+        schema=build_code_domain(FakeCodeRunner(script=lambda _r: RunResult(0, "", ""))).schema,
+        root=tmp_path / "ws",
+        model="anthropic:claude-sonnet-4-6",
+        image=_SANDBOX_IMAGE,
+        id_source=lambda: "sub-1",
+    )
+    _assert_container_commits_submission(sandbox)
+
+
+@pytest.mark.docker
+@pytest.mark.live
+@pytest.mark.skipif(
+    not (docker_available() and _sandbox_image_present() and os.environ.get("VERITY_LOCAL_MODEL")),
+    reason="needs Docker, the verity-sandbox image, a host-local OpenAI-compatible server, and "
+    "VERITY_LOCAL_MODEL set to the served model name (optionally VERITY_LOCAL_MODEL_BASE_URL)",
+)
+def test_container_sandbox_commits_via_local_model(tmp_path: Path) -> None:
+    # The thesis smoke (6.1): the same submission cycle, driven by a host-local OpenAI-compatible
+    # model reached over host.docker.internal. Opt-in via env (any vLLM/Ollama/llama.cpp server).
+    base_url = os.environ.get("VERITY_LOCAL_MODEL_BASE_URL", DEFAULT_LOCAL_BASE_URL)
+    sandbox = build_container_sandbox(
+        schema=build_code_domain(FakeCodeRunner(script=lambda _r: RunResult(0, "", ""))).schema,
+        root=tmp_path / "ws",
+        model="unused",
+        model_spec=local_spec(os.environ["VERITY_LOCAL_MODEL"], base_url=base_url),
+        image=_SANDBOX_IMAGE,
+        id_source=lambda: "sub-1",
+    )
+    _assert_container_commits_submission(sandbox)
