@@ -1,7 +1,7 @@
 # ADR 0003 — The long-lived control plane and backend-agnostic ephemeral-worker provisioning
 
 - **Status:** Proposed — architecture only (no implementation); drafted on `integration-architecture-planning`
-- **Date:** 2026-06-09
+- **Date:** 2026-06-09 (revised same day to fold in external review — see "Decisions recorded after review")
 - **Affects spec:** §3.3–§3.6 (the physical services), §3.9 (deployment & portability), §16 (the
   "*N* sandboxes against one control plane", multi-tenancy, and four-service seams). Realizes the
   Phase-7 seams already in the tree: `contracts/jobqueue.py` (`JobQueue`), `control_plane/run_record.py`
@@ -79,6 +79,7 @@ class WorkerBackend(Protocol):
                                                               # see "Isolation posture")
     def status(self, h: WorkerHandle) -> WorkerStatus: ...    # phase + health
     def wait(self, h, timeout=None) -> ExitResult: ...
+    def logs(self, h, *, follow=False) -> Iterable[bytes]: ...# worker stdout/stderr (see "(k) Observability")
     def stop(self, h, *, grace: float) -> None: ...           # SIGTERM -> SIGKILL
     def destroy(self, h) -> None: ...                         # remove + reclaim (idempotent)
 
@@ -88,7 +89,6 @@ class WorkerBackend(Protocol):
 
     # optional
     def recover(self, h) -> WorkerHandle | None: ...          # re-adopt a live worker after a CP restart
-    def capabilities(self) -> Capabilities: ...               # exec? file IO? per-tenant namespaces?
 ```
 
 The control plane *talks to* a launched worker over the existing `SandboxPort`/`VerifierPort` via the
@@ -97,9 +97,12 @@ instance the backend just launched. So there are two layers, cleanly: **`WorkerB
 an instance exist; `SandboxPort.serve_context`/`collect_proposal` drives it.** This is the
 SWE-ReX/CRI deployment-vs-runtime split, applied to our ports.
 
-> Minimal method set is load-bearing and consistent across the prior art: `launch`, `exec`/drive,
-> `wait`, `status`, `logs`, `destroy`, plus `list`/`reap` for fleet GC and an optional `recover`. We
-> fold "drive" into the existing ports rather than re-inventing `exec`.
+> Minimal method set is load-bearing and consistent across the prior art: `launch`, `wait`, `status`,
+> **`logs`**, `destroy`, plus `list`/`reap` for fleet GC and an optional `recover`. We fold "drive"
+> (`exec`) into the existing ports rather than re-inventing it. We **deliberately omit `capabilities()`**
+> (a backend-negotiation method): the moment the control plane branches on it, backend differences leak
+> upward and erode the "CP is backend-blind" property the whole design rests on. Push any backend
+> difference *down* into the backend; add negotiation only when a concrete need forces it (YAGNI).
 
 ### (b) Labels are the universal key
 
@@ -140,17 +143,29 @@ Regeneration is one event with a fixed order and a fixed source of truth, **inde
 2. **Ordering is fixed and load-bearing:** `propose → control plane harvests the outbox (content-addresses
    objects) → commit protocol → regenerate the worker`. Harvest-before-teardown (§3.4) is a hard
    constraint: the ephemeral workspace is about to be destroyed.
-3. **Regeneration = a clean rebuild, two parts flushed as one event (§3.5):** the writable workspace
+3. **What a "cycle" is — and why disposal is affordable.** A cycle is **one proposal attempt** in
+   `read → propose → gate → commit`, **not** an agent step. The agent takes many model steps / tool
+   calls *inside* one cycle, inside one worker; `regenerate()` fires only at the cycle boundary (after
+   a proposal is resolved). So a cycle is **minutes-scale** (the agent does substantial work — for the
+   FE domain it writes and runs a training script), which means a few seconds of container start-up
+   per cycle **amortizes cleanly**. This is the number the cold-start question turns on, stated
+   explicitly: per-cycle disposal is affordable *because* a cycle is a proposal, not a step.
+4. **Regeneration = a clean rebuild, two parts flushed as one event (§3.5):** the writable workspace
    (`scratch/`, `outbox/`) is discarded and re-provisioned to the invariant contract; the agent
-   process / chat history is flushed. We realize the flush by **worker-instance disposal** — destroy
-   the worker (or its per-cycle process) and launch a fresh one — so process death gives a total flush
-   with no reliance on enumerating in-memory state. (This is the lesson from the dropped
-   `SubprocessCodeRunner` work: the flush must be structural, not best-effort.)
-4. **Re-hydration is explicit:** the fresh worker is rebuilt from the store — the read-only roles
+   process / chat history is flushed. **Disposal granularity is a decision, defaulting to per-cycle
+   worker disposal:** destroy the worker and launch a fresh one each cycle, so process death gives a
+   total flush with no reliance on enumerating in-memory state (the lesson from the dropped
+   `SubprocessCodeRunner` work: the flush must be *structural*, not best-effort). The alternative — a
+   **per-run** worker that flushes *internally* each cycle (workspace `rmtree` + a fresh per-cycle
+   subprocess, the S1 model) — trades a weaker structural guarantee for one container per run instead
+   of one per cycle; it is the right choice *only if* cycles ever become cheap/frequent enough that
+   start-up dominates, which the per-proposal definition above makes unlikely. Default per-cycle; keep
+   per-run as a `WorkerSpec`-level option, not a hidden behaviour.
+5. **Re-hydration is explicit:** the fresh worker is rebuilt from the store — the read-only roles
    (`data/`, `context/`, `spec/`), the regenerated context (§9), and any provisioned objects are
    re-materialized onto the clean workspace. The agent re-reads current state; it never drifts on
    stale in-context memory.
-5. **The invariant is asserted, not assumed:** a no-cross-cycle-bleed property test (a marker written
+6. **The invariant is asserted, not assumed:** a no-cross-cycle-bleed property test (a marker written
    in cycle *N* is absent in cycle *N+1*) is the acceptance check, against every backend.
 
 This is the industry's "cattle, not pets" applied to the spec's ephemerality: the worker is immutable
@@ -168,24 +183,39 @@ mechanisms, by backend:
   (the docs recommend always setting it). Lingering Pods are a documented cause of cluster degradation,
   so GC is not optional.
 
-### (f) The trusted provisioner holds one narrowed, audited credential
+### (f) The trust boundary is the trusted-code assumption; rootless caps blast radius; the proxy is hygiene
 
-The relaxation ("a socket is OK if auditable and trusted") is realized as: **exactly one component —
-the control plane's provisioner — talks to the runtime API, through a least-privileged, audited
-credential, and nothing else does.** That is the same Principle-9 boundary ("only the control plane
-mutates durable state") extended to "only the control plane mutates the *runtime*."
+Be honest about what is load-bearing here, in this order:
 
-- **Docker (now):** the provisioner talks to the Docker Engine API **through a narrowing proxy**
-  (`Tecnativa/docker-socket-proxy`) that whitelists exactly the API sections it needs
-  (`containers`, `exec`, the specific `POST`s) and 403s everything else; the raw socket is never
-  mounted into the control-plane image. Optionally rootless Docker to cap blast radius. Every
-  `launch`/`destroy` is structured-logged with its `(tenant, run)` labels — one audited choke point.
-- **Kubernetes (later):** the native analogue — a **namespaced `Role`** (not a `ClusterRole`) granting
-  only `create`/`delete`/`get`/`list` on `jobs`/`pods` in one namespace, bound to the control plane's
-  ServiceAccount; the API server audits the calls.
+1. **The trusted-code assumption *is* the boundary.** We run our own code on our own infrastructure;
+   the control plane is the trusted, privileged orchestrator by design (Principle 9 — sole mutator of
+   durable state, now also sole mutator of the *runtime*). Nothing below is a containment boundary
+   against a *compromised* control plane — they reduce surface and blast radius. The day the code is
+   no longer trusted (untrusted/multi-tenant), the boundary must change — and that is exactly when a
+   **provisioning service with a validating API** is warranted (see "(l) Provisioning: in-process vs a
+   separate service"), because only it can semantically refuse a dangerous launch.
+2. **Rootless Docker is the default posture, not an option.** The Docker socket is root-equivalent;
+   rootless runs the daemon as an unprivileged user, so even a misused `create` cannot reach host
+   root. This is the real blast-radius cap, so it is the baseline — *not* an afterthought.
+3. **`docker-socket-proxy` is hygiene (surface reduction), not containment.** It whitelists API
+   *sections* (`CONTAINERS`, `EXEC`, the `POST`s the provisioner needs) and 403s the rest (`IMAGES`,
+   `SWARM`, …). But it gates by endpoint+method and **does not inspect request bodies** — once
+   `CONTAINERS`+`POST` are allowed (which you need to launch anything), a compromised control plane
+   could still `POST /containers/create` with `--privileged` or `-v /:/host` and the proxy would pass
+   it. So the proxy reduces the reachable API; it is **not** a barrier against a compromised CP. (Real
+   request validation needs the provisioning service of (l).)
+4. **One audited choke point.** Exactly one component — the provisioner inside the control plane —
+   holds the (rootless, proxied) credential; every `launch`/`destroy` is structured-logged with its
+   `(tenant, run)` labels. Auditability comes from the single choke point, which is the Principle-9
+   boundary extended to the runtime.
 
-"Trusted provisioner holds a narrowed credential to the runtime API" is thus the *same pattern* on
-both backends — the credential is backend config, not a hole in the abstraction.
+**Kubernetes (later)** is the native analogue and a genuinely stronger boundary: a **namespaced
+`Role`** (not a `ClusterRole`) granting only `create`/`delete`/`get`/`list` on `jobs`/`pods` in one
+namespace, bound to the control plane's ServiceAccount; the API server audits the calls, and
+`PodSecurity`/admission can reject privileged specs (the body-inspection the socket-proxy can't do).
+
+So the credential is backend config; what is *not* negotiable is being explicit that **trusted code is
+the boundary today** — rootless + proxy + audit are defense-in-depth on top of it, not a substitute.
 
 ### (g) Sandbox and verifier are symmetric ephemeral workers
 
@@ -233,6 +263,65 @@ needed static IPs + explicit upstream DNS. A plain-container default uses normal
 DNS, so that workaround simply disappears. Enabling gVisor "now" for trusted code was premature; the
 knob is the part worth keeping.
 
+### (j) Commit under concurrency — the independence property is the whole ballgame
+
+Concurrency admission (slots/fairness) is the easy half; the *commit protocol under N concurrent runs*
+is where the dragons live. The deciding question is **independence**:
+
+- **Across different tasks/tenants → genuinely independent.** Each run writes only its own
+  `(tenant, run)` provenance; there is no shared mutable state, so this is embarrassingly parallel.
+  This is the common case and it is trivial.
+- **Same-task "race" mode (§16) → shared state.** When *N* runs compete on one task (best-wins), the
+  gate is *supersede-on-beat against the **incumbents** slice* (the FE optimizer): two runs comparing
+  themselves to "the current best" and superseding it is a **read-modify-write race** on shared state.
+
+The answer Verity already has: **parallel proposal, serialized commit.** The commit path is the single
+privileged mutator and is **atomic (`transaction()`)** — so proposals fan out concurrently, but the
+supersede/incumbent decision happens *inside the commit transaction* (re-read incumbents under the
+lock at commit time, not from the gate's earlier view). The control plane already serializes here; the
+decision is to **keep same-task-race correctness in the commit transaction**, never in the gate's
+read. Record explicitly: independent runs need nothing new; same-task race needs the incumbent
+comparison to be transactional. (This is also what pushes the Postgres store sooner — see risks.)
+
+### (k) Observability across the fleet
+
+A long-lived, many-worker system is undebuggable without per-`(tenant, run)` log + telemetry
+aggregation — it is not optional. Decision:
+
+- **Workers already emit structured logs** (`structlog` JSON to stdout) and the agent already ships
+  `__telemetry__.json` per cycle (harvested into the `RunReport`). Stamp both with the
+  `{tenant, run, role}` labels at the source.
+- **`logs()` on `WorkerBackend`** is for *pull* (debugging a specific worker); **a telemetry/log sink**
+  is for *push* aggregation across the fleet. The control plane (or the worker) ships structured
+  events to a sink — stdout-collected by the platform on k8s; an explicit sink (a log shipper / the
+  `RunRecord` store) on the Docker backend, which does **not** get fleet logging for free. Name the
+  sink as a deployment choice; do not leave it implicit.
+
+### (l) Provisioning: in-process vs a separate service
+
+Should sandbox/verifier provisioning be pulled out of the control plane into its own service that the
+CP merely instructs ("spin up / tear down")? **For v1, no — keep provisioning in-process behind the
+`WorkerBackend` port.** Why this forecloses nothing and why it is the right call now:
+
+- **The port is the seam, not the service.** Extracting provisioning into a standalone service later
+  is a `RemoteWorkerBackend` implementation that RPCs to it — the *same* refactor already done for the
+  sandbox and verifier (`RemoteSandbox`/`RemoteVerifier`). The service is one *deployment* of the
+  port, registered like any other; keeping it in-process now costs no future option.
+- **It fits the spec.** Provisioning is *mechanical*, not intelligent ("spin up / tear down"), so it
+  belongs in the control plane's "mechanical orchestration" role (Principle 9) — not a microservices
+  violation.
+- **On Kubernetes the question largely dissolves.** k8s *is* the provisioner; the CP becomes a
+  controller calling the API server with a scoped ServiceAccount. A bespoke provisioner service in
+  front of the k8s API would be a redundant layer. So "separate provisioner" is mostly a *Docker-backend*
+  question (where the socket lives), not a universal principle.
+
+**When it *is* warranted** (record as a designed-for-not-built trigger): (1) **untrusted/multi-tenant
+code** — a provisioner service with a *validating* API (`launch(config_key, run_id, labels)`, no
+"create arbitrary container" verb) is the real containment boundary the socket-proxy cannot be (f.3),
+and it co-arrives with gVisor (i) under the same threat-model shift; (2) **multiple/sharded control
+planes** sharing one scheduler; (3) a **k8s** deployment (which resolves it natively). Until one of
+those, in-process is the bounded, accepted cost of the trusted-code assumption.
+
 ## Docker-now ↔ Kubernetes-later mapping
 
 The abstraction is portable because both runtimes expose the same primitives — *create a labelled
@@ -251,7 +340,7 @@ unit, drive it, select by label, delete by label*:
 | stop / destroy | `/stop` then `/rm` | delete Pod/Job (cascade) |
 | GC backstop | label reaper (Ryuk-style) | `ttlSecondsAfterFinished` + `ownerReferences` |
 | tenant isolation | label + per-tenant network | namespace + `ResourceQuota` |
-| trust boundary | socket-proxy whitelist | namespaced RBAC `Role` |
+| trust boundary | trusted code + **rootless** daemon (proxy = hygiene) | namespaced RBAC `Role` + admission |
 
 Only the `DockerBackend` is built first; `K8sBackend` is a second implementation of the *same* port —
 designed-for, not built.
@@ -299,30 +388,50 @@ a registration or a backend swap.
   (per-run workers, labelled, slot-bounded) is correct from day one.
 - **The regeneration invariant is strengthened**, not weakened: it becomes a structural property of
   worker disposal + reconciliation, asserted by a property test against every backend.
-- **A trusted, audited socket replaces the anti-pattern:** privilege is concentrated in one
-  least-privileged, logged choke point, not smeared across peers or nested daemons.
-- **Cost:** a new provisioning layer (the `WorkerBackend`, the reconciliation loop, the GC reaper, the
-  socket-proxy) that did not exist; the control plane grows a scheduler responsibility (still
-  mechanical — reconcile, don't reason). The existing in-process and single-container paths remain
-  valid as the trivial backend for dev/tests.
+- **No anti-pattern, but no false comfort either:** privilege is concentrated in one logged choke
+  point on a **rootless** daemon, not smeared across peers or nested daemons — *and* the ADR states
+  plainly that the trusted-code assumption is the actual boundary today (rootless + proxy + audit are
+  defense-in-depth, not containment against a compromised CP).
+- **Cost:** a new provisioning layer (the `WorkerBackend`, the reconciliation loop, the GC reaper,
+  rootless + the socket-proxy) that did not exist; the control plane grows a scheduler responsibility
+  (still mechanical — reconcile, don't reason). The existing in-process and single-container paths
+  remain valid as the trivial backend for dev/tests.
 
-## Risks & open questions
+## Decisions recorded after review
 
-- **Worker addressing & discovery.** The control plane must reach each launched worker over HTTP. On
-  Docker this is per-worker host/port or an internal network + the backend returning the address in
-  the handle; on k8s a Service/Pod IP. Addressing **by handle** (not service-name DNS) is the portable
-  choice and is also what the optional gVisor runtime would *require* (it cannot use Docker's embedded
-  DNS — google/gvisor#115); under the default plain runtime, normal Docker DNS is available but the
-  handle is still the cleaner key. Needs a concrete addressing decision per backend.
-- **CP restart semantics.** Reap-and-regenerate (cattle) vs re-adopt live workers (Nomad `RecoverTask`).
-  The spec's "regenerated each cycle" leans reap-and-regenerate; `recover` is the fallback for a
-  mid-flight cycle. Decide explicitly.
-- **Verifier shape.** Per-run instance vs shared queue-fronted pool — both expressible; pick the
-  default and confirm it against the cost of standing up a verifier worker per run.
-- **Where the scheduler lives.** A loop inside the control-plane process vs a separable scheduler
-  component. Inside is simpler now; the seam should not preclude extracting it.
-- **State store under concurrency.** Many concurrent runs writing provenance pushes toward the Postgres
-  backend (§4) sooner than single-user did; the `Store` interface already permits it.
+External review surfaced six items; the load-bearing ones are now decided in the body above. Summary:
+
+- **Worker addressing is on the critical path (not deferred) — address *by handle*.** You cannot drive
+  a worker you cannot reach, and `WorkerHandle` + `launch`'s return type *are* the addressing decision.
+  Decision: the backend returns the address in the `WorkerHandle` (Docker: a published port read back
+  from `inspect`, or a shared user-defined network + the worker's address; k8s: the Pod/Service
+  address) and the control plane drives the worker **by handle**, never by Docker service-name DNS.
+  This is the portable, k8s-compatible key and is also what gVisor would *require* (google/gvisor#115).
+  (Note: the plain-runtime default merely removes the *forced* static-IP workaround — it does **not**
+  mean we lean on service-name DNS; addressing is by handle regardless. This reconciles an earlier
+  inconsistency.)
+- **CP restart = reap-and-regenerate is *correct*, not just a style choice; `recover` is a deferrable
+  cost optimization.** The sharp edge is harvest-before-teardown across a crash. But two existing
+  properties resolve it: harvest-before-teardown means an un-harvested proposal **never entered durable
+  state**, and the commit is an **atomic `transaction()`** — so every crash window resolves to exactly
+  one clean state (durably committed → just reap the worker; or as-if-never-proposed → re-propose).
+  The worst case is **re-running an agent cycle (wasted compute/$), never data loss or corruption.** So
+  reap is correct; `recover` only saves the re-run and is deferrable. (For a system *without* atomic
+  commit + harvest-ordering, `recover` could be a correctness requirement — Verity's commit discipline
+  is what downgrades it.)
+- **Verifier shape — default per-run instance** (symmetric with the sandbox, (g)); a shared
+  queue-fronted pool (§3.6) is a backend variant the abstraction already permits, adopted only if
+  standing up a verifier worker per run proves too costly.
+- **Scheduler placement — in-process now** (resolved by (l)); the `WorkerBackend` port keeps extraction
+  to a `RemoteWorkerBackend` registration later.
+
+## Remaining open questions
+
+- **State store under concurrency.** Same-task race + many concurrent runs writing provenance pushes
+  toward the Postgres backend (§4, and (j)) sooner than single-user did; the `Store` interface already
+  permits it, but the migration timing is unsettled.
+- **Telemetry sink choice on the Docker backend** ((k)) — which concrete log/telemetry sink, decided at
+  deployment time.
 
 ## Explicitly deferred (designed-for, not built)
 
@@ -348,6 +457,7 @@ TTL-after-finished, and garbage collection
 <https://kubernetes.io/docs/concepts/workloads/controllers/ttlafterfinished/>,
 <https://kubernetes.io/docs/concepts/architecture/garbage-collection/>); Kubernetes RBAC good
 practices (<https://kubernetes.io/docs/concepts/security/rbac-good-practices/>); Testcontainers
-Ryuk/reaper (<https://golang.testcontainers.org/features/garbage_collector/>); docker-socket-proxy
+Ryuk/reaper (<https://golang.testcontainers.org/features/garbage_collector/>); rootless Docker
+(<https://docs.docker.com/engine/security/rootless/>); docker-socket-proxy
 (<https://github.com/Tecnativa/docker-socket-proxy>); Temporal worker slots/pollers
 (<https://docs.temporal.io/develop/worker-performance>).
