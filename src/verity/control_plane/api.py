@@ -536,7 +536,10 @@ class ControlPlane:
                 ):
                     break
             feedback = _feedback_from(result)
-        log.info("run_complete", task_id=task_id, cycles=cycles)
+        log.info(
+            "run_complete", task_id=task_id, tenant_id=self._task(task_id).config.tenant_id,
+            cycles=cycles,
+        )
         return results
 
     # -- extraction (§3.4) --------------------------------------------------------
@@ -558,6 +561,7 @@ class ControlPlane:
         return build_run_report(
             task.history, self._store, task_id=task_id, policy=policy,
             generated_at=self._clock(), rationale=task.rationale,
+            tenant_id=task.config.tenant_id,
         )
 
     def accepted_artifacts(self, *, type: str | None = None) -> list[Artifact]:

@@ -86,6 +86,9 @@ class TaskConfig:
     shape_validator: ShapeValidator
     sandbox_key: str
     verifier_key: str
+    # The tenant this task runs under (Phase 7 multi-tenancy seam). A single ``"default"`` tenant
+    # today; the API is keyed by it from the outset so tenant scoping slots in without a reshape.
+    tenant_id: str = "default"
     data_sources: tuple[str, ...] = ()
     context_files: tuple[str, ...] = ()
     object_provisioning: ObjectProvisioningPolicy = field(default_factory=ObjectProvisioningPolicy)
