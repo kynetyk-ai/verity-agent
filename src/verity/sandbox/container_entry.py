@@ -33,6 +33,10 @@ _EXECUTE_TIMEOUT_S = 1500
 def main() -> None:
     configure_logging(json_output=True)
     cycle = CycleInput.from_json(Path(CONTAINER_INPUT_PATH).read_bytes())
+    # The worker's /work is a fresh writable mount (empty); the propose tool writes the descriptor
+    # to outbox/, so it must exist before the agent runs. Idempotent (the old per-cycle-container
+    # path provisions it via the workspace layout).
+    Path(CONTAINER_OUTBOX).mkdir(parents=True, exist_ok=True)
     # Reconstruct the model target from env (a bare provider string for Anthropic, or an
     # OpenAI-compatible endpoint with a base_url) and resolve it for create_deep_agent (Phase 6).
     spec = ModelSpec.from_env(os.environ)
