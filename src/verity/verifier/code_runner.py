@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from verity.contracts import GateUnavailable
+from verity.contracts.run_context import RunContext
 from verity.logging import get_logger
 from verity.provisioning.backend import (
     Labels,
@@ -262,7 +263,7 @@ class ContainerCodeRunner:
             await asyncio.wait_for(killer.wait(), timeout=10.0)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class BackendCodeRunner:
     """A :class:`CodeRunner` that runs the submitted code as an isolated **worker** via a
     `WorkerBackend` (ROADMAP 7.4.d / ADR 0003) — the clean resolution of the dropped in-process
@@ -274,6 +275,9 @@ class BackendCodeRunner:
     is harvested. With ``requirements`` it pip-installs into an exec tmpfs first (needs
     ``network=True``, set by the gate). Only ``request.inputs`` reach the worker — a gate's private
     answer key (e.g. the FE reserved labels) never does, by construction.
+
+    The control plane binds a `RunContext` (7.4.h, via the verifier that holds this runner), so each
+    code-runner worker is **labelled** with its ``tenant``/``run``/``cycle`` for audit + reaping.
     """
 
     backend: WorkerBackend
@@ -284,6 +288,20 @@ class BackendCodeRunner:
     tmpfs_size: str = "64m"
     runtime: str | None = None
     config: str = ""
+    run_context: RunContext | None = None
+
+    def bind_run_context(self, ctx: RunContext) -> None:
+        """Take the run-identity cell the verifier forwards; we stamp it onto every worker."""
+        self.run_context = ctx
+
+    def _labels(self) -> Labels:
+        ctx = self.run_context
+        if ctx is None:
+            return Labels(role="code-runner", config=self.config)
+        return Labels(
+            role="code-runner", config=self.config,
+            tenant=ctx.tenant_id, run=ctx.run_id, cycle=str(ctx.cycle),
+        )
 
     async def run(self, request: RunRequest, /) -> RunResult:
         spec = self._worker_spec(request)
@@ -321,7 +339,7 @@ class BackendCodeRunner:
         return WorkerSpec(
             image=self.image,
             command=command,
-            labels=Labels(role="code-runner", config=self.config),
+            labels=self._labels(),
             readonly_inputs=readonly,
             writable_dirs=("/out",),
             output_globs=(f"/out/{request.output_name}",),

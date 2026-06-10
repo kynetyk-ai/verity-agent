@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from verity.contracts.run_context import RunContext
 from verity.control_plane.registries import OperationSignature
 from verity.control_plane.workspace import ProvisionedWorkspace
 from verity.logging import get_logger
@@ -45,15 +46,17 @@ _READ_ONLY_ROLES = ("data", "context", "tools", "spec")
 _ENTRYPOINT = ("python", "-m", "verity.sandbox.container_entry")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class BackendSandboxDriver:
     """Runs the agent loop for one cycle as a `WorkerBackend` worker (the agent writes inside the
     worker; this driver bridges the outbox bytes back to the host workspace).
 
     ``backend`` is the substrate (Docker now, k8s later). ``model``/``spec`` name the model target
     (forwarded to the worker via env, like the container driver). ``runtime`` selects the OCI
-    runtime (e.g. ``runsc``) per worker. Worker labels carry only ``role`` for now — the
-    ``tenant``/``run``/``cycle`` stamping is threaded end-to-end in 7.4.h.
+    runtime (e.g. ``runsc``) per worker. The control plane binds a `RunContext` (7.4.h /
+    :class:`~verity.contracts.run_context.SupportsRunContext`), so every worker is **labelled** with
+    its ``tenant``/``run``/``cycle`` for audit + reaping; before a run binds one, labels carry only
+    ``role``/``config``.
     """
 
     backend: WorkerBackend
@@ -71,9 +74,23 @@ class BackendSandboxDriver:
     recursion_limit: int = 80
     step_budget: int | None = None
     runtime: str | None = None
+    run_context: RunContext | None = None
+
+    def bind_run_context(self, ctx: RunContext) -> None:
+        """Take the control plane's shared run-identity cell; we stamp it onto every worker."""
+        self.run_context = ctx
 
     def _spec(self) -> ModelSpec:
         return self.spec or ModelSpec.from_provider_string(self.model)
+
+    def _labels(self) -> Labels:
+        ctx = self.run_context
+        if ctx is None:
+            return Labels(role="sandbox", config=self.config)
+        return Labels(
+            role="sandbox", config=self.config,
+            tenant=ctx.tenant_id, run=ctx.run_id, cycle=str(ctx.cycle),
+        )
 
     async def run(
         self,
@@ -133,7 +150,7 @@ class BackendSandboxDriver:
         return WorkerSpec(
             image=self.image,
             command=_ENTRYPOINT,
-            labels=Labels(role="sandbox", config=self.config),
+            labels=self._labels(),
             readonly_inputs=readonly,
             writable_dirs=(CONTAINER_WORKSPACE,),
             output_globs=(f"{CONTAINER_OUTBOX}/*",),

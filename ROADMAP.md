@@ -419,7 +419,7 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
   the report (single default tenant). Seams-first; the engine (real queue + workers, store upgrade,
   tenant isolation, **#27**/**#9**) is the deferred adapter swap.
 
-- **7.4 Worker provisioning → full containerization, FE via config (ADR 0003) 🚧** — the live edge.
+- **7.4 Worker provisioning → full containerization, FE via config (ADR 0003) ✅** — the live edge.
   Realize ADR 0003: sandbox/verifier per-cycle work runs as **ephemeral, isolated, batch-job workers**
   behind a neutral `WorkerBackend` seam, ending at the **done-line: the FE run driven entirely by
   control-plane configuration, no ad-hoc wiring** (today it is hand-wired in
@@ -466,8 +466,13 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     `reserved_labels` absent from every worker. Green on `FakeBackend` (offline — config-driven flow +
     real gate logic, scripted execution) and `DockerBackend` (`@live` for the real model; a recording
     backend wrapper runs the same isolation assertions on the live path).
-  - **h. Placed seams** — `tenant_id`/`run_id`/`cycle` in worker labels; a `RunRecord` at run end; a
-    label-reaper + `verity-reaper` entrypoint (ADR e).
+  - **h. Placed seams ✅** — a neutral `RunContext` (`tenant_id`/`run_id`/`cycle`) the control plane
+    binds to any service advertising `SupportsRunContext`; the backend-backed sandbox driver +
+    code-runner stamp it onto every worker's `{harness,tenant,run,cycle,role,config}` labels (the
+    verifier forwards the bind to its runner). A `RunRecord` is emitted at run end (keyed by
+    `(tenant_id, run_id)`, pointing into the store). A label-reaper + the `verity-reaper` console
+    entrypoint reap orphaned workers by selector (ADR e), out of band — the control plane never
+    touches a backend.
   - *Deferred (placed seams, per ADR 0003 — see the tracks below):* the reconciliation-loop + per-tenant
     concurrency engine (ADR c/h) = the Multi-tenancy engine + "parallel agents against one task"; the
     `K8sBackend` (a second impl of the same port); the **launched-verifier-worker** for FE (precondition:

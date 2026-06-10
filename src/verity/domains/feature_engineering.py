@@ -36,6 +36,7 @@ from verity.contracts import (
     Artifact,
     ArtifactStatus,
     GateVerdict,
+    SupportsRunContext,
     VerdictKind,
     VerifierRequest,
 )
@@ -239,8 +240,13 @@ def build_feature_engineering_verifier(
         trial_deflation=trial_deflation,
         timeout_s=timeout_s,
     )
+    # If the runner provisions workers (the backend-backed runner), let the control plane's run
+    # identity reach it, so its code-runner workers are labelled for audit + reaping (7.4.h). A pure
+    # in-process runner (FakeCodeRunner) does not implement the capability and registers nothing.
+    sinks = (runner,) if isinstance(runner, SupportsRunContext) else ()
     return SdkVerifier(
         identity=FE_VERIFIER_IDENTITY,
+        context_sinks=sinks,
         pipelines={
             SUBMISSION: (
                 GateStep("runs-clean", gates.runnable, is_hard=False),

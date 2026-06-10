@@ -21,6 +21,7 @@ from verity.provisioning.backend import (
 )
 from verity.provisioning.docker import DockerBackend, docker_available
 from verity.provisioning.fake import FakeBackend, WorkerScript
+from verity.provisioning.reaper import build_selector, reap
 
 __all__ = [
     "WorkerBackend",
@@ -35,4 +36,6 @@ __all__ = [
     "WorkerScript",
     "DockerBackend",
     "docker_available",
+    "build_selector",
+    "reap",
 ]

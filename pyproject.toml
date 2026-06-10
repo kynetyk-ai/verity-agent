@@ -9,6 +9,11 @@ dependencies = [
     "structlog>=24.1",
 ]
 
+# Deployment-side CLI: reap orphaned workers by label (ROADMAP 7.4.h / ADR 0003 e). Talks only to a
+# WorkerBackend, so it needs no service/domain deps.
+[project.scripts]
+verity-reaper = "verity.provisioning.reaper:main"
+
 [project.optional-dependencies]
 sandbox = [
     "deepagents>=0.6.8,<0.7",
