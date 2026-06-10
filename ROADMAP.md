@@ -460,11 +460,12 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     `ControlPlane` unchanged; provisioning stays off `TaskConfig`. (The old
     `DeepAgentsContainerDriver`/`ContainerCodeRunner` classes remain for the `code` benchmark domain;
     full retirement is deferred to a cleanup pass.)
-  - **g. FE-via-config acceptance** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
+  - **g. FE-via-config acceptance ✅** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
     built purely from declarative config + a backend selection; asserts an accepted `Submission`, the
     no-cross-cycle-bleed property (§3.5), untrusted code in a `{role:code-runner}`-labelled worker, and
     `reserved_labels` absent from every worker. Green on `FakeBackend` (offline — config-driven flow +
-    real gate logic, scripted execution) and `DockerBackend` (`@docker`, `@live` for the real model).
+    real gate logic, scripted execution) and `DockerBackend` (`@live` for the real model; a recording
+    backend wrapper runs the same isolation assertions on the live path).
   - **h. Placed seams** — `tenant_id`/`run_id`/`cycle` in worker labels; a `RunRecord` at run end; a
     label-reaper + `verity-reaper` entrypoint (ADR e).
   - *Deferred (placed seams, per ADR 0003 — see the tracks below):* the reconciliation-loop + per-tenant
