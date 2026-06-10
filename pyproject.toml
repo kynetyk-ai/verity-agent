@@ -77,11 +77,12 @@ module = [
 ]
 ignore_missing_imports = true
 
-# The HTTP transport uses FastAPI's route decorators; without the `service` extra installed they
+# FastAPI's route decorators: without the `service` extra installed (CI's lean `mypy src`) they
 # resolve to Any, and strict mode rejects an untyped decorator. The framework is the type authority,
-# so relax just this check for the quarantined HTTP module (the loopback seam stays strict-typed).
+# so relax just this check for the FastAPI-hosting modules (the transport loopback seam + the
+# control-service HTTP surface). Their non-route logic stays strict-typed.
 [[tool.mypy.overrides]]
-module = ["verity.transport.http"]
+module = ["verity.transport.http", "verity.service.http"]
 disallow_untyped_decorators = false
 
 # Without the `sandbox` extra installed (CI's `mypy src`), AgentMiddleware resolves to Any, and
