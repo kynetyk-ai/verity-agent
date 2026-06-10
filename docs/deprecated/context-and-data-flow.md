@@ -1,5 +1,13 @@
 # Context & Component Data-Flow
 
+> ⚠️ **DEPRECATED (2026-06-10).** This audit has drifted from the code and is **not maintained**. It
+> predates the `composition` / `provisioning` / `eval` / `transport` packages and the ADR 0003
+> worker-provisioning model, still documents the removed `ServedContext.manifest` field, and asserts a
+> now-false in-sandbox gold-data read-only mount; its `path:line` citations are pervasively stale. It
+> is retained here for historical reference only. For the current control-plane API, the cross-service
+> port contracts, and a worked feature-engineering example, see **[`../api-surface.md`](../api-surface.md)**.
+> A full re-audit (or retirement) is tracked in **[issue #55](https://github.com/kynetyk-ai/verity/issues/55)**.
+
 *An audit of what the Verity components actually look like and what is passed to whom.*
 
 This document is a **reference map of the running system**: the modules, their core data structures

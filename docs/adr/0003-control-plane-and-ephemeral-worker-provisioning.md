@@ -1,6 +1,8 @@
 # ADR 0003 — The long-lived control plane and backend-agnostic ephemeral-worker provisioning
 
-- **Status:** Proposed — architecture only (no implementation); drafted on `integration-architecture-planning`
+- **Status:** Accepted — implemented in ROADMAP 7.4–7.5 (the `WorkerBackend` seam + `DockerBackend`,
+  the backend-backed sandbox/code-runner, declarative composition, and the containerized generic
+  control plane proven live); drafted on `integration-architecture-planning`
 - **Date:** 2026-06-09 (revised same day to fold in external review — see "Decisions recorded after review")
 - **Affects spec:** §3.3–§3.6 (the physical services), §3.9 (deployment & portability), §16 (the
   "*N* sandboxes against one control plane", multi-tenancy, and four-service seams). Realizes the

@@ -58,6 +58,13 @@ on the Metal GPU. The **only** container is Verity's sandbox, reaching *out* to 
 - Most local servers are keyless; the resolver sends a placeholder `EMPTY` key (the vLLM/Ollama
   convention). Set `api_key_env` if your server requires a key.
 
+> **The one-command path.** To drive a local model through a *full* FE run without writing any wiring,
+> use the containerized entrypoint: start your server, then run `just fe-containerized` with
+> `VERITY_MODEL=<your-model>` and `VERITY_LOCAL_BASE_URL=http://host.docker.internal:<port>/v1` set.
+> The control-plane container applies the FE task via its API and launches the sandbox worker, which
+> reaches your host server over the same `host.docker.internal` gateway described below. See the
+> *Worked example* in [api-surface.md](api-surface.md) for the env surface.
+
 ## Recipe (any OpenAI-compatible server)
 
 1. **Start a model server on the host**, exposing an OpenAI-compatible API (default port `8000`).

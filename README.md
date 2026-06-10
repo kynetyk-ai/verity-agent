@@ -8,12 +8,17 @@ is *git + a type system + a verifier-aware lifecycle for agent artifacts.*
 The name carries the point: **verity** = truth, and *verify*. The system exists to answer one
 question — *can you trust, and audit, what the system believes?*
 
-> **Status: MVP reached (spec v1).** Phases 0–4 are done: the control plane, the opaque verifier, the
-> real Deep Agents sandbox, and the feature-engineering domain (spec §12) all run end-to-end, and the
-> **twelve §13 acceptance criteria pass**. A live run drives real Claude proposals scored in a
-> container on a real dataset, improving across rounds. See [ROADMAP.md](ROADMAP.md) and *Run the
-> feature-engineering demo* below. Stack: Python, managed with [uv](https://docs.astral.sh/uv/) (see
-> *Coding habits* in [CLAUDE.md](CLAUDE.md)).
+> **Status: post-MVP.** Phases 0–5 are complete — the control plane, the opaque verifier, the real
+> Deep Agents sandbox, and the feature-engineering domain (spec §12) reached MVP with the **twelve §13
+> acceptance criteria passing**, plus the Phase 5 reliability & observability hardening
+> (degrade-don't-crash on both service boundaries, typed errors, retries, atomic commits, a
+> store-derived `RunReport`). **Phase 6 (model breadth)** is code-complete and **live-validated on a
+> local open model** (`good proposals from cheap models` — the thesis); hosted-OpenAI live validation
+> is pending a key. **Phase 7 (service split & full containerization)** has reached its done-line: a
+> task-agnostic control plane runs *in a container* and launches ephemeral sandbox + code-runner
+> **worker containers**, running the §12 FE test by configuring the CP through its API. See
+> [ROADMAP.md](ROADMAP.md) for the live plan and *Run the feature-engineering demo* below. Stack:
+> Python, managed with [uv](https://docs.astral.sh/uv/) (see *Coding habits* in [CLAUDE.md](CLAUDE.md)).
 
 ## The specification (self-contained)
 
@@ -113,6 +118,20 @@ Each cycle spins a fresh, isolated container; expect a few minutes per round. Th
 **only** through the control plane (task + domain instructions and the mounted data) — nothing
 task-specific is hardcoded in the sandbox.
 
+**4. The fully containerized run (the Phase 7 done-line — needs Docker; a key or a local model).** A
+task-agnostic control plane runs *in* a container and launches the sandbox + code-runner **worker
+containers** as siblings on the host daemon, configuring the §12 FE test through its own API:
+
+```
+just fe-containerized
+```
+
+This builds the sandbox + control-plane images and runs one FE task through `infra/compose.fe.yml`.
+Configuration is by environment (`VERITY_MODEL`, `VERITY_LOCAL_BASE_URL`, `VERITY_MAX_CYCLES`, …);
+point it at a local open model with `VERITY_LOCAL_BASE_URL`. The full env surface, the worked API
+example, and the topology are documented in [docs/api-surface.md](docs/api-surface.md) (*Worked
+example — the feature-engineering task*).
+
 ## Repo layout
 
 ```
@@ -122,16 +141,36 @@ ROADMAP.md    the living path (now: post-MVP backlog)
 .env.example  copy to .env for the live demo
 pyproject.toml / justfile   uv project + dev commands
 Dockerfile.sandbox          the image the container sandbox runs the agent in
+Dockerfile.verifier         the standing advisory-verifier service image (Phase 7.1)
+Dockerfile.controlplane     the task-agnostic control-plane image (launches worker containers)
+infra/            compose files for the containerized topology (compose.fe.yml)
+docs/             API reference, guides, and architecture decision records (see Docs below)
 src/verity/
   contracts/      the cross-service value model + service ports (no service depends on another)
   control_plane/  the sole mutator: store, commit lifecycle, registries, context assembly, loop
-  verifier/       the opaque verifier: gate-primitive SDK + the container code-runner
-  sandbox/        the real agent runtime (Deep Agents) — in-process + container drivers
+  verifier/       the opaque verifier: gate-primitive SDK + the container/worker code-runner
+  sandbox/        the real agent runtime (Deep Agents) — in-process + container/worker drivers
   domains/        per-domain wiring; feature_engineering.py is the §12 MVP domain
+  composition/    applies a task to a generic control plane (configure_fe_task) + the FE-run entrypoint
+  provisioning/   the WorkerBackend seam + DockerBackend + the label-reaper (ADR 0003)
+  eval/           the cross-model benchmark harness (quality / cost / latency)
+  transport/      networked port-RPC (loopback + HTTP) for the service split
+  logging.py / retry.py / telemetry.py   structured logging, bounded-backoff retries, metrics sink
 tools/harness/    non-product test doubles + the dataset-split helper
 tests/            test suite (offline by default; docker/live auto-skip)
 spec/             vendored specification + references (see above)
 ```
+
+## Docs
+
+Reference material lives in [`docs/`](docs/):
+
+- [`docs/api-surface.md`](docs/api-surface.md) — the **control-plane API reference**, with a worked
+  feature-engineering example (programmatic + fully containerized).
+- [`docs/local-models.md`](docs/local-models.md) — running against a local / open OpenAI-compatible model.
+- [`docs/glossary.md`](docs/glossary.md) — the run-control vocabulary (tenant / task / run / job).
+- [`docs/adr/`](docs/adr/) — architecture decision records (opaque verifier; Deep Agents sandbox;
+  control-plane + ephemeral-worker provisioning).
 
 ---
 
