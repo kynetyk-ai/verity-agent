@@ -90,6 +90,20 @@ def test_task_request_json_round_trip() -> None:
     assert TaskRequest.from_dict(json.loads(json.dumps(request.to_dict()))) == request
 
 
+def test_local_model_name_with_colons_is_not_split() -> None:
+    # A base_url means an OpenAI-compatible endpoint, where the model is a literal server-side name
+    # that can contain colons (Ollama's "qwen3.6:27b-coding-mxfp8"). It must not be split on ':'.
+    spec = SandboxRequest(
+        model="qwen3.6:27b-coding-mxfp8", base_url="http://host.docker.internal:11434/v1",
+    ).to_model_spec()
+    assert spec is not None
+    assert spec.model == "qwen3.6:27b-coding-mxfp8"  # full name preserved
+    # The native-provider path (no base_url) still splits provider:model.
+    native = SandboxRequest(model="anthropic:claude-sonnet-4-6").to_model_spec()
+    assert native is not None
+    assert (native.provider, native.model) == ("anthropic", "claude-sonnet-4-6")
+
+
 def test_catalog_dispatches_a_second_task_type() -> None:
     # Genericity on the service path: the same multiplexer instantiates an unrelated task type.
     service = ControlService(backend=FakeBackend(script=FeWorkers(steps=[], by_marker={})),

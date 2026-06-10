@@ -23,6 +23,7 @@ from typing import Any
 
 from verity.control_plane.api import OrchestrationPolicy
 from verity.sandbox.model_spec import ModelSpec
+from verity.sandbox.providers import LOCAL_PROVIDER
 
 __all__ = [
     "SandboxRequest",
@@ -61,14 +62,21 @@ class SandboxRequest:
 
         ``None`` only when *nothing* about the model was specified (no ``model``, no ``base_url``);
         any local/hosted endpoint forces a concrete spec so the default provider string is not used.
+
+        When a ``base_url`` is set the target is an **OpenAI-compatible endpoint**, so ``model`` is
+        a *literal* server-side name — which may itself contain colons (e.g. Ollama's
+        ``qwen3.6:27b-coding-mxfp8``). It must **not** be split on ``:`` into provider/model (that
+        mangles the name); we build the spec exactly as `local_spec` does. The ``provider:model``
+        split applies only to the native-provider path (no ``base_url``).
         """
         if self.model is None and self.base_url is None:
             return None
-        base = (
-            ModelSpec.from_provider_string(self.model)
-            if self.model is not None
-            else ModelSpec(provider="anthropic", model="claude-sonnet-4-6")
-        )
+        if self.base_url is not None:  # OpenAI-compatible endpoint: literal model name, no split
+            base = ModelSpec(provider=LOCAL_PROVIDER, model=self.model or "")
+        elif self.model is not None:
+            base = ModelSpec.from_provider_string(self.model)
+        else:
+            base = ModelSpec(provider="anthropic", model="claude-sonnet-4-6")
         return replace(
             base, base_url=self.base_url, api_key_env=self.api_key_env, extra=dict(self.extra)
         )
