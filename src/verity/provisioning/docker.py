@@ -50,16 +50,35 @@ _Mount = tuple[Path, str, str]  # (host, container_target, "ro"|"rw")
 
 
 class DockerBackend:
-    """A `WorkerBackend` over the local Docker daemon."""
+    """A `WorkerBackend` over the local Docker daemon.
 
-    def __init__(self, docker_bin: str = "docker") -> None:
+    ``staging_root`` (or the ``VERITY_WORKER_STAGING`` env var) is the directory the per-worker
+    staging dirs are created under — the host paths that become worker bind mounts. The default
+    (``None``) uses the system temp dir, correct when the backend runs **on the host**. When the
+    control plane runs **inside a container** and launches *sibling* workers via the mounted host
+    socket, set this to a directory bind-mounted from the host at an **identical path**, so the
+    worker ``-v`` sources resolve on the host daemon (otherwise the mount fails — the bind target
+    would be a path that only exists inside the CP container).
+    """
+
+    def __init__(
+        self, docker_bin: str = "docker", *, staging_root: str | Path | None = None
+    ) -> None:
         self.docker_bin = docker_bin
+        root = staging_root if staging_root is not None else os.environ.get("VERITY_WORKER_STAGING")
+        self._staging_root = Path(root) if root else None
 
     # -- the batch path consumers use ---------------------------------------------
 
+    def _make_staging(self) -> Path:
+        """A fresh per-worker staging dir under ``staging_root`` (system temp if unset)."""
+        if self._staging_root is not None:
+            self._staging_root.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix="verity-worker-", dir=self._staging_root))
+
     async def run_to_completion(self, spec: WorkerSpec) -> CompletedWorker:
         name = self._name(spec.labels)
-        staging = Path(tempfile.mkdtemp(prefix="verity-worker-"))
+        staging = self._make_staging()
         try:
             mounts, writable_hosts = self._materialize(spec, staging)
             argv = self.build_argv(spec, name=name, mounts=mounts)

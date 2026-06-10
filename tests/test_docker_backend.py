@@ -118,6 +118,24 @@ def test_argv_emits_writable_then_readonly_mounts_in_order() -> None:
     assert argv.index("/h/out:/out:rw") < argv.index("/h/ro/seed:/in/seed.txt:ro")
 
 
+def test_staging_root_resolves_from_arg_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VERITY_WORKER_STAGING", "/from/env")
+    assert DockerBackend()._staging_root == Path("/from/env")  # env when no arg
+    assert DockerBackend(staging_root="/from/arg")._staging_root == Path("/from/arg")  # arg wins
+    monkeypatch.delenv("VERITY_WORKER_STAGING")
+    assert DockerBackend()._staging_root is None  # default: system temp (host-side behaviour)
+
+
+def test_staging_lands_under_the_configured_root(tmp_path: Path) -> None:
+    # The sibling-container fix: when set, every worker's staging dir is created under this shared
+    # root (bind-mounted host<->CP-container at an identical path), so worker -v sources resolve on
+    # the host daemon.
+    staging = DockerBackend(staging_root=tmp_path / "shared")._make_staging()
+    assert staging.parent == tmp_path / "shared" and staging.is_dir()
+    # default (unset) lands in the system temp dir, not under our root
+    assert DockerBackend()._make_staging().parent != tmp_path / "shared"
+
+
 def test_materialize_nests_inputs_into_the_writable_dir_and_ro_mounts_the_rest(
     tmp_path: Path,
 ) -> None:
