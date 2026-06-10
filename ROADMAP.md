@@ -419,7 +419,7 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
   the report (single default tenant). Seams-first; the engine (real queue + workers, store upgrade,
   tenant isolation, **#27**/**#9**) is the deferred adapter swap.
 
-- **7.4 Worker provisioning → full containerization, FE via config (ADR 0003) ⬜** — the live edge.
+- **7.4 Worker provisioning → full containerization, FE via config (ADR 0003) ✅** — the live edge.
   Realize ADR 0003: sandbox/verifier per-cycle work runs as **ephemeral, isolated, batch-job workers**
   behind a neutral `WorkerBackend` seam, ending at the **done-line: the FE run driven entirely by
   control-plane configuration, no ad-hoc wiring** (today it is hand-wired in
@@ -428,45 +428,77 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
   the registry; provisioning lives in a **neutral `provisioning/` package** the CP never imports, and
   is **registration/deployment config, never `TaskConfig`**; FE-specifics are confined to a
   domain-layer registration builder. Each sprint a green, focused commit (suite green at every step):
-  - **a. Provisioning contract** — `provisioning/backend.py`: the `WorkerBackend` Protocol
+  - **a. Provisioning contract ✅** — `provisioning/backend.py`: the `WorkerBackend` Protocol
     (`launch/status/wait/logs/stop/destroy/list/reap` + optional `recover` + `run_to_completion` = the
     batch path) + `WorkerSpec` (labels `{harness,tenant,job,run,cycle,role,config}`, image, command,
     env, mounts, `input_files`, limits, `runtime="runc"`, network, timeout). Imports nothing
     service/domain. Unit-tested; unconsumed.
-  - **b. `DockerBackend`** (riskiest — security argv) — `provisioning/docker.py`: ONE parameterized
+  - **b. `DockerBackend` ✅** (riskiest — security argv) — `provisioning/docker.py`: ONE parameterized
     hostile-posture `docker run` builder driven by `WorkerSpec`, replacing the two duplicated builders;
     `--label` per key; `list`/`reap` by label; structured launch/destroy audit logs; subprocess (no
     docker SDK); `runtime` knob default `runc` (gVisor `runsc` opt-in, ADR i). **Byte-level argv-pin
     tests for both postures** (sandbox network-on / code-runner `--network=none`) before deleting the
     old builders; a `@docker` smoke.
-  - **c. Backend-backed sandbox driver** — `BackendSandboxDriver` (in `sandbox/`) over the existing
+  - **c. Backend-backed sandbox driver ✅** — `BackendSandboxDriver` (in `sandbox/`) over the existing
     `CycleInput` + `container_entry` (reused unchanged); `DeepAgentsContainerDriver` becomes a thin
     wrapper.
-  - **d. Backend-backed code-runner** (the untrusted-code-isolation resolution) — `BackendCodeRunner`
+  - **d. Backend-backed code-runner ✅** (the untrusted-code-isolation resolution) — `BackendCodeRunner`
     (in `verifier/`): untrusted submitted code runs in a backend-launched, **labelled, isolated
     worker**, never an in-process subprocess. The FE verifier's gate **logic stays trusted + held
     across the run** (its in-memory incumbent ledger forbids per-cycle disposal); `reserved_labels`
     (the answer key) never enters any worker.
-  - **e. `InProcessBackend`** — `provisioning/inprocess.py`: the trivial backend, so the *same
-    declarative config* selects `backend_key="inprocess"` vs `"docker"` and the capstone runs in the
-    default offline suite.
-  - **f. Declarative wiring at the registration layer** (kills the ad-hoc wiring) — a
-    `ProvisioningConfig` (backend + per-role spec templates) consumed by a generic registration helper
-    + an FE-domain registration builder; replaces `_build_fe_task`. `TaskConfig` and `ControlPlane`
-    unchanged.
-  - **g. FE-via-config acceptance** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
+  - *(Test substrate: stubs-or-integration, no in-process middle.)* Offline tests use **`FakeBackend`**
+    (a proper stub — scripts the worker boundary, runs nothing, real gate logic in-process);
+    integration uses **`DockerBackend`** (`@docker`/`@live`). An "`InProcessBackend`" was considered and
+    **dropped** — a half-real backend is neither a deterministic stub nor a faithful substrate, and it
+    would drag sandbox/verifier knowledge into the neutral `provisioning/` layer. Backends are
+    *substrates* (Docker now, k8s later); it is addable later behind the same port if Docker-free
+    real-logic execution is ever needed.
+  - **f. Declarative wiring at the registration layer ✅** (kills the ad-hoc wiring) — the
+    `verity.composition` root: a `ProvisioningConfig` (backend + per-role substrate shape) + an
+    FE composition builder `build_fe_control_plane` that replaces `_build_fe_task`. `TaskConfig` and
+    `ControlPlane` unchanged; provisioning stays off `TaskConfig`. (The old
+    `DeepAgentsContainerDriver`/`ContainerCodeRunner` classes remain for the `code` benchmark domain;
+    full retirement is deferred to a cleanup pass.)
+  - **g. FE-via-config acceptance ✅** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
     built purely from declarative config + a backend selection; asserts an accepted `Submission`, the
     no-cross-cycle-bleed property (§3.5), untrusted code in a `{role:code-runner}`-labelled worker, and
-    `reserved_labels` absent from every worker. Green on `InProcessBackend` (offline) and
-    `DockerBackend` (`@docker`, `@live` for the real model).
-  - **h. Placed seams** — `tenant_id`/`run_id`/`cycle` in worker labels; a `RunRecord` at run end; a
-    label-reaper + `verity-reaper` entrypoint (ADR e).
+    `reserved_labels` absent from every worker. Green on `FakeBackend` (offline — config-driven flow +
+    real gate logic, scripted execution) and `DockerBackend` (`@live` for the real model; a recording
+    backend wrapper runs the same isolation assertions on the live path).
+  - **h. Placed seams ✅** — a neutral `RunContext` (`tenant_id`/`run_id`/`cycle`) the control plane
+    binds to any service advertising `SupportsRunContext`; the backend-backed sandbox driver +
+    code-runner stamp it onto every worker's `{harness,tenant,run,cycle,role,config}` labels (the
+    verifier forwards the bind to its runner). A `RunRecord` is emitted at run end (keyed by
+    `(tenant_id, run_id)`, pointing into the store). A label-reaper + the `verity-reaper` console
+    entrypoint reap orphaned workers by selector (ADR e), out of band — the control plane never
+    touches a backend.
   - *Deferred (placed seams, per ADR 0003 — see the tracks below):* the reconciliation-loop + per-tenant
     concurrency engine (ADR c/h) = the Multi-tenancy engine + "parallel agents against one task"; the
     `K8sBackend` (a second impl of the same port); the **launched-verifier-worker** for FE (precondition:
     move the incumbent ledger into the store + re-read incumbents inside the commit `transaction()`,
     ADR j); rootless + `docker-socket-proxy` posture and a Ryuk-style GC death-switch (deployment config,
     ADR f); gVisor/microVM (`WorkerSpec.runtime`, ADR i).
+
+- **7.5 Fully containerized control plane — generic CP + FE via config (proven live) ✅** — the real
+  done-line: a **task-agnostic** control plane runs *in a container* and launches the sandbox +
+  code-runner **worker containers** as siblings on the host daemon (controlled `/var/run/docker.sock`,
+  ADR 0003 §f — not docker-in-docker), running the §12 FE test by **configuring the CP via its API**,
+  no ad-hoc wiring. Sub-parts:
+  - **Decouple the CP from FE.** `build_fe_control_plane` (which built a `ControlPlane` *inside* an
+    FE-specific function) is deleted. The CP is constructed generic; a task is applied through the CP's
+    API (`register_sandbox`/`register_verifier` + `configure`) by `composition.fe.configure_fe_task` /
+    `configure_code_task`. Enforced **mechanically**: an AST guard asserts `verity.control_plane`
+    imports nothing from `verity.domains`, and one generic CP runs both the FE and `code` tasks.
+  - **Sibling-mount fix.** `DockerBackend(staging_root=…)` / `VERITY_WORKER_STAGING` — staging dirs go
+    under a host↔CP-container shared path so worker bind mounts resolve on the host daemon.
+  - **CP image + entrypoint.** `Dockerfile.controlplane` (verity core + the docker CLI, no sandbox
+    extra) + `python -m verity.composition.fe_run` (generic CP, FE applied via its API). The
+    stratified-split helper moved into the package (`verity.composition.dataset`).
+  - **Wiring + live proof.** `infra/compose.fe.yml` + `just fe-containerized`. Live on the local model:
+    the CP container launched both worker roles and reached an **accepted Submission** (cycle 1
+    shape-error → corrected → cycle 2 accepted, 5 Features grounded), with the 7.4.h worker labels and
+    no stragglers.
 
 ### Woven through Phases 6–7
 

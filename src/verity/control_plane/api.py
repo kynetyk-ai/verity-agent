@@ -25,20 +25,21 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field, replace
 
 from verity.contracts import (
-    SANDBOX_PROVIDERS,
-    VERIFIER_PROVIDERS,
     GateUnavailable,
     Operation,
     OperationStatus,
     ProposalEnvelope,
     ProviderRegistry,
+    RunContext,
     SandboxPort,
     ServedContext,
+    SupportsRunContext,
     VerdictBundle,
     VerdictKind,
     VerifierPort,
@@ -53,6 +54,11 @@ from verity.control_plane.commit import (
 from verity.control_plane.config import TaskConfig, orientation_digest
 from verity.control_plane.context import AssembledContext, ContextAssembler
 from verity.control_plane.independence import resolve_declared_slice
+from verity.control_plane.run_record import (
+    InMemoryRunRecordStore,
+    RunRecord,
+    RunRecordStore,
+)
 from verity.control_plane.run_report import (
     CycleInput,
     RunReport,
@@ -81,9 +87,15 @@ __all__ = [
     "UnknownTask",
     "OrchestrationError",
     "RunReport",
+    "RunRecord",
 ]
 
 log = get_logger("verity.control_plane.api")
+
+
+def _default_run_id() -> str:
+    """A fresh run id — distinct from the task id, so task and run stay separate identities."""
+    return uuid.uuid4().hex
 
 
 class ControlPlaneError(RuntimeError):
@@ -151,6 +163,7 @@ class TaskState:
     verifier: VerifierPort
     rationale: dict[str, str] = field(default_factory=dict)
     history: list[CycleInput] = field(default_factory=list)  # per-cycle facts for the RunReport
+    run_context: RunContext = field(default_factory=RunContext)  # run identity stamped onto workers
 
 
 class ControlPlane:
@@ -162,23 +175,54 @@ class ControlPlane:
         *,
         assembler: ContextAssembler | None = None,
         policy: OrchestrationPolicy | None = None,
-        sandbox_providers: ProviderRegistry[SandboxPort] = SANDBOX_PROVIDERS,
-        verifier_providers: ProviderRegistry[VerifierPort] = VERIFIER_PROVIDERS,
+        sandbox_providers: ProviderRegistry[SandboxPort] | None = None,
+        verifier_providers: ProviderRegistry[VerifierPort] | None = None,
         clock: Clock = default_clock,
         timer: Callable[[], float] = time.monotonic,
         dispatch_timeout_s: float | None = None,
+        run_id_source: Callable[[], str] | None = None,
+        run_records: RunRecordStore | None = None,
     ) -> None:
         self._store = store
         self._assembler = assembler if assembler is not None else ContextAssembler()
         self._policy = policy if policy is not None else OrchestrationPolicy()
-        self._sandbox_providers = sandbox_providers
-        self._verifier_providers = verifier_providers
+        # Fresh, empty registries by default: a control plane is task-agnostic — tasks register
+        # their providers through the API (`register_sandbox`/`register_verifier`), not here.
+        self._sandbox_providers = (
+            sandbox_providers if sandbox_providers is not None else ProviderRegistry("sandbox")
+        )
+        self._verifier_providers = (
+            verifier_providers if verifier_providers is not None else ProviderRegistry("verifier")
+        )
         self._clock = clock
         self._timer = timer  # monotonic seconds, injected so RunReport timings are testable
+        # A run's identity, minted per run() — distinct from the task it executes (task != run). The
+        # default is a fresh uuid; tests inject a deterministic source.
+        self._run_id_source = run_id_source if run_id_source is not None else _default_run_id
+        # Operational metadata emitted at run end (a RunRecord pointing into the store). A pure seam
+        # with an in-memory default; the standing job server swaps the adapter (7.4.h / ADR 0003).
+        self._run_records = run_records if run_records is not None else InMemoryRunRecordStore()
         # A backstop on the one opaque verifier handoff: a hung verifier becomes a recoverable
         # GateUnavailable rather than blocking the cycle forever (ROADMAP 5.1). None = no backstop.
         self._dispatch_timeout_s = dispatch_timeout_s
         self._tasks: dict[str, TaskState] = {}
+
+    # -- task registration (the configuration API; the CP stays task-agnostic) -----
+
+    @property
+    def store(self) -> SqliteStore:
+        """The durable provenance store. Exposed so a task builder can seed its root inputs (a
+        dataset version) at setup; the loop's mutations still go only through the commit path."""
+        return self._store
+
+    def register_sandbox(self, key: str, factory: Callable[[], SandboxPort]) -> None:
+        """Register a task's sandbox provider under ``key`` (named by ``TaskConfig.sandbox_key``).
+        A task is applied to a generic control plane through this API, never baked into it."""
+        self._sandbox_providers.register(key, factory)
+
+    def register_verifier(self, key: str, factory: Callable[[], VerifierPort]) -> None:
+        """Register a task's verifier provider under ``key`` (referenced by ``verifier_key``)."""
+        self._verifier_providers.register(key, factory)
 
     # -- configure-by-task --------------------------------------------------------
 
@@ -202,7 +246,17 @@ class ControlPlane:
         verifier = self._verifier_providers.create(config.verifier_key)
         await sandbox.provision()
         await verifier.provision()
-        self._tasks[config.task_id] = TaskState(config=config, sandbox=sandbox, verifier=verifier)
+        state = TaskState(
+            config=config, sandbox=sandbox, verifier=verifier,
+            run_context=RunContext(tenant_id=config.tenant_id, run_id=self._run_id_source()),
+        )
+        # Bind the run-identity cell to any service that stamps it onto the work it provisions (a
+        # backend-backed sandbox/verifier labels its workers; a stub ignores it). Bound once — the
+        # cell is mutable, so advancing the cycle / re-minting the run id shows without re-binding.
+        for service in (sandbox, verifier):
+            if isinstance(service, SupportsRunContext):
+                service.bind_run_context(state.run_context)
+        self._tasks[config.task_id] = state
         log.info("task_configured", task_id=config.task_id, schema_version=version)
 
     async def teardown(self, task_id: str) -> None:
@@ -443,6 +497,7 @@ class ControlPlane:
         single bad cycle cannot destroy a multi-round session (§3.4; issue #21).
         """
         task = self._task(task_id)
+        task.run_context.cycle += 1  # advance the cycle stamp so this cycle's workers are labelled
         started = self._timer()
         await self.serve_context(task_id, goal=goal, feedback=feedback)
         sandbox_started = self._timer()
@@ -507,6 +562,11 @@ class ControlPlane:
         The correction from each cycle (a shape-error or refine defects) is fed back into the next
         cycle's served context, so the agent can fix or revise (§3.5).
         """
+        task = self._task(task_id)
+        # A run is one execution of a task (task != run): mint a fresh run id and reset the cycle
+        # stamp, so this run's workers + RunRecord are identified distinctly from any prior run.
+        task.run_context.run_id = self._run_id_source()
+        task.run_context.cycle = 0
         results: list[IntakeResult] = []
         feedback = ""
         cycles = 0
@@ -523,6 +583,7 @@ class ControlPlane:
                 cap = self._policy.max_consecutive_sandbox_failures
                 if cap and consecutive_failures >= cap:
                     log.error("run_aborted_consecutive_failures", task_id=task_id, failures=cap)
+                    self._record_run(task_id, status="aborted")
                     raise OrchestrationError(
                         f"aborting run after {consecutive_failures} consecutive failed cycles "
                         f"(last: {failure})"
@@ -536,11 +597,31 @@ class ControlPlane:
                 ):
                     break
             feedback = _feedback_from(result)
+        record = self._record_run(task_id, status="complete")
         log.info(
-            "run_complete", task_id=task_id, tenant_id=self._task(task_id).config.tenant_id,
-            cycles=cycles,
+            "run_complete", task_id=task_id, tenant_id=task.config.tenant_id,
+            run_id=record.run_id, cycles=cycles,
         )
         return results
+
+    def _record_run(self, task_id: str, *, status: str) -> RunRecord:
+        """Build the run's operational metadata from the store-derived report and persist it.
+
+        The `RunRecord` references the typed-provenance store (accepted ids point back at the system
+        of record); it is never a copy. Keyed by ``(tenant_id, run_id)`` — task : run is 1 : many.
+        Workers are reaped out of band by ``verity-reaper`` against the labels this run stamped, so
+        the control plane stays provisioning-agnostic and never touches a backend.
+        """
+        task = self._task(task_id)
+        record = RunRecord.from_report(
+            self.run_report(task_id), run_id=task.run_context.run_id, status=status
+        )
+        self._run_records.put(record)
+        return record
+
+    def run_records(self) -> RunRecordStore:
+        """The run-results read side — operational metadata for finished runs (7.4.h)."""
+        return self._run_records
 
     # -- extraction (§3.4) --------------------------------------------------------
 

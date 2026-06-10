@@ -32,7 +32,9 @@ from verity.contracts import (
     Operation,
     OperationStatus,
     ProposalEnvelope,
+    RunContext,
     ServedContext,
+    SupportsRunContext,
 )
 from verity.control_plane.registries import SchemaRegistry
 from verity.control_plane.workspace import (
@@ -103,6 +105,12 @@ class AgentSandbox:
     _workspace: ProvisionedWorkspace | None = field(default=None, init=False)
 
     # -- lifecycle ----------------------------------------------------------------
+
+    def bind_run_context(self, ctx: RunContext) -> None:
+        """Forward the control plane's run-identity cell to the driver, if it stamps it (a
+        backend-backed driver labels its workers; an in-process driver ignores this)."""
+        if isinstance(self.driver, SupportsRunContext):
+            self.driver.bind_run_context(ctx)
 
     async def provision(self) -> None:
         self._workspace = self.layout.provision(self.root, dict(self.static_contents))

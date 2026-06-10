@@ -9,6 +9,7 @@ behind the :class:`~verity.verifier.model_client.ModelClient` seam, so the suite
 from __future__ import annotations
 
 from verity.verifier.code_runner import (
+    BackendCodeRunner,
     CodeRunner,
     ContainerCodeRunner,
     FakeCodeRunner,
@@ -52,6 +53,7 @@ __all__ = [
     "CodeRunner",
     "FakeCodeRunner",
     "ContainerCodeRunner",
+    "BackendCodeRunner",
     "RunRequest",
     "RunResult",
     "docker_available",

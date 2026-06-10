@@ -38,6 +38,7 @@ from verity.contracts.ports import (
     VerifierPort,
     VerifierRequest,
 )
+from verity.contracts.run_context import RunContext, SupportsRunContext
 
 __all__ = [
     # model
@@ -63,6 +64,9 @@ __all__ = [
     "ProviderError",
     "SANDBOX_PROVIDERS",
     "VERIFIER_PROVIDERS",
+    # run identity
+    "RunContext",
+    "SupportsRunContext",
     # errors
     "GateUnavailable",
 ]
