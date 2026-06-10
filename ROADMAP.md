@@ -419,7 +419,7 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
   the report (single default tenant). Seams-first; the engine (real queue + workers, store upgrade,
   tenant isolation, **#27**/**#9**) is the deferred adapter swap.
 
-- **7.4 Worker provisioning → full containerization, FE via config (ADR 0003) ⬜** — the live edge.
+- **7.4 Worker provisioning → full containerization, FE via config (ADR 0003) 🚧** — the live edge.
   Realize ADR 0003: sandbox/verifier per-cycle work runs as **ephemeral, isolated, batch-job workers**
   behind a neutral `WorkerBackend` seam, ending at the **done-line: the FE run driven entirely by
   control-plane configuration, no ad-hoc wiring** (today it is hand-wired in
@@ -428,21 +428,21 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
   the registry; provisioning lives in a **neutral `provisioning/` package** the CP never imports, and
   is **registration/deployment config, never `TaskConfig`**; FE-specifics are confined to a
   domain-layer registration builder. Each sprint a green, focused commit (suite green at every step):
-  - **a. Provisioning contract** — `provisioning/backend.py`: the `WorkerBackend` Protocol
+  - **a. Provisioning contract ✅** — `provisioning/backend.py`: the `WorkerBackend` Protocol
     (`launch/status/wait/logs/stop/destroy/list/reap` + optional `recover` + `run_to_completion` = the
     batch path) + `WorkerSpec` (labels `{harness,tenant,job,run,cycle,role,config}`, image, command,
     env, mounts, `input_files`, limits, `runtime="runc"`, network, timeout). Imports nothing
     service/domain. Unit-tested; unconsumed.
-  - **b. `DockerBackend`** (riskiest — security argv) — `provisioning/docker.py`: ONE parameterized
+  - **b. `DockerBackend` ✅** (riskiest — security argv) — `provisioning/docker.py`: ONE parameterized
     hostile-posture `docker run` builder driven by `WorkerSpec`, replacing the two duplicated builders;
     `--label` per key; `list`/`reap` by label; structured launch/destroy audit logs; subprocess (no
     docker SDK); `runtime` knob default `runc` (gVisor `runsc` opt-in, ADR i). **Byte-level argv-pin
     tests for both postures** (sandbox network-on / code-runner `--network=none`) before deleting the
     old builders; a `@docker` smoke.
-  - **c. Backend-backed sandbox driver** — `BackendSandboxDriver` (in `sandbox/`) over the existing
+  - **c. Backend-backed sandbox driver ✅** — `BackendSandboxDriver` (in `sandbox/`) over the existing
     `CycleInput` + `container_entry` (reused unchanged); `DeepAgentsContainerDriver` becomes a thin
     wrapper.
-  - **d. Backend-backed code-runner** (the untrusted-code-isolation resolution) — `BackendCodeRunner`
+  - **d. Backend-backed code-runner ✅** (the untrusted-code-isolation resolution) — `BackendCodeRunner`
     (in `verifier/`): untrusted submitted code runs in a backend-launched, **labelled, isolated
     worker**, never an in-process subprocess. The FE verifier's gate **logic stays trusted + held
     across the run** (its in-memory incumbent ledger forbids per-cycle disposal); `reserved_labels`
@@ -454,10 +454,12 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     would drag sandbox/verifier knowledge into the neutral `provisioning/` layer. Backends are
     *substrates* (Docker now, k8s later); it is addable later behind the same port if Docker-free
     real-logic execution is ever needed.
-  - **f. Declarative wiring at the registration layer** (kills the ad-hoc wiring) — a
-    `ProvisioningConfig` (backend + per-role spec templates) consumed by a generic registration helper
-    + an FE-domain registration builder; replaces `_build_fe_task`. `TaskConfig` and `ControlPlane`
-    unchanged. Retires the old `DeepAgentsContainerDriver`/`ContainerCodeRunner` wiring.
+  - **f. Declarative wiring at the registration layer ✅** (kills the ad-hoc wiring) — the
+    `verity.composition` root: a `ProvisioningConfig` (backend + per-role substrate shape) + an
+    FE composition builder `build_fe_control_plane` that replaces `_build_fe_task`. `TaskConfig` and
+    `ControlPlane` unchanged; provisioning stays off `TaskConfig`. (The old
+    `DeepAgentsContainerDriver`/`ContainerCodeRunner` classes remain for the `code` benchmark domain;
+    full retirement is deferred to a cleanup pass.)
   - **g. FE-via-config acceptance** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
     built purely from declarative config + a backend selection; asserts an accepted `Submission`, the
     no-cross-cycle-bleed property (§3.5), untrusted code in a `{role:code-runner}`-labelled worker, and
