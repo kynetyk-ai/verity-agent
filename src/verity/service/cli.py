@@ -25,9 +25,16 @@ DEFAULT_SOCKET = "/run/verity.sock"
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="verity", description="Verity control-plane CLI.")
     parser.add_argument("--socket", help="daemon socket path ($VERITY_SOCKET or /run/verity.sock)")
+    parser.add_argument("--url", help="daemon network URL, e.g. http://host:8080 ($VERITY_URL)")
+    parser.add_argument("--token", help="bearer token for a network daemon ($VERITY_API_TOKEN)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("serve", help="run the control-plane daemon")
+    serve = sub.add_parser("serve", help="run the control-plane daemon")
+    serve.add_argument(
+        "--http", metavar="HOST:PORT",
+        help="serve the authenticated network API on this address (needs $VERITY_API_TOKEN); "
+             "default is a local Unix socket",
+    )
     sub.add_parser("tasks", help="list created tasks")
 
     cat = sub.add_parser("catalog", help="list task types and their published contracts")
@@ -97,13 +104,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         from verity.service.daemon import main as serve_main
 
-        serve_main()
+        serve_main(http=args.http)
         return 0
 
     from verity.service.client import Client, ControlServiceError
 
-    socket_path = args.socket or os.environ.get("VERITY_SOCKET", DEFAULT_SOCKET)
-    client = Client(socket_path)
+    token = args.token or os.environ.get("VERITY_API_TOKEN")
+    url = args.url or os.environ.get("VERITY_URL")
+    if url:  # the network/TCP daemon (8.4) — bearer-authenticated
+        client = Client(base_url=url, token=token)
+    else:  # the local Unix socket (the default `docker exec` path)
+        socket_path = args.socket or os.environ.get("VERITY_SOCKET", DEFAULT_SOCKET)
+        client = Client(socket_path, token=token)
     try:
         result = asyncio.run(_dispatch(client, args))
     except ControlServiceError as exc:

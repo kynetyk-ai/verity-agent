@@ -44,19 +44,42 @@ def build_service(*, root: Path | None = None) -> ControlService:
     return ControlService(backend=DockerBackend(), root=root, catalog=default_catalog())
 
 
-def main() -> None:
-    """Run the daemon: build the generic service + app, serve over the Unix socket until killed."""
+def main(http: str | None = None) -> None:
+    """Run the daemon: build the generic service + app, serve until killed.
+
+    Two bindings off one image (ROADMAP 8.4): the default is a **Unix-domain socket** (local /
+    `docker exec`-only, the v1 trust boundary, no auth). With ``http`` (``HOST:PORT``, or the
+    ``VERITY_HTTP`` env) the **same app** is served over a network **TCP** port with **bearer
+    auth** — which requires ``VERITY_API_TOKEN`` (we refuse to expose an unauthenticated port).
+    """
     configure_logging(json_output=True)
     import uvicorn  # lazy: only the running daemon needs the `service` extra
 
     from verity.service.http import build_app
 
-    socket_path = os.environ.get("VERITY_SOCKET", DEFAULT_SOCKET)
     store_root = os.environ.get("VERITY_STORE_ROOT")
     exchange_in, exchange_out = exchange_dirs()
     service = build_service(root=Path(store_root) if store_root else None)
-    app = build_app(service, exchange_in=exchange_in, exchange_out=exchange_out)
 
+    http = http or os.environ.get("VERITY_HTTP")
+    if http:  # the network/TCP adapter (8.4) — authenticated
+        token = os.environ.get("VERITY_API_TOKEN")
+        if not token:
+            raise SystemExit(
+                "refusing to serve on a network port without VERITY_API_TOKEN "
+                "(set it to a shared bearer secret, or use the default Unix-socket binding)"
+            )
+        host, _, port = http.rpartition(":")
+        app = build_app(
+            service, exchange_in=exchange_in, exchange_out=exchange_out, auth_token=token
+        )
+        bind_host = host or "0.0.0.0"  # noqa: S104 — a network service binds all interfaces
+        log.info("daemon_start_http", host=bind_host, port=port, store_root=store_root)
+        uvicorn.run(app, host=bind_host, port=int(port))
+        return
+
+    socket_path = os.environ.get("VERITY_SOCKET", DEFAULT_SOCKET)
+    app = build_app(service, exchange_in=exchange_in, exchange_out=exchange_out)  # no auth: UDS
     sock = Path(socket_path)
     if sock.exists():  # clear a stale socket from a prior process so the bind succeeds
         sock.unlink()

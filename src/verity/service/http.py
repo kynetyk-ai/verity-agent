@@ -14,12 +14,13 @@ this module, so the core/loopback path never requires the extra (the lazy-import
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 
 from verity.composition import TaskRequest, UnknownTaskType
 from verity.contracts.errors import GateUnavailable
@@ -30,14 +31,42 @@ __all__ = ["build_app"]
 
 log = get_logger("verity.service.http")
 
+# Default cap on an over-the-wire object upload (bytes held in memory until create_task; the ADR
+# 0004 (f) pulled-forward byte data plane — bounded, no streaming).
+_DEFAULT_MAX_UPLOAD = 50_000_000
+
 
 def _summary(record: Any) -> dict[str, Any] | None:
     return record.report.summary.to_dict() if record is not None else None
 
 
-def build_app(service: ControlService, *, exchange_in: Path, exchange_out: Path) -> FastAPI:
-    """A FastAPI app over ``service``; ingress from ``exchange_in``, egress to ``exchange_out``."""
-    app = FastAPI(title="verity-control-plane")
+def build_app(
+    service: ControlService,
+    *,
+    exchange_in: Path,
+    exchange_out: Path,
+    auth_token: str | None = None,
+    max_upload_bytes: int = _DEFAULT_MAX_UPLOAD,
+) -> FastAPI:
+    """A FastAPI app over ``service``; ingress from ``exchange_in``, egress to ``exchange_out``.
+
+    When ``auth_token`` is set (the network/TCP adapter, 8.4), every route except ``/health``
+    requires ``Authorization: Bearer <auth_token>`` (401 otherwise) and the authenticated principal
+    is stashed on ``request.state`` — the ADR 0004 Q3 identity hook. When it is ``None`` (the
+    daemon's Unix-socket binding, 8.2/8.3), no auth is applied: the socket is the trust boundary.
+    """
+
+    def _require_bearer(request: Request) -> None:
+        if request.url.path == "/health":  # readiness probe stays open
+            return
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        assert auth_token is not None  # only registered when a token is configured
+        if scheme.lower() != "bearer" or not hmac.compare_digest(token, auth_token):
+            raise HTTPException(status_code=401, detail="missing or invalid bearer token")
+        request.state.principal = "token"  # identity hook (single shared principal in v1)
+
+    dependencies = [Depends(_require_bearer)] if auth_token else []
+    app = FastAPI(title="verity-control-plane", dependencies=dependencies)
     staging: dict[str, bytes] = {}  # ingest handle (content hash) -> bytes, until create_task
 
     def _error(status_code: int) -> Any:
@@ -51,6 +80,10 @@ def build_app(service: ControlService, *, exchange_in: Path, exchange_out: Path)
     app.add_exception_handler(ValueError, _error(422))
     app.add_exception_handler(GateUnavailable, _error(503))
 
+    @app.get("/health")
+    async def health() -> dict[str, bool]:
+        return {"ok": True}
+
     @app.get("/catalog")
     async def catalog() -> dict[str, Any]:
         return {"task_types": service.catalog_describe()}
@@ -61,17 +94,38 @@ def build_app(service: ControlService, *, exchange_in: Path, exchange_out: Path)
 
     @app.post("/objects")
     async def ingest(request: Request) -> dict[str, str]:
-        body = await request.json()
-        name = body.get("name")
-        if not isinstance(name, str):
-            raise HTTPException(status_code=422, detail="'name' (an exchange file) is required")
-        path = exchange_in / name
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail=f"no such file in the exchange: {name}")
-        data = path.read_bytes()
+        """Ingest an object → a content-addressed handle (resolved by ``create_task``).
+
+        Two forms: a JSON ``{"name": …}`` body reads a file from the server-side **exchange**
+        (the local/CLI path), while any other body is treated as **raw bytes** uploaded
+        over the wire (the network client with no shared volume — ADR 0004 (f), bounded).
+        """
+        raw = await request.body()
+        if request.headers.get("content-type", "").startswith("application/json"):
+            try:
+                body = json.loads(raw) if raw else {}
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+            name = body.get("name")
+            if not isinstance(name, str):
+                raise HTTPException(status_code=422, detail="'name' (an exchange file) is required")
+            if "/" in name or "\\" in name or ".." in name:  # no traversal out of the exchange
+                raise HTTPException(status_code=422, detail=f"invalid exchange filename: {name}")
+            path = exchange_in / name
+            if not path.is_file():
+                raise HTTPException(status_code=404, detail=f"no such file in the exchange: {name}")
+            data = path.read_bytes()
+        else:
+            if not raw:
+                raise HTTPException(status_code=422, detail="empty object body")
+            if len(raw) > max_upload_bytes:
+                raise HTTPException(
+                    status_code=413, detail=f"object exceeds the {max_upload_bytes}-byte limit"
+                )
+            data = raw
         handle = hashlib.sha256(data).hexdigest()
         staging[handle] = data
-        log.info("ingested", name=name, handle=handle, bytes=len(data))
+        log.info("ingested", handle=handle, bytes=len(data))
         return {"handle": handle}
 
     @app.post("/tasks")
@@ -140,5 +194,27 @@ def build_app(service: ControlService, *, exchange_in: Path, exchange_out: Path)
                 exported.append(f"{artifact_id}/{name}")
         log.info("exported", run_id=run_id, count=len(exported))
         return {"run_id": run_id, "out_dir": str(out_dir), "exported": exported}
+
+    @app.get("/artifacts/{run_id}/{object_path:path}")
+    async def artifact(run_id: str, object_path: str) -> Response:
+        """Egress over the wire (no shared volume): a single durable artifact object's bytes.
+
+        ``object_path`` matches either ``<artifact_id>/<name>`` (as ``export`` lays it out) or a
+        bare ``<name>`` (first match) — the same resolution ``export`` does, for one object.
+        """
+        record = service.results(run_id)
+        task_id = service.task_for_run(run_id)
+        if record is None or task_id is None:
+            raise HTTPException(status_code=404, detail=f"no results for run: {run_id}")
+        by_id = {a.id: a for a in await service.accepted_artifacts(task_id)}
+        for artifact_id in record.accepted_artifact_ids:
+            art = by_id.get(artifact_id)
+            if art is None:
+                continue
+            for name, ref in art.objects:
+                if object_path in (f"{artifact_id}/{name}", name):
+                    data = service.get_object(task_id, ref.content_hash)
+                    return Response(content=data, media_type="application/octet-stream")
+        raise HTTPException(status_code=404, detail=f"no artifact object: {run_id}/{object_path}")
 
     return app

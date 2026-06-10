@@ -828,6 +828,35 @@ no rebuild — is `tests/test_daemon_live.py`.
 > `compose.fe.yml` is unchanged); `compose.daemon.yml` overrides it to `verity serve`. A minor,
 > deliberate deviation from ADR 0004 sprint 3's literal "ENTRYPOINT → the daemon."
 
+### D. External HTTP/REST — the network control API (Phase 8.4, ADR 0004 (e))
+
+The *same* `build_app` the daemon serves over a Unix socket also binds to a **network TCP port**, so a
+remote client (no `docker exec`, no shared volume) can drive the control plane:
+
+```sh
+VERITY_API_TOKEN=<secret> verity serve --http 0.0.0.0:8080   # (or `python -m verity.service` + $VERITY_HTTP)
+```
+
+**Auth — bearer token (resolves ADR 0004 open Q3).** When bound to a port, **every route except
+`GET /health` requires `Authorization: Bearer $VERITY_API_TOKEN`** (401 otherwise); the daemon
+**refuses to start a network binding without a token**. The Unix-socket binding stays auth-free (the
+local trust boundary). The authenticated principal is stashed on the request (the identity hook);
+per-principal authz/tenancy is deferred (#58). mTLS / OAuth are out of scope for v1.
+
+**Byte data plane (pulled forward from #3, bounded).** Because a network client has no shared
+exchange volume:
+
+| Route | Purpose |
+|---|---|
+| `POST /objects` (raw body, non-JSON) | Upload object **bytes** → a content-addressed `{handle}` (vs the JSON `{"name": …}` form that reads the server-side exchange). Capped (413 over the limit), in-memory, no streaming. |
+| `GET /artifacts/{run_id}/{object_path}` | Download a single durable artifact object's **bytes** (`<artifact_id>/<name>` or a bare `<name>`). |
+
+All other routes are the §(d) verbs (`/catalog`, `/tasks`, `/tasks/{id}/runs`, `/runs/{id}`,
+`/runs/{id}/results`, `/runs/{id}/export`) — **endpoint-parity with the CLI**. The `verity` CLI is the
+same client against a TCP daemon: `verity --url http://host:8080 --token <secret> catalog`
+(or `$VERITY_URL` / `$VERITY_API_TOKEN`). Removing the shared exchange volume entirely and
+large-file streaming remain the deferred #3 data-plane work.
+
 ---
 
 ## Notable findings

@@ -155,6 +155,12 @@ volume are mounted into the control-plane container alone and **never reach a wo
 store volume, so a created task survives a `docker restart`. The `verity` CLI is a thin client over a
 Unix socket inside the container — `just cp <subcommand>` is `docker exec verity-cp verity …`.
 
+For **remote / programmatic** use, the same image serves an **authenticated network API** instead of
+the local socket — `VERITY_API_TOKEN=<secret> verity serve --http 0.0.0.0:8080` — with bearer auth on
+every route but `/health`, and over-the-wire object upload + artifact download (no shared volume).
+Reach it with the same CLI: `verity --url http://host:8080 --token <secret> catalog`. See the
+*External HTTP/REST* section of [docs/api-surface.md](docs/api-surface.md).
+
 ## Repo layout
 
 ```

@@ -18,11 +18,13 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > daemon configured + run via a CLI/HTTP, no image rebuild), settled by
 > [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**: the
 > transport-agnostic **`ControlService` core (8.1 ✅)**, the **standing daemon + `verity` CLI over a
-> Unix socket (8.2 ✅)**, and the **container wiring + isolation proof (8.3 ✅)** have landed
-> (HTTP/FastAPI over `uds=`, background runs behind a run lock, registry self-description; the image
-> now serves the daemon, with exchange + persistent-store volumes that never reach a worker). Next:
-> **8.4** — the external HTTP/REST control API (paired with auth). Remaining beyond that: hosted-model
-> live validation, the multi-tenancy engine, and a `K8sBackend`.
+> Unix socket (8.2 ✅)**, the **container wiring + isolation proof (8.3 ✅)**, and the
+> **external HTTP/REST control API (8.4 ✅)** have all landed — so **Phase 8 v1 is complete**: one
+> image serves a local Unix-socket daemon *and* an authenticated (bearer-token) network API with an
+> over-the-wire byte data plane, configured + run with no rebuild, durable across restart, with the
+> exchange + store volumes provably off every worker. Remaining beyond v1 (deferred engine tracks):
+> hosted-model live validation, the multi-tenancy/concurrency engine (#58), crash recovery (#57), the
+> full #3 networked data plane, and a `K8sBackend`.
 > The **control-plane API reference** (with a worked FE example) is
 > [`docs/api-surface.md`](docs/api-surface.md).
 
@@ -514,7 +516,7 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     shape-error → corrected → cycle 2 accepted, 5 Features grounded), with the 7.4.h worker labels and
     no stragglers.
 
-### Phase 8 — The long-lived, configurable control-plane service (ADR 0004) 🚧
+### Phase 8 — The long-lived, configurable control-plane service (ADR 0004) ✅ *(v1)*
 
 The batch control-plane container (7.5) becomes a **standing daemon** an operator (or Claude Code)
 delegates to: configure a task, select sandbox + verifier configs from a **catalog**, provide data,
@@ -582,9 +584,19 @@ and `composition/fe_run.py` + the library API stay valid.
   (the one-shot `fe_run` batch path), so the image's default `ENTRYPOINT` stays `fe_run` and the
   **daemon compose overrides it** to `verity serve` — the daemon is fully reachable, just selected by
   `compose.daemon.yml` rather than baked as the image default.
-- **8.4 External HTTP/REST control API ⬜** — FastAPI over the same `ControlService` core (`service`
-  extra; mirror `verifier/__main__.py`), endpoint-parity with the CLI, an in-process/loopback test —
-  paired with the auth story when it lands.
+- **8.4 External HTTP/REST control API ✅** — the *same* FastAPI `build_app` (8.2), now bindable to a
+  **network TCP port** with **bearer-token auth**, completing Phase 8 v1. **Landed:** `verity serve
+  --http HOST:PORT` (or `$VERITY_HTTP`; `python -m verity.service` mirrors `verifier/__main__.py`)
+  serves the app over TCP and **refuses to start without `VERITY_API_TOKEN`**; the auth dependency
+  gates every route but `GET /health` (401 otherwise) and stashes the principal on the request (the
+  identity hook) — the UDS binding stays auth-free (the local trust boundary). Endpoint-parity with the
+  CLI is unchanged; the `Client`/CLI gained a TCP target (`--url`/`--token`, `$VERITY_URL`). The
+  minimal **over-the-wire byte data plane** was pulled forward so a client with no shared volume is
+  usable: raw-bytes `POST /objects` (capped, 413 over) + `GET /artifacts/{run_id}/{path}`. Tests
+  (`tests/test_service_http_external.py`, offline + a real-TCP round trip): `/health` open, 401
+  without/with-wrong token, 200 with it, the refuse-without-token guard, and a byte upload → create →
+  run → artifact-download round trip. **Resolves ADR 0004 open Q3 → bearer token** (mTLS/OAuth and the
+  full #3 data plane — removing the exchange volume, streaming — stay deferred).
 - *Deferred (placed seams, per ADR 0004):* crash recovery for in-flight runs (**#57**; Temporal a
   hardening candidate); the **multi-tenancy engine** — *cross-tenant* store isolation, the
   single-writer→Postgres store-engine upgrade, object GC, and parallel live runs (the residual beyond
