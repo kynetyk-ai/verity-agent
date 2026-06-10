@@ -84,11 +84,29 @@ Non-negotiable working norms for this repo:
 
 ## Status
 
-**Post-MVP.** Phases 0–5 are complete: the control plane, the verifier service + gate-primitive SDK,
-the sandbox service (in-process + container Deep Agents), and the feature-engineering domain (§12)
-that reached MVP against the twelve §13 acceptance criteria — plus the Phase 5 reliability &
-observability hardening (degrade-don't-crash on both boundaries, typed errors, retries, atomic
-commits, the store-derived `RunReport`). **Next: Phase 6 — model breadth** (open / local / cheaper
-hosted models), the thesis payoff. See [ROADMAP.md](ROADMAP.md) for the live plan.
+**Post-MVP, deep into the Post-MVP roadmap.** Phases 0–5 are complete: the control plane, the verifier
+service + gate-primitive SDK, the sandbox service (in-process + container Deep Agents), and the
+feature-engineering domain (§12) that reached MVP against the twelve §13 acceptance criteria — plus the
+Phase 5 reliability & observability hardening (degrade-don't-crash on both boundaries, typed errors,
+retries, atomic commits, the store-derived `RunReport`).
+
+**Phase 6 — model breadth** (the thesis payoff) is code-complete and **live-validated on a local open
+model** (Ollama / Qwen on Apple Silicon, 2026-06-08); hosted-OpenAI live validation is pending a key.
+**Phase 7 — service split & full containerization** has reached its done-line (7.5): a **task-agnostic
+control plane runs in a container** and launches ephemeral sandbox + code-runner **worker containers**
+as siblings on the host daemon (ADR 0003), running the §12 FE test by configuring the CP through its
+API (`composition.configure_fe_task` / `just fe-containerized`). **Remaining:** hosted-model live
+validation, the multi-tenancy engine (real queue + tenant isolation), and a `K8sBackend`. See
+[ROADMAP.md](ROADMAP.md) for the live plan and [docs/api-surface.md](docs/api-surface.md) for the
+control-plane API reference.
 
 **Stack: Python, managed with uv** (see *Coding habits*).
+
+## Parked branches
+
+- **`feat/containerized-services-gvisor`** — parked, **architecturally superseded** by the ADR 0003
+  worker-provisioning pivot (it predates it: networked HTTP **standing** sandbox/verifier services +
+  gVisor (`runsc`) sandboxing, ~4 ahead / far behind `develop`). Not on the path to merge. Kept as a
+  **reference** for two still-live tracks: the gVisor/`runsc` enablement work (now seamed as
+  `WorkerSpec.runtime`, ADR i) and the standing-service networked data-plane (issue #3, the
+  multi-tenancy & run-control track). Mine it for those when they activate; don't try to rebase it.

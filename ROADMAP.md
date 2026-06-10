@@ -7,10 +7,16 @@ what's next?"* — `README.md` and `CLAUDE.md` point here.
 acceptance criteria pass** — the MVP finish line (Phase 4). The arc then continues into the
 **Post-MVP roadmap** (Phases 5–7) below.
 
-> **Status: MVP reached ✅** — Phases 0–4 are done. All twelve §13 criteria pass as runnable checks
-> (`tests/test_feature_engineering_acceptance.py`); a `@live` run drives real Claude proposals scored
-> in a container on the stellar dataset. Next: the Post-MVP roadmap (reliability & observability →
-> open models → service split) at the end of this file.
+> **Status: post-MVP, deep into the Post-MVP roadmap.** Phases 0–4 reached MVP (all twelve §13 criteria
+> pass as runnable checks in `tests/test_feature_engineering_acceptance.py`; a `@live` run drives real
+> Claude proposals scored in a container on the stellar dataset). Beyond MVP: **Phase 5 ✅**
+> (reliability & observability hardening); **Phase 6 🚧** (model breadth — code-complete, local open
+> model live-validated 2026-06-08, hosted-OpenAI live pending a key); **Phase 7 🚧** (service split &
+> full containerization — the seams are live, and the full-containerization **done-line is reached:
+> a generic control plane runs in a container and launches ephemeral worker containers, running FE via
+> its API — 7.5 ✅**). Remaining: hosted-model live validation, the multi-tenancy engine, and a
+> `K8sBackend`. The **control-plane API reference** (with a worked FE example) is
+> [`docs/api-surface.md`](docs/api-surface.md).
 
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
 every invariant — and prove it works against *bespoke, throwaway* agent/workspace and verifier

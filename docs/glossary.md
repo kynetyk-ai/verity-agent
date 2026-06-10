@@ -54,11 +54,18 @@ tenant ─1:many→ task ─1:many→ run ─1:1→ job
 The trap this avoids: if `run_id` defaulted to `task_id`, a second run of the same task would collide
 on `(tenant_id, run_id)` and a run-record store would silently overwrite the first.
 
-## Current state (seams-first, engine-later)
+## Current state (run-identity live; the multi-tenant *engine* still deferred)
 
-The control-plane engine is still **1 : 1 task ↔ run** today: `run()` / `run_report()` are keyed on
-`task_id` and there is no run-identity inside the loop. The distinct `run_id` lives in the
-**multi-tenancy seams** (`RunRecord`, `Job`). When the run-control *engine* lands (a standing job
-server — issue #27), `ControlPlane.run()` mints a real `run_id` and keys run history by it, making
-task : run genuinely 1 : many in the engine, not just the seams. Until then, callers that persist a
-`RunRecord` supply the `run_id`.
+**Run-identity now lives inside the loop** (ROADMAP 7.4.h). `ControlPlane.run()` mints a fresh `run_id`
+per run (`run_id_source`, default `uuid4().hex`), binds a mutable `RunContext(tenant_id, run_id, cycle)`
+that advances `cycle` per cycle, and emits a `RunRecord` keyed by `(tenant_id, run_id)` at run end —
+so a backend-backed sandbox/verifier stamps `{harness, tenant, run, cycle, role, config}` onto every
+worker it launches, and a second run of the same task gets its own id (no `(tenant_id, run_id)`
+collision). `run_report()` is still keyed on `task_id` (the in-process engine runs one task's run at a
+time), but task : run is now genuinely 1 : many in the records.
+
+What remains deferred is the multi-tenant **engine**, not the identity: the real `JobQueue` + worker
+model, per-tenant store isolation, and the standing job server (issue #27). Until that lands, `Job` is
+a seam (the in-process default records job state synchronously) and there is one default tenant.
+`RunRecord.from_report` still *requires* an explicit `run_id` — the control plane supplies its minted
+`run_context.run_id`, never the `task_id`.
