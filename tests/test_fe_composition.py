@@ -1,9 +1,10 @@
-"""The FE composition builder (ROADMAP 7.4.f). Offline — `FakeBackend`, no Docker, no model.
+"""Applying the FE task to a *generic* control plane (ROADMAP 7.4, decoupled). Offline.
 
-Proves the ad-hoc `_build_fe_task` wiring is replaced by one declarative call:
-`build_fe_control_plane` seeds the dataset, registers the FE sandbox + verifier providers, and
-produces a `TaskConfig` the control plane configures — no hand-built drivers/runners/registries.
-The full FE run is the 7.4.g capstone; here we prove the wiring resolves end to end.
+Proves the control plane is **not** built around FE: a plain, task-agnostic `ControlPlane(store)` is
+constructed first (it has no providers, knows no task), and `configure_fe_task` applies FE onto it
+*through the CP's API* — registering the FE providers, seeding the dataset, and configuring. The
+mechanical genericity guarantee (the CP package importing nothing from `domains`) is in
+`test_control_plane_genericity.py`; here we prove the application path resolves end to end.
 """
 
 from __future__ import annotations
@@ -11,8 +12,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from verity.composition import ProvisioningConfig, build_fe_control_plane
-from verity.control_plane.registries import ObjectProvisionMode
+from verity.composition import ProvisioningConfig, configure_fe_task
+from verity.control_plane.api import ControlPlane
 from verity.control_plane.store import SqliteStore
 from verity.provisioning import FakeBackend
 
@@ -24,23 +25,20 @@ class _Split:
     reserved_labels: dict[str, str] = field(default_factory=lambda: {"5": "X"})
 
 
-def test_build_fe_control_plane_wires_and_configures() -> None:
+def test_configure_fe_task_applies_to_a_generic_control_plane() -> None:
     store = SqliteStore()
-    cp, config = build_fe_control_plane(backend=FakeBackend(), split=_Split(), store=store)
+    cp = ControlPlane(store)  # GENERIC: no providers, no task knowledge at construction
 
-    # the declarative config — provisioning never leaked onto TaskConfig
-    assert config.task_id == "fe"
-    assert config.sandbox_key == "fe" and config.verifier_key == "fe"
-    assert config.harvester is not None  # the FE Feature-harvest hook
-    assert config.object_provisioning.mode is ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED
-    assert not hasattr(config, "backend_key")  # provisioning is NOT on the task config
+    task_id = asyncio.run(configure_fe_task(cp, backend=FakeBackend(), split=_Split()))
 
-    # the dataset root was seeded
+    assert task_id == "fe"
+    # the dataset root was seeded into the CP's own store via its API
     root = store.get_artifact("ds")
     assert root is not None and root.is_root
-
-    # the providers resolve + provision: configure() succeeds end to end (the wiring is complete)
-    asyncio.run(cp.configure(config))
+    # the task is fully configured end to end: configure() registered the schema version, and the
+    # FE provider is now resolvable under its key (registered through the CP's API, not at build)
+    assert store.current_schema_version() is not None
+    assert cp._sandbox_providers.create("fe") is not None  # noqa: SLF001 - test inspects the registry
 
 
 def test_provisioning_config_carries_substrate_shape_not_task_config() -> None:

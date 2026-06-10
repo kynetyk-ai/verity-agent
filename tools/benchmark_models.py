@@ -33,7 +33,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from verity.composition import FE_GOAL, ProvisioningConfig, build_fe_control_plane
+from verity.composition import FE_GOAL, FE_TASK_ID, ProvisioningConfig, configure_fe_task
 from verity.contracts import (
     Artifact,
     ArtifactStatus,
@@ -123,17 +123,17 @@ def _subsample(data: bytes, *, per_class: int, target: str = "class") -> bytes:
 async def _build_fe_task(
     label: str, model_spec: ModelSpec, split: object, *, max_cycles: int
 ) -> ConfiguredTask:
-    # Declarative wiring (ROADMAP 7.4.f): one builder seeds the dataset, registers the FE
-    # sandbox/verifier providers (backend-backed workers — the sandbox writes the script, the
-    # verifier runs it in an isolated worker), and assembles the TaskConfig. No hand-built wiring.
-    cp, config = build_fe_control_plane(
+    # A GENERIC control plane, then the FE task applied through its API (ROADMAP 7.4, decoupled):
+    # the CP knows no task; `configure_fe_task` registers the FE providers (backend-backed workers),
+    # seeds the dataset, and configures. No hand-built drivers; the CP is not built around FE.
+    cp = ControlPlane(SqliteStore(), policy=OrchestrationPolicy(max_cycles=max_cycles))
+    await configure_fe_task(
+        cp,
         backend=DockerBackend(),
         split=split,
         provisioning=ProvisioningConfig(model_spec=model_spec, sandbox_image=_IMAGE),
-        max_cycles=max_cycles,
     )
-    await cp.configure(config)
-    return ConfiguredTask(cp, task_id="fe", goal=FE_GOAL, model_name=model_spec.model)
+    return ConfiguredTask(cp, task_id=FE_TASK_ID, goal=FE_GOAL, model_name=model_spec.model)
 
 
 # --------------------------------------------------------------------------------- arms + runner

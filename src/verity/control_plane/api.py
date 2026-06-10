@@ -31,8 +31,6 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field, replace
 
 from verity.contracts import (
-    SANDBOX_PROVIDERS,
-    VERIFIER_PROVIDERS,
     GateUnavailable,
     Operation,
     OperationStatus,
@@ -177,8 +175,8 @@ class ControlPlane:
         *,
         assembler: ContextAssembler | None = None,
         policy: OrchestrationPolicy | None = None,
-        sandbox_providers: ProviderRegistry[SandboxPort] = SANDBOX_PROVIDERS,
-        verifier_providers: ProviderRegistry[VerifierPort] = VERIFIER_PROVIDERS,
+        sandbox_providers: ProviderRegistry[SandboxPort] | None = None,
+        verifier_providers: ProviderRegistry[VerifierPort] | None = None,
         clock: Clock = default_clock,
         timer: Callable[[], float] = time.monotonic,
         dispatch_timeout_s: float | None = None,
@@ -188,8 +186,14 @@ class ControlPlane:
         self._store = store
         self._assembler = assembler if assembler is not None else ContextAssembler()
         self._policy = policy if policy is not None else OrchestrationPolicy()
-        self._sandbox_providers = sandbox_providers
-        self._verifier_providers = verifier_providers
+        # Fresh, empty registries by default: a control plane is task-agnostic — tasks register
+        # their providers through the API (`register_sandbox`/`register_verifier`), not here.
+        self._sandbox_providers = (
+            sandbox_providers if sandbox_providers is not None else ProviderRegistry("sandbox")
+        )
+        self._verifier_providers = (
+            verifier_providers if verifier_providers is not None else ProviderRegistry("verifier")
+        )
         self._clock = clock
         self._timer = timer  # monotonic seconds, injected so RunReport timings are testable
         # A run's identity, minted per run() — distinct from the task it executes (task != run). The
@@ -202,6 +206,23 @@ class ControlPlane:
         # GateUnavailable rather than blocking the cycle forever (ROADMAP 5.1). None = no backstop.
         self._dispatch_timeout_s = dispatch_timeout_s
         self._tasks: dict[str, TaskState] = {}
+
+    # -- task registration (the configuration API; the CP stays task-agnostic) -----
+
+    @property
+    def store(self) -> SqliteStore:
+        """The durable provenance store. Exposed so a task builder can seed its root inputs (a
+        dataset version) at setup; the loop's mutations still go only through the commit path."""
+        return self._store
+
+    def register_sandbox(self, key: str, factory: Callable[[], SandboxPort]) -> None:
+        """Register a task's sandbox provider under ``key`` (named by ``TaskConfig.sandbox_key``).
+        A task is applied to a generic control plane through this API, never baked into it."""
+        self._sandbox_providers.register(key, factory)
+
+    def register_verifier(self, key: str, factory: Callable[[], VerifierPort]) -> None:
+        """Register a task's verifier provider under ``key`` (referenced by ``verifier_key``)."""
+        self._verifier_providers.register(key, factory)
 
     # -- configure-by-task --------------------------------------------------------
 

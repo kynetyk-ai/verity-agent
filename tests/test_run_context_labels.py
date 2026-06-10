@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 
 from tests.test_fe_via_config_acceptance import _GOOD, _OK, _FeWorkers, _Split
-from verity.composition import build_fe_control_plane
-from verity.control_plane.api import ControlPlane
+from verity.composition import configure_fe_task
+from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.store import SqliteStore
 from verity.provisioning import FakeBackend
 
@@ -30,8 +30,8 @@ def _run_fe_loop() -> tuple[FakeBackend, ControlPlane, str]:
     )
     backend = FakeBackend(script=workers)
     store = SqliteStore()
-    cp, config = build_fe_control_plane(backend=backend, split=split, max_cycles=2, store=store)
-    asyncio.run(cp.configure(config))
+    cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=2))
+    asyncio.run(configure_fe_task(cp, backend=backend, split=split))
     asyncio.run(cp.run("fe", goal="improve balanced accuracy"))
     run_ids = {s.labels.run for s in backend.launched}
     assert len(run_ids) == 1  # one run id across every worker the run launched
@@ -73,8 +73,8 @@ def test_a_second_run_of_the_same_task_gets_a_fresh_run_id() -> None:
     backend = FakeBackend(
         script=_FeWorkers(steps=[("submit", ("ds",), _GOOD[0], ["f"])], by_marker=dict([_GOOD]))
     )
-    cp, config = build_fe_control_plane(backend=backend, split=split, max_cycles=1, store=store)
-    asyncio.run(cp.configure(config))
+    cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=1))
+    asyncio.run(configure_fe_task(cp, backend=backend, split=split))
 
     asyncio.run(cp.run("fe", goal="g"))
     first = {s.labels.run for s in backend.launched}.pop()

@@ -6,11 +6,13 @@ argv, unifying what ``container_driver.docker_command`` and ``code_runner._docke
 the fixed hardened baseline (``--rm``, ``--read-only``, ``--cap-drop=ALL``, ``no-new-privileges``,
 non-root host uid, no swap) applied here, the workload knobs from the `WorkerSpec`.
 
-I/O is the bytes file-transfer protocol (`backend.py`): ``readonly_inputs`` are written to a staging
-dir and bind-mounted ``:ro`` at their absolute paths (overlaid on a writable mount where they nest);
-``writable_dirs`` are fresh ``:rw`` mounts; ``output_globs`` are collected from those writable host
-dirs after exit. Nothing the worker reads comes from the durable store and nothing is written to
-it — the control plane harvests the returned bytes (sole-mutator, Principle 9).
+I/O is the bytes file-transfer protocol (`backend.py`): ``writable_dirs`` are fresh ``:rw`` mounts;
+``readonly_inputs`` that nest under one are written *into* that writable mount (no read-only
+protection inside the sandbox by design — a corrupted input just makes a bad proposal, and gold
+regenerates the environment next cycle), and the rest are plain ``:ro`` mounts; ``output_globs`` are
+collected from the writable host dirs after exit. Nothing the worker reads comes from the durable
+store and nothing is written to it — the control plane harvests the returned bytes (sole-mutator,
+Principle 9).
 
 Posture caveats (this holds a credential to the daemon — ADR f): the daemon should run **rootless**
 and behind a narrowing **docker-socket-proxy** in a real deployment; those are deployment config,
@@ -78,8 +80,8 @@ class DockerBackend:
     def build_argv(self, spec: WorkerSpec, *, name: str, mounts: Sequence[_Mount]) -> list[str]:
         """The full ``docker run`` argv: the fixed hardened baseline + the spec's workload knobs.
 
-        Mount order is load-bearing — writable mounts precede the ``:ro`` overlays so a read-only
-        input nested under a writable dir (a gold role in ``/work``) shadows it physically (§3.5).
+        Mounts are the writable ``:rw`` dirs plus the non-nested ``:ro`` inputs (inputs that nest
+        under a writable dir are materialized into it by ``_materialize``, not bind-mounted).
         """
         tmpfs = f"rw,size={spec.scratch.size},mode=1777"
         if spec.scratch.allow_exec:
@@ -120,18 +122,42 @@ class DockerBackend:
     ) -> tuple[list[_Mount], dict[str, Path]]:
         mounts: list[_Mount] = []
         writable_hosts: dict[str, Path] = {}
-        for cdir in spec.writable_dirs:  # writable mounts first
+        for cdir in spec.writable_dirs:
             host = staging / "rw" / cdir.lstrip("/")
             host.mkdir(parents=True, exist_ok=True)
             host.chmod(0o777)  # the non-root container user must be able to write
             mounts.append((host, cdir, "rw"))
             writable_hosts[cdir] = host
-        for path, data in spec.readonly_inputs.items():  # ro overlays on top
-            host = staging / "ro" / path.lstrip("/")
-            host.parent.mkdir(parents=True, exist_ok=True)
-            host.write_bytes(data)
-            mounts.append((host, path, "ro"))
+        for path, data in spec.readonly_inputs.items():
+            enclosing = self._enclosing_writable(path, writable_hosts)
+            if enclosing is not None:
+                # Nested under a writable dir: write the bytes *into* that writable mount rather
+                # than bind-mounting the file on top. A nested file bind-mount fails on Docker
+                # Desktop (virtiofs) when the mountpoint doesn't pre-exist, and we don't need it:
+                # there is no read-only protection inside the sandbox by design — a corrupted input
+                # just makes a bad proposal, and gold regenerates the environment next cycle.
+                cdir, host_root = enclosing
+                dest = host_root / path[len(cdir.rstrip("/")) + 1:]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+            else:
+                # Not nested under a writable mount (e.g. /sandbox/input.json, the code-runner's
+                # /data and /work): a plain ``:ro`` mount, which never conflicts.
+                host = staging / "ro" / path.lstrip("/")
+                host.parent.mkdir(parents=True, exist_ok=True)
+                host.write_bytes(data)
+                mounts.append((host, path, "ro"))
         return mounts, writable_hosts
+
+    @staticmethod
+    def _enclosing_writable(
+        path: str, writable_hosts: Mapping[str, Path]
+    ) -> tuple[str, Path] | None:
+        """The writable dir that ``path`` nests inside (container-path prefix), or ``None``."""
+        for cdir, host_root in writable_hosts.items():
+            if path.startswith(cdir.rstrip("/") + "/"):
+                return cdir, host_root
+        return None
 
     def _collect(self, spec: WorkerSpec, writable_hosts: Mapping[str, Path]) -> dict[str, bytes]:
         outputs: dict[str, bytes] = {}

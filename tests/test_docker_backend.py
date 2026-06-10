@@ -108,27 +108,30 @@ def test_argv_runtime_knob_and_labels_and_passthrough(monkeypatch: pytest.Monkey
     assert "VERITY_SANDBOX_MODEL=anthropic:x" in argv
 
 
-def test_argv_mount_order_is_writable_then_readonly_overlay() -> None:
+def test_argv_emits_writable_then_readonly_mounts_in_order() -> None:
     backend = DockerBackend()
     mounts = [
-        (Path("/h/work"), "/work", "rw"),
-        (Path("/h/ro/data"), "/work/data/train.csv", "ro"),
+        (Path("/h/out"), "/out", "rw"),
+        (Path("/h/ro/seed"), "/in/seed.txt", "ro"),
     ]
-    argv = backend.build_argv(_sandbox_spec(), name="n", mounts=mounts)
-    rw_at = argv.index("/h/work:/work:rw")
-    ro_at = argv.index("/h/ro/data:/work/data/train.csv:ro")
-    assert rw_at < ro_at  # the ro overlay must come AFTER the writable mount it shadows (§3.5)
+    argv = backend.build_argv(_code_runner_spec(), name="n", mounts=mounts)
+    assert argv.index("/h/out:/out:rw") < argv.index("/h/ro/seed:/in/seed.txt:ro")
 
 
-def test_materialize_writes_ro_files_and_orders_mounts(tmp_path: Path) -> None:
+def test_materialize_nests_inputs_into_the_writable_dir_and_ro_mounts_the_rest(
+    tmp_path: Path,
+) -> None:
     backend = DockerBackend()
     mounts, writable = backend._materialize(_sandbox_spec(), tmp_path)
-    modes = [mode for _h, _t, mode in mounts]
-    assert modes == ["rw", "ro", "ro"]  # writable first, ro overlays after
-    # the gold input is materialized read-only with its bytes, not in the writable area
-    ro_file = next(h for h, t, m in mounts if t == "/work/data/train.csv")
-    assert ro_file.read_bytes() == b"x"
-    assert "/work" in writable and writable["/work"].is_dir()
+    # /work is the one writable mount; the gold input nested under it is NOT a separate mount (a
+    # nested file bind-mount fails on Docker Desktop) — it is written into the writable tree.
+    assert [mode for _h, _t, mode in mounts] == ["rw", "ro"]
+    assert {t for _h, t, _m in mounts} == {"/work", "/sandbox/input.json"}
+    gold = writable["/work"] / "data" / "train.csv"
+    assert gold.read_bytes() == b"x"  # materialized into the writable mount, agent can read it
+    # the non-nested input (the cycle input) stays a plain :ro mount
+    ro = next(h for h, t, _m in mounts if t == "/sandbox/input.json")
+    assert ro.read_bytes() == b"{}"
 
 
 # ----------------------------------------------------------------- real runs (@docker)
@@ -155,6 +158,26 @@ def test_run_collects_output_and_inputs_are_read_only() -> None:
     assert result.exit_code == 0, result.stderr
     assert result.outputs["/out/echo.txt"] == b"hello"  # output harvested as bytes
     assert result.timed_out is False
+
+
+@docker_test
+def test_sandbox_shaped_worker_runs_with_inputs_nested_under_the_writable_dir() -> None:
+    # The case the live smoke caught: a read-only input nested under a writable /work. A nested file
+    # bind-mount fails on Docker Desktop (virtiofs), so it is materialized into the writable mount.
+    # The worker must see the input and write its output. One alpine `sh -c`, no Python.
+    spec = WorkerSpec(
+        image="alpine:3.20",
+        command=("sh", "-c", "mkdir -p /work/outbox && cat /work/data/train.csv > /work/outbox/p"),
+        labels=Labels(role="sandbox", run="rn", cycle="1"),
+        readonly_inputs={"/sandbox/input.json": b"{}", "/work/data/train.csv": b"gold"},
+        writable_dirs=("/work",),
+        output_globs=("/work/outbox/*",),
+        network=False,
+        timeout_s=60.0,
+    )
+    result = asyncio.run(DockerBackend().run_to_completion(spec))
+    assert result.exit_code == 0, result.stderr  # no more exit 125 mount failure
+    assert result.outputs["/work/outbox/p"] == b"gold"  # the nested input was readable
 
 
 @docker_test

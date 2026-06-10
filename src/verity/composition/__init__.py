@@ -1,15 +1,29 @@
-"""The composition root (ROADMAP 7.4.f): wire a task's services declaratively.
+"""The composition root (ROADMAP 7.4): apply a task to a generic control plane, declaratively.
 
 This is the one layer allowed to import across services — control plane, sandbox, verifier,
-provisioning, and domains — to assemble a runnable `ControlPlane` from declarative inputs (a domain,
-a dataset, a `ProvisioningConfig` naming the backend + worker shape). It replaces the hand-wiring
-that used to live in ``tools/benchmark_models.py`` and the live tests: a caller picks a backend and
-calls a builder, instead of instantiating drivers / code-runners / registries by hand. The control
-plane and `TaskConfig` stay provisioning-agnostic; everything substrate-specific lives here.
+provisioning, and domains — to configure a task onto an already-constructed, **task-agnostic**
+`ControlPlane`. A caller builds a generic control plane, then applies a task through the CP's own
+API (`configure_fe_task` / `configure_code_task` register the task's providers + seed its data +
+`configure`). The control plane is never built around a task; `verity.control_plane` imports
+nothing from `verity.domains` (enforced by a layering test), so the CP stays generic and long-lived.
 """
 
 from __future__ import annotations
 
-from verity.composition.fe import FE_GOAL, ProvisioningConfig, build_fe_control_plane
+from verity.composition.code import CODE_GOAL, CODE_TASK_ID, configure_code_task
+from verity.composition.fe import (
+    FE_GOAL,
+    FE_TASK_ID,
+    ProvisioningConfig,
+    configure_fe_task,
+)
 
-__all__ = ["ProvisioningConfig", "build_fe_control_plane", "FE_GOAL"]
+__all__ = [
+    "ProvisioningConfig",
+    "configure_fe_task",
+    "FE_GOAL",
+    "FE_TASK_ID",
+    "configure_code_task",
+    "CODE_GOAL",
+    "CODE_TASK_ID",
+]

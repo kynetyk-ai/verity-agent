@@ -5,10 +5,12 @@ A `SandboxDriver` that runs one cycle as an ephemeral worker via a `WorkerBacken
 only the `WorkerBackend` seam, so the same driver runs on local Docker now and Kubernetes later.
 
 It does the bytes file-transfer (`provisioning.backend`): the cycle input + the workspace's
-read-only roles become ``readonly_inputs`` (so §3.5 gold-data isolation stays physical), ``/work``
-is a fresh writable area, and the agent's outbox comes back as ``output_globs`` bytes — which the
-driver **bridges into the host workspace outbox**, so `AgentSandbox`'s harvest/mint is untouched.
-The in-worker entrypoint (`container_entry`) is reused unchanged.
+read-only roles become ``readonly_inputs``, ``/work`` is a fresh writable area, and the agent's
+outbox comes back as ``output_globs`` bytes — which the driver **bridges into the host workspace
+outbox**, so `AgentSandbox`'s harvest/mint is untouched. The in-worker entrypoint
+(`container_entry`) is reused unchanged. Gold-data isolation (§3.5) is by **ephemeral
+regeneration**, not in-sandbox read-only: the worker is discarded each cycle and the verifier scores
+against the control plane's own gold copy, so a corrupted input only makes a bad proposal.
 """
 
 from __future__ import annotations
@@ -125,7 +127,7 @@ class BackendSandboxDriver:
             )
 
     def _worker_spec(self, cycle: CycleInput, workspace: ProvisionedWorkspace) -> WorkerSpec:
-        # The cycle input + the ro roles become physically-ro inputs (§3.5); /work is writable; the
+        # The cycle input + the read-only roles ride in as `readonly_inputs`; /work is writable; the
         # agent's outbox comes back as bytes. Data rides via the `data` role (static_contents), not
         # host-path mounts -- so the spec carries no host paths (k8s-portable).
         readonly: dict[str, bytes] = {CONTAINER_INPUT_PATH: cycle.to_json()}

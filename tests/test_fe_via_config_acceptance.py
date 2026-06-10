@@ -1,11 +1,11 @@
 """The 7.4.g done-line: the feature-engineering task, built **purely from declarative config**.
 
 This is the capstone of ROADMAP 7.4 (ADR 0003): no hand-built drivers, code-runners, or
-registries — just ``build_fe_control_plane(backend=..., split=...)`` and a backend selection. The
-read → propose → gate → commit loop runs entirely over the `WorkerBackend` seam: each cycle's agent
-runs as a ``role=sandbox`` worker, and the verifier executes the untrusted submission as a
-``role=code-runner`` worker. The same builder runs offline on `FakeBackend` (this module's
-deterministic capstone) and on real Docker + a real model (the ``@live`` demonstration).
+registries — a generic ``ControlPlane`` plus ``configure_fe_task(cp, backend=..., split=...)`` and a
+backend selection. The read → propose → gate → commit loop runs entirely over the `WorkerBackend`
+seam: each cycle's agent runs as a ``role=sandbox`` worker, and the verifier executes the untrusted
+submission as a ``role=code-runner`` worker. The same path runs offline on `FakeBackend` (this
+module's deterministic capstone) and on real Docker + a real model (the ``@live`` demonstration).
 
 Four properties are asserted on both paths (the offline one captures every `WorkerSpec`, the live
 one wraps the real backend to do the same):
@@ -26,8 +26,9 @@ from pathlib import Path
 
 import pytest
 
-from verity.composition import ProvisioningConfig, build_fe_control_plane
+from verity.composition import ProvisioningConfig, configure_fe_task
 from verity.contracts import ArtifactStatus
+from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.store import SqliteStore
 from verity.domains.feature_engineering import (
     ENTRYPOINT,
@@ -195,8 +196,8 @@ def test_fe_accepts_via_config_offline() -> None:
     )
     backend = FakeBackend(script=workers)
     store = SqliteStore()
-    cp, config = build_fe_control_plane(backend=backend, split=split, max_cycles=2, store=store)
-    asyncio.run(cp.configure(config))
+    cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=2))
+    asyncio.run(configure_fe_task(cp, backend=backend, split=split))
     asyncio.run(cp.run("fe", goal="improve balanced accuracy"))
 
     # (1) an accepted submission landed.
@@ -228,10 +229,10 @@ def test_fe_accepts_via_config_live() -> None:
 
     backend = _Recording(inner=DockerBackend())
     store = SqliteStore()
-    cp, config = build_fe_control_plane(
-        backend=backend, split=real, provisioning=ProvisioningConfig(), max_cycles=4, store=store
+    cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=4))
+    asyncio.run(
+        configure_fe_task(cp, backend=backend, split=real, provisioning=ProvisioningConfig())
     )
-    asyncio.run(cp.configure(config))
     asyncio.run(cp.run("fe", goal="Improve balanced accuracy via feature engineering."))
 
     accepted = store.query_artifacts(type=SUBMISSION, status=ArtifactStatus.ACCEPTED)
