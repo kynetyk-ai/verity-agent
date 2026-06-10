@@ -1,0 +1,33 @@
+# The Verity control-plane image (ROADMAP 7.4, Part C). Build from the REPO ROOT:
+#
+#   docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
+#
+# Runs a GENERIC, task-agnostic control plane that launches ephemeral sandbox + code-runner WORKER
+# containers as *siblings* on the host daemon, via a mounted /var/run/docker.sock (the controlled,
+# audited socket of ADR 0003 f — not docker-in-docker). The default entrypoint runs the §12 FE task
+# through the control plane's API (`python -m verity.composition.fe_run`); the control-plane code is
+# not built around FE (it carries every task), the entrypoint merely configures one.
+#
+# Carries verity CORE only — NOT the sandbox extra (deepagents/langchain live in the worker image)
+# and NOT the service extra. Plus the docker CLI, so `DockerBackend` can drive the mounted socket.
+#
+# Run (see infra/compose.fe.yml for the full wiring): mount the socket, a shared staging dir at an
+# identical host<->container path (VERITY_WORKER_STAGING), and the dataset.
+FROM python:3.12-slim
+
+# The docker CLI only (no engine) — to talk to the mounted host socket.
+COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
+# uv for a faithful reproduction of the dev environment (same lockfile).
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+COPY . /app
+
+# Bake verity CORE into a venv in the image — no dev/test deps, no sandbox/model/service libs.
+RUN uv sync --frozen --no-dev
+
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+ENTRYPOINT ["python", "-m", "verity.composition.fe_run"]
