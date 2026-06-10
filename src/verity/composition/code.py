@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.fe import ProvisioningConfig, provisioning_config_from
 from verity.composition.task_request import TaskRequest
 from verity.contracts import Artifact, ArtifactStatus, Operation, OperationStatus
@@ -23,9 +24,15 @@ from verity.domains.code import DATASET, build_code_domain
 from verity.provisioning.backend import WorkerBackend
 from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
-from verity.verifier import BackendCodeRunner, CodeRunner
+from verity.verifier import BackendCodeRunner, CodeRunner, FakeCodeRunner
 
-__all__ = ["configure_code_task", "build_code_task", "CODE_TASK_ID", "CODE_GOAL"]
+__all__ = [
+    "configure_code_task",
+    "build_code_task",
+    "describe_code_task",
+    "CODE_TASK_ID",
+    "CODE_GOAL",
+]
 
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 
@@ -34,6 +41,12 @@ CODE_GOAL = "Write a submission script that runs cleanly."
 _CODE_INSTRUCTIONS = (
     "Write submission.py to outbox/ that prints 'ok' (run it to check), then submit it as a "
     "Submission with entrypoint submission.py, using dataset id 'ds' as the parent."
+)
+_CODE_DOMAIN_INSTRUCTIONS = "a Submission names an entrypoint script written to outbox/"
+_CODE_VERIFIER_APPROACH = (
+    "Two gates on the submitted script: a cheap 'parses' check (rung 2, real ast.parse) earns "
+    "'tentative', then a hard 'runs-clean' gate executes the entrypoint in an isolated worker and "
+    "accepts on a clean exit. A boolean validity check — no scoring or incumbent comparison."
 )
 
 
@@ -74,7 +87,7 @@ async def configure_code_task(
     cp.register_verifier(CODE_TASK_ID, lambda: domain.verifier)
     config = TaskConfig(
         task_id=CODE_TASK_ID, instructions=_CODE_INSTRUCTIONS,
-        domain_instructions="a Submission names an entrypoint script written to outbox/",
+        domain_instructions=_CODE_DOMAIN_INSTRUCTIONS,
         schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
         sandbox_key=CODE_TASK_ID, verifier_key=CODE_TASK_ID,
@@ -92,4 +105,26 @@ async def build_code_task(cp: ControlPlane, *, backend: WorkerBackend, request: 
     """
     return await configure_code_task(
         cp, backend=backend, provisioning=provisioning_config_from(request.sandbox)
+    )
+
+
+def describe_code_task() -> TaskTypeDescription:
+    """The ``code`` task type's published contract (ADR 0004 (c)). Built from the domain schema; the
+    `FakeCodeRunner` is a throwaway just to construct the domain (the gate logic is not invoked)."""
+    domain = build_code_domain(FakeCodeRunner())
+    schema = domain.schema
+    return TaskTypeDescription(
+        type_name=CODE_TASK_ID,
+        artifact_types=tuple(t.name for t in schema.types()),
+        gated_types=tuple(t.name for t in schema.types() if domain.gated_types.is_gated(t.name)),
+        operations=tuple(
+            OperationDescription(o.name, o.inputs, o.output, o.required_payload_keys)
+            for o in schema.operations()
+        ),
+        domain_instructions=_CODE_DOMAIN_INSTRUCTIONS,
+        verifier_approach=_CODE_VERIFIER_APPROACH,
+        sandbox_notes=(
+            "A general-purpose coding agent that writes and runs Python inside an isolated worker; "
+            "needs the container sandbox image."
+        ),
     )

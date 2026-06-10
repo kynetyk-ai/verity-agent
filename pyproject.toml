@@ -12,6 +12,7 @@ dependencies = [
 # Deployment-side CLI: reap orphaned workers by label (ROADMAP 7.4.h / ADR 0003 e). Talks only to a
 # WorkerBackend, so it needs no service/domain deps.
 [project.scripts]
+verity = "verity.service.cli:main"
 verity-reaper = "verity.provisioning.reaper:main"
 
 [project.optional-dependencies]

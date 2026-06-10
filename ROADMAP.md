@@ -17,8 +17,9 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > its API — 7.5 ✅**). **Phase 8 🚧** (the long-lived, configurable control-plane service — a standing
 > daemon configured + run via a CLI/HTTP, no image rebuild), settled by
 > [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**: the
-> transport-agnostic **`ControlService` core + task catalog + per-task durable stores (8.1 ✅)** has
-> landed (the daemon + `verity` CLI is 8.2).
+> transport-agnostic **`ControlService` core (8.1 ✅)** and the **standing daemon + `verity` CLI over a
+> Unix socket (8.2 ✅)** have landed (HTTP/FastAPI over `uds=`, background runs behind a run lock,
+> registry self-description). Next: **8.3** — container ENTRYPOINT → the daemon + the live proof.
 > Remaining beyond that: hosted-model live validation, the multi-tenancy engine, and a `K8sBackend`.
 > The **control-plane API reference** (with a worked FE example) is
 > [`docs/api-surface.md`](docs/api-surface.md).
@@ -544,13 +545,23 @@ and `composition/fe_run.py` + the library API stay valid.
   `test_dataset_split_carveout`, `test_fe_builder_byte_provenance` (answer key absent from every
   worker), `test_per_task_store_isolation` (no `INCUMBENTS` bleed), `test_control_service`
   (create → run → results + restart-then-run rehydration + catalog dispatch of the `code` type).
-- **8.2 The daemon + internal IPC + the `verity` CLI ⬜** — `verity serve` (the multiplexer +
+- **8.2 The daemon + internal IPC + the `verity` CLI ✅** — `verity serve` (the multiplexer +
   `DockerBackend`; a **background-task executor** + a global run lock; `status`/`results` served
   concurrently with an in-flight run) over a **Unix-domain socket**; the `verity` console-script
   **client** over that socket (`catalog` / `ingest` / `task create` / `run` / `status` / `results` /
   `export`); registry **self-description** (each sandbox/verifier publishes its contract) rendered by
   `verity catalog`; an incompatible task/verifier pairing **fails gracefully + informatively** via the
-  existing degrade-don't-crash path (tested).
+  existing degrade-don't-crash path (tested). **Landed:** background execution lives in the
+  `ControlService` core (`submit_run`/`await_run` + an `asyncio.Lock`; `run()` stays a blocking
+  wrapper, 8.1 tests unchanged); the control surface is **HTTP/FastAPI served over the Unix socket**
+  (uvicorn `uds=` + an httpx `uds=` client — *no bespoke protocol*; the socket is the no-auth-yet v1
+  trust boundary, and the *same* `build_app` is what 8.4 rebinds to a TCP port + auth). Self-description
+  is `TaskTypeDescription` (built from the same domain schema that renders the system prompt) on the
+  catalog (`describe`/`describe_all`). New `verity.service` modules: `http.py` (`build_app`),
+  `daemon.py` (`verity serve`), `client.py`, `cli.py`; the `verity` console script. Tests:
+  `test_control_service_concurrency` (background + concurrent reads + graceful abort-with-reason),
+  `test_catalog_describe`, `test_service_http` (full ingest→create→run→results→export over ASGI +
+  a real-`uds` round-trip; fastapi/httpx `importorskip`, so the lean gate skips cleanly).
 - **8.3 Container wiring + live proof (the done-line) ⬜** — `Dockerfile.controlplane` ENTRYPOINT → the
   daemon; `infra/compose.fe.yml` mounts the **exchange** + **persistent store** volumes (+ a test that
   **neither reaches a worker**). Live: one running container runs **two task types / two datasets with

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from verity.composition.catalog import (
     CatalogBuilder,
+    Describer,
     TaskCatalog,
     UnknownTaskType,
     default_catalog,
@@ -21,13 +22,16 @@ from verity.composition.code import (
     CODE_TASK_ID,
     build_code_task,
     configure_code_task,
+    describe_code_task,
 )
+from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.fe import (
     FE_GOAL,
     FE_TASK_ID,
     ProvisioningConfig,
     build_fe_task,
     configure_fe_task,
+    describe_fe_task,
     provisioning_config_from,
 )
 from verity.composition.task_request import (
@@ -43,15 +47,18 @@ __all__ = [
     "provisioning_config_from",
     "configure_fe_task",
     "build_fe_task",
+    "describe_fe_task",
     "FE_GOAL",
     "FE_TASK_ID",
     "configure_code_task",
     "build_code_task",
+    "describe_code_task",
     "CODE_GOAL",
     "CODE_TASK_ID",
     # the catalog + declarative request (ROADMAP 8.1)
     "TaskCatalog",
     "CatalogBuilder",
+    "Describer",
     "UnknownTaskType",
     "default_catalog",
     "TaskRequest",
@@ -59,4 +66,7 @@ __all__ = [
     "VerifierRequest",
     "PolicyRequest",
     "DataRequest",
+    # task-type self-description (ROADMAP 8.2)
+    "TaskTypeDescription",
+    "OperationDescription",
 ]

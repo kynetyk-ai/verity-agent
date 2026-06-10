@@ -19,6 +19,7 @@ in v1 (the background executor + run lock is 8.2); a run still runs synchronousl
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -109,12 +110,37 @@ class ControlService:
         # on rehydration. Keyed by daemon task_id.
         self._stores: dict[str, SqliteStore] = {}
         self._run_jobs: dict[str, str] = {}  # run_id -> job_id (for status by run_id)
+        # run_id -> daemon task_id. The RunRecord's task_id is the *in-CP* id ("fe"), not this
+        # daemon-level instance id, so run-scoped reads (export, accepted artifacts) resolve here.
+        self._run_tasks: dict[str, str] = {}
+        # Background execution (8.2): runs proceed as background tasks behind a single run lock, so
+        # the daemon returns a run_id immediately and serves status/results reads concurrently while
+        # a run is in-flight. The lock serializes run *bodies* (the sole-mutator/serial guarantee);
+        # reads take no lock. Lazily created so a bare in-process caller needs no running loop.
+        self._run_lock: asyncio.Lock | None = None
+        self._inflight: dict[str, asyncio.Task[None]] = {}
+
+    def _lock(self) -> asyncio.Lock:
+        if self._run_lock is None:  # bind to the running loop on first use
+            self._run_lock = asyncio.Lock()
+        return self._run_lock
 
     # -- catalog ------------------------------------------------------------------
 
     def catalog_types(self) -> list[str]:
-        """The task types this service can instantiate (rendered by ``verity catalog`` in 8.2)."""
+        """The task types this service can instantiate (rendered by ``verity catalog``)."""
         return self._catalog.types()
+
+    def catalog_describe(self, type_name: str | None = None) -> list[dict[str, object]]:
+        """The published contract(s) for the catalog's task types (ADR 0004 (c) self-description).
+
+        With ``type_name`` -> that one type's description; otherwise all. Each is a
+        `TaskTypeDescription.to_dict()` — the schema/operations the agent must produce plus the
+        verifier's approach prose — so a client can judge fit before creating a task.
+        """
+        if type_name is not None:
+            return [self._catalog.describe(type_name).to_dict()]
+        return [d.to_dict() for d in self._catalog.describe_all()]
 
     # -- task lifecycle -----------------------------------------------------------
 
@@ -147,18 +173,19 @@ class ControlService:
 
     # -- run ----------------------------------------------------------------------
 
-    async def run(self, task_id: str, *, goal: str | None = None) -> str:
-        """Run a task once (serial in v1); returns the ``run_id``.
+    async def submit_run(self, task_id: str, *, goal: str | None = None) -> str:
+        """Start a run in the background; returns the ``run_id`` **immediately** (does not block).
 
-        Mints a job through the `JobQueue`, executes the run body synchronously, and records a
-        daemon-level `RunRecord` keyed by ``(tenant_id, run_id)`` (the kernel writes it into the
-        injected store under our run id). A run that aborts is recorded ``"aborted"`` and the job is
-        marked failed — degrade-don't-crash; the client reads *why* via ``status``/``results``.
+        Configures the task (outside the run lock — per-task stores don't contend), mints a job
+        through the `JobQueue`, and schedules the run body. The body runs under a single run lock so
+        run *bodies* serialize (the sole-mutator / serial guarantee); ``status``/``results`` reads
+        take no lock, so they are served concurrently with the in-flight run. Config errors (misuse)
+        propagate here; run-time failures are recorded, never raised (degrade-don't-crash).
         """
         resident = await self._resident_cp(task_id)  # config errors propagate (misuse, fail fast)
         request = resident.request
         run_id = self._run_id_source()
-        resident.run_id_cell.value = run_id  # the CP mints THIS run_id at run() start
+        resident.run_id_cell.value = run_id  # the CP mints THIS run_id at cp.run() start
         job = Job(
             job_id=self._job_id_source(),
             tenant_id=request.tenant_id,
@@ -168,24 +195,51 @@ class ControlService:
         await self._queue.enqueue(job)
         await self._queue.claim()
         self._run_jobs[run_id] = job.job_id
-        try:
-            await resident.cp.run(resident.in_cp_task_id, goal=goal or request.goal)
-        except Exception as exc:  # degrade-don't-crash: record + mark failed, never escape
-            # On a bounded-failure abort the kernel already recorded an "aborted" RunRecord; for any
-            # other failure, record one defensively from the store-derived report.
-            if self._run_records.get(request.tenant_id, run_id) is None:
-                self._run_records.put(
-                    RunRecord.from_report(
-                        resident.cp.run_report(resident.in_cp_task_id),
-                        run_id=run_id,
-                        status="aborted",
+        self._run_tasks[run_id] = task_id
+        self._inflight[run_id] = asyncio.create_task(
+            self._execute_run(resident, run_id=run_id, job=job, task_id=task_id, goal=goal)
+        )
+        return run_id
+
+    async def _execute_run(
+        self, resident: _ResidentTask, *, run_id: str, job: Job, task_id: str, goal: str | None
+    ) -> None:
+        """The run body: serialized by the run lock, records the outcome, never raises."""
+        request = resident.request
+        async with self._lock():
+            try:
+                await resident.cp.run(resident.in_cp_task_id, goal=goal or request.goal)
+            except Exception as exc:  # degrade-don't-crash: record + mark failed, never escape
+                # A bounded-failure abort already recorded an "aborted" RunRecord; for any other
+                # failure, record one defensively from the store-derived report.
+                if self._run_records.get(request.tenant_id, run_id) is None:
+                    self._run_records.put(
+                        RunRecord.from_report(
+                            resident.cp.run_report(resident.in_cp_task_id),
+                            run_id=run_id,
+                            status="aborted",
+                        )
                     )
-                )
-            await self._queue.fail(job.job_id, str(exc))
-            log.warning("run_failed", task_id=task_id, run_id=run_id, error=str(exc))
-            return run_id
-        await self._queue.complete(job.job_id, {"run_id": run_id})
-        log.info("run_complete", task_id=task_id, run_id=run_id)
+                await self._queue.fail(job.job_id, str(exc))
+                log.warning("run_failed", task_id=task_id, run_id=run_id, error=str(exc))
+                return
+            await self._queue.complete(job.job_id, {"run_id": run_id})
+            log.info("run_complete", task_id=task_id, run_id=run_id)
+
+    async def await_run(self, run_id: str) -> None:
+        """Block until an in-flight run finishes (tests + shutdown). No-op if unknown/done."""
+        task = self._inflight.get(run_id)
+        if task is not None:
+            await task
+
+    async def run(self, task_id: str, *, goal: str | None = None) -> str:
+        """Run a task once and block until it finishes; returns the ``run_id``.
+
+        The blocking convenience over ``submit_run`` + ``await_run`` — the library / `fe_run` / test
+        entrypoint. The daemon uses ``submit_run`` directly for non-blocking, pollable runs.
+        """
+        run_id = await self.submit_run(task_id, goal=goal)
+        await self.await_run(run_id)
         return run_id
 
     # -- results / status ---------------------------------------------------------
@@ -200,6 +254,10 @@ class ControlService:
     def results(self, run_id: str, *, tenant_id: str = "default") -> RunRecord | None:
         """The run's full operational record (status + `RunReport` + accepted artifact ids)."""
         return self._run_records.get(tenant_id, run_id)
+
+    def task_for_run(self, run_id: str) -> str | None:
+        """The daemon task_id a run belongs to (for run-scoped reads like export)."""
+        return self._run_tasks.get(run_id)
 
     async def run_report(self, task_id: str) -> RunReport:
         """The latest store-derived `RunReport` for a task (requires the task to be resident)."""

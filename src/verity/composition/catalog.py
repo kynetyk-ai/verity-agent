@@ -16,16 +16,19 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from verity.composition.code import CODE_TASK_ID, build_code_task
-from verity.composition.fe import FE_TASK_ID, build_fe_task
+from verity.composition.code import CODE_TASK_ID, build_code_task, describe_code_task
+from verity.composition.description import TaskTypeDescription
+from verity.composition.fe import FE_TASK_ID, build_fe_task, describe_fe_task
 from verity.composition.task_request import TaskRequest
 from verity.control_plane.api import ControlPlane
 from verity.provisioning.backend import WorkerBackend
 
-__all__ = ["CatalogBuilder", "TaskCatalog", "UnknownTaskType", "default_catalog"]
+__all__ = ["CatalogBuilder", "Describer", "TaskCatalog", "UnknownTaskType", "default_catalog"]
 
 #: A catalog builder: applies a task to a generic control plane and returns its in-CP task id.
 CatalogBuilder = Callable[..., Awaitable[str]]
+#: A describer: returns a task type's published contract (no backend needed — ADR 0004 (c)).
+Describer = Callable[[], TaskTypeDescription]
 
 
 class UnknownTaskType(KeyError):
@@ -37,17 +40,35 @@ class TaskCatalog:
 
     def __init__(self) -> None:
         self._builders: dict[str, CatalogBuilder] = {}
+        self._describers: dict[str, Describer] = {}
 
-    def register(self, type_name: str, builder: CatalogBuilder) -> None:
-        """Register a builder under ``type_name`` (the ADR 0004 (i) runtime-registration seam)."""
+    def register(
+        self, type_name: str, builder: CatalogBuilder, *, describe: Describer | None = None
+    ) -> None:
+        """Register a builder (+ optional describer) under ``type_name`` (the ADR 0004 (i) seam)."""
         self._builders[type_name] = builder
+        if describe is not None:
+            self._describers[type_name] = describe
 
     def types(self) -> list[str]:
-        """The registered task-type names (what ``verity catalog`` will render in 8.2)."""
+        """The registered task-type names (what ``verity catalog`` renders)."""
         return sorted(self._builders)
 
     def has(self, type_name: str) -> bool:
         return type_name in self._builders
+
+    def describe(self, type_name: str) -> TaskTypeDescription:
+        """The published contract for ``type_name`` (ADR 0004 (c)); raises if it is undescribed."""
+        try:
+            return self._describers[type_name]()
+        except KeyError as exc:
+            raise UnknownTaskType(
+                f"no description for task type {type_name!r}; described: {sorted(self._describers)}"
+            ) from exc
+
+    def describe_all(self) -> list[TaskTypeDescription]:
+        """Every described task type's published contract, ordered by name."""
+        return [self._describers[name]() for name in sorted(self._describers)]
 
     async def build(
         self,
@@ -70,6 +91,6 @@ class TaskCatalog:
 def default_catalog() -> TaskCatalog:
     """The built-in catalog: the FE and trivial-`code` task types installed in the image."""
     catalog = TaskCatalog()
-    catalog.register(FE_TASK_ID, build_fe_task)
-    catalog.register(CODE_TASK_ID, build_code_task)
+    catalog.register(FE_TASK_ID, build_fe_task, describe=describe_fe_task)
+    catalog.register(CODE_TASK_ID, build_code_task, describe=describe_code_task)
     return catalog

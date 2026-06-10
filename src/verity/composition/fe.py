@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from verity.composition.dataset import stratified_split, subsample
+from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.task_request import SandboxRequest, TaskRequest
 from verity.contracts import Artifact, ArtifactStatus, Operation, OperationStatus
 from verity.control_plane.api import ControlPlane
@@ -46,10 +47,25 @@ __all__ = [
     "ProvisioningConfig",
     "configure_fe_task",
     "build_fe_task",
+    "describe_fe_task",
     "provisioning_config_from",
     "FE_GOAL",
     "FE_TASK_ID",
 ]
+
+_FE_VERIFIER_APPROACH = (
+    "Two gates over one cached run of the submitted script (train on the agent's data, predict the "
+    "reserved hold-out the agent never sees). The cheap 'runs-clean' gate (rung 2, free) earns "
+    "'tentative' on a clean exit with a well-formed prediction for every reserved row. The hard "
+    "'selection' gate (rung 1) scores balanced accuracy net of a per-feature complexity penalty, "
+    "deflated by the rejected-log trial count, and accepts only when it beats the incumbent — so "
+    "acceptance means a measured improvement on held-out data, not just that the code ran. Each "
+    "accepted submission's declared features are then harvested and grounded individually."
+)
+_FE_SANDBOX_NOTES = (
+    "A general-purpose coding agent that writes and runs Python in an isolated worker; needs the "
+    "container sandbox image (the in-process sandbox cannot execute code)."
+)
 
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 
@@ -191,4 +207,23 @@ async def build_fe_task(cp: ControlPlane, *, backend: WorkerBackend, request: Ta
     )
     return await configure_fe_task(
         cp, backend=backend, split=split, provisioning=provisioning_config_from(request.sandbox)
+    )
+
+
+def describe_fe_task() -> TaskTypeDescription:
+    """The FE task type's published contract (ADR 0004 (c)) — built from the same domain schema that
+    renders the agent's system prompt, so the published and graded shapes are one source."""
+    domain = build_feature_engineering_domain()
+    schema = domain.schema
+    return TaskTypeDescription(
+        type_name=FE_TASK_ID,
+        artifact_types=tuple(t.name for t in schema.types()),
+        gated_types=tuple(t.name for t in schema.types() if domain.gated_types.is_gated(t.name)),
+        operations=tuple(
+            OperationDescription(o.name, o.inputs, o.output, o.required_payload_keys)
+            for o in schema.operations()
+        ),
+        domain_instructions=domain.domain_instructions,
+        verifier_approach=_FE_VERIFIER_APPROACH,
+        sandbox_notes=_FE_SANDBOX_NOTES,
     )

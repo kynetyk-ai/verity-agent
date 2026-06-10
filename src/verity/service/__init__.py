@@ -15,4 +15,8 @@ from __future__ import annotations
 from verity.service.control_service import ControlService, UnknownTask
 from verity.service.task_index import TaskIndex
 
+# The HTTP surface (`build_app` in `service.http`, `Client` in `service.client`) and the daemon
+# (`service.daemon`) live behind the optional ``service`` extra (fastapi/uvicorn/httpx) and are
+# imported directly from their submodules by the daemon/CLI/tests — kept off this lean __init__ so
+# importing `verity.service` never requires the extra.
 __all__ = ["ControlService", "UnknownTask", "TaskIndex"]
