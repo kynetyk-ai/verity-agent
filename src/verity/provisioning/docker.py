@@ -34,6 +34,7 @@ from verity.logging import get_logger
 from verity.provisioning.backend import (
     CompletedWorker,
     Labels,
+    ProvisioningError,
     WorkerHandle,
     WorkerSpec,
     WorkerStatus,
@@ -200,9 +201,11 @@ class DockerBackend:
                 *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
         except OSError as exc:
-            # A missing/unreachable docker binary is infrastructure, not a verdict — surface it so
-            # the consumer maps it to its own recoverable boundary error (SandboxError/GateUnavail).
-            raise OSError(f"could not launch worker via {self.docker_bin!r}: {exc}") from exc
+            # A missing/unreachable docker binary is infrastructure, not a verdict — raise the
+            # neutral ProvisioningError; the consumer maps it to its own recoverable boundary error.
+            raise ProvisioningError(
+                f"could not launch worker via {self.docker_bin!r}: {exc}"
+            ) from exc
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
         except TimeoutError:

@@ -41,7 +41,15 @@ __all__ = [
     "Labels",
     "ResourceLimits",
     "Tmpfs",
+    "ProvisioningError",
 ]
+
+
+class ProvisioningError(RuntimeError):
+    """A worker could not be launched/managed — *infrastructure*, not a result (a missing daemon, an
+    unreachable backend). **Neutral**: the backend raises this; each consumer remaps it to its own
+    recoverable boundary error (the sandbox → ``SandboxError``, a gate → ``GateUnavailable``), so
+    degrade-don't-crash holds without the backend knowing those types."""
 
 
 @dataclass(frozen=True, slots=True)

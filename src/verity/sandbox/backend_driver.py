@@ -22,6 +22,7 @@ from verity.logging import get_logger
 from verity.provisioning.backend import (
     CompletedWorker,
     Labels,
+    ProvisioningError,
     ResourceLimits,
     Tmpfs,
     WorkerBackend,
@@ -93,7 +94,11 @@ class BackendSandboxDriver:
         )
         worker_spec = self._worker_spec(cycle, workspace)
         log.info("sandbox_worker_run", image=self.image, ops=[s.name for s in operations])
-        result = await self.backend.run_to_completion(worker_spec)
+        try:
+            result = await self.backend.run_to_completion(worker_spec)
+        except ProvisioningError as exc:
+            # the worker could not be launched — infrastructure, not a verdict: a recoverable cycle.
+            raise SandboxError(f"could not launch the sandbox worker: {exc}") from exc
         self._bridge_outbox(result, workspace)
         if result.timed_out:
             raise SandboxError(f"sandbox worker timed out after {self.timeout_s}s")
