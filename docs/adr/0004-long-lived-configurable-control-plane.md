@@ -397,3 +397,6 @@ crash recovery #57.)*
    types. Multiple *instances* (even of the same type) are safe because each owns its own store ((a)).
 3. **External HTTP auth** ((e)) — when it lands, what auth model (mTLS / token / reverse-proxy)? Out of
    scope for v1; flagged so the core's request context carries an identity hook from the start.
+   **Resolved (ROADMAP 8.4): a shared bearer token** (`VERITY_API_TOKEN`) on every route but
+   `/health`; the daemon refuses a network binding without it; the identity hook is in place.
+   mTLS / OAuth / per-principal authz remain deferred (pair with multi-tenancy, #58).

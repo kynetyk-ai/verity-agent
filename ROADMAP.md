@@ -14,10 +14,17 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > model live-validated 2026-06-08, hosted-OpenAI live pending a key); **Phase 7 🚧** (service split &
 > full containerization — the seams are live, and the full-containerization **done-line is reached:
 > a generic control plane runs in a container and launches ephemeral worker containers, running FE via
-> its API — 7.5 ✅**). **Phase 8 ⬜** (the long-lived, configurable control-plane service — a standing
-> daemon configured + run via a CLI/HTTP, no image rebuild) is now scheduled, settled by
-> [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**.
-> Remaining beyond that: hosted-model live validation, the multi-tenancy engine, and a `K8sBackend`.
+> its API — 7.5 ✅**). **Phase 8 🚧** (the long-lived, configurable control-plane service — a standing
+> daemon configured + run via a CLI/HTTP, no image rebuild), settled by
+> [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**: the
+> transport-agnostic **`ControlService` core (8.1 ✅)**, the **standing daemon + `verity` CLI over a
+> Unix socket (8.2 ✅)**, the **container wiring + isolation proof (8.3 ✅)**, and the
+> **external HTTP/REST control API (8.4 ✅)** have all landed — so **Phase 8 v1 is complete**: one
+> image serves a local Unix-socket daemon *and* an authenticated (bearer-token) network API with an
+> over-the-wire byte data plane, configured + run with no rebuild, durable across restart, with the
+> exchange + store volumes provably off every worker. Remaining beyond v1 (deferred engine tracks):
+> hosted-model live validation, the multi-tenancy/concurrency engine (#58), crash recovery (#57), the
+> full #3 networked data plane, and a `K8sBackend`.
 > The **control-plane API reference** (with a worked FE example) is
 > [`docs/api-surface.md`](docs/api-surface.md).
 
@@ -509,7 +516,7 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     shape-error → corrected → cycle 2 accepted, 5 Features grounded), with the 7.4.h worker labels and
     no stragglers.
 
-### Phase 8 — The long-lived, configurable control-plane service (ADR 0004) ⬜
+### Phase 8 — The long-lived, configurable control-plane service (ADR 0004) ✅ *(v1)*
 
 The batch control-plane container (7.5) becomes a **standing daemon** an operator (or Claude Code)
 delegates to: configure a task, select sandbox + verifier configs from a **catalog**, provide data,
@@ -524,7 +531,7 @@ a green, focused commit.
 #58); verifier **opacity** (no task/verifier locking — self-description + graceful run-time failure);
 and `composition/fe_run.py` + the library API stay valid.
 
-- **8.1 `ControlService` core + task catalog + per-task durable stores ⬜** — a transport-agnostic
+- **8.1 `ControlService` core + task catalog + per-task durable stores ✅** — a transport-agnostic
   async facade over a **per-task `ControlPlane` + `SqliteStore` multiplexer** (a store per task
   instance — no cross-task bleed, no kernel change; it mirrors `fe_run`'s one-CP-per-run shape); a
   `TaskCatalog` + a JSON `TaskRequest`; refactor `configure_fe_task` / `configure_code_task`
@@ -534,22 +541,62 @@ and `composition/fe_run.py` + the library API stay valid.
   **Carve-out (the riskiest new logic):** the split + answer-key (`reserved_labels`) derivation moves
   into the builder against client-supplied data — split-correctness tests + a positive
   **byte-provenance** test (and that two same-typed task instances never see each other's
-  `INCUMBENTS`). Offline on `FakeBackend`.
-- **8.2 The daemon + internal IPC + the `verity` CLI ⬜** — `verity serve` (the multiplexer +
+  `INCUMBENTS`). Offline on `FakeBackend`. **Landed:** the new `verity.service` package
+  (`ControlService` + `TaskIndex`) over `verity.composition`'s `TaskCatalog` / `TaskRequest`
+  (`build_fe_task` / `build_code_task` consume a request; the old `configure_*_task` signatures are
+  preserved); run identity is unified by injecting the daemon `RunRecordStore` + a per-run id cell
+  into each per-task CP (kernel untouched, the AST genericity guard stays green). Tests:
+  `test_dataset_split_carveout`, `test_fe_builder_byte_provenance` (answer key absent from every
+  worker), `test_per_task_store_isolation` (no `INCUMBENTS` bleed), `test_control_service`
+  (create → run → results + restart-then-run rehydration + catalog dispatch of the `code` type).
+- **8.2 The daemon + internal IPC + the `verity` CLI ✅** — `verity serve` (the multiplexer +
   `DockerBackend`; a **background-task executor** + a global run lock; `status`/`results` served
   concurrently with an in-flight run) over a **Unix-domain socket**; the `verity` console-script
   **client** over that socket (`catalog` / `ingest` / `task create` / `run` / `status` / `results` /
   `export`); registry **self-description** (each sandbox/verifier publishes its contract) rendered by
   `verity catalog`; an incompatible task/verifier pairing **fails gracefully + informatively** via the
-  existing degrade-don't-crash path (tested).
-- **8.3 Container wiring + live proof (the done-line) ⬜** — `Dockerfile.controlplane` ENTRYPOINT → the
-  daemon; `infra/compose.fe.yml` mounts the **exchange** + **persistent store** volumes (+ a test that
-  **neither reaches a worker**). Live: one running container runs **two task types / two datasets with
-  no rebuild between them**, exports artifacts to the exchange, and runs a **pre-restart task after a
-  restart** (durable definitions).
-- **8.4 External HTTP/REST control API ⬜** — FastAPI over the same `ControlService` core (`service`
-  extra; mirror `verifier/__main__.py`), endpoint-parity with the CLI, an in-process/loopback test —
-  paired with the auth story when it lands.
+  existing degrade-don't-crash path (tested). **Landed:** background execution lives in the
+  `ControlService` core (`submit_run`/`await_run` + an `asyncio.Lock`; `run()` stays a blocking
+  wrapper, 8.1 tests unchanged); the control surface is **HTTP/FastAPI served over the Unix socket**
+  (uvicorn `uds=` + an httpx `uds=` client — *no bespoke protocol*; the socket is the no-auth-yet v1
+  trust boundary, and the *same* `build_app` is what 8.4 rebinds to a TCP port + auth). Self-description
+  is `TaskTypeDescription` (built from the same domain schema that renders the system prompt) on the
+  catalog (`describe`/`describe_all`). New `verity.service` modules: `http.py` (`build_app`),
+  `daemon.py` (`verity serve`), `client.py`, `cli.py`; the `verity` console script. Tests:
+  `test_control_service_concurrency` (background + concurrent reads + graceful abort-with-reason),
+  `test_catalog_describe`, `test_service_http` (full ingest→create→run→results→export over ASGI +
+  a real-`uds` round-trip; fastapi/httpx `importorskip`, so the lean gate skips cleanly).
+- **8.3 Container wiring + live proof (the done-line) ✅** — the control-plane image now also serves
+  the standing daemon, with the **exchange** + **persistent-store** volumes wired and proven isolated.
+  **Landed:** `Dockerfile.controlplane` carries the `service` extra (fastapi/uvicorn/httpx) so it can
+  run `verity serve`; a new **`infra/compose.daemon.yml`** brings up a long-lived `verity-cp` container
+  (entrypoint `verity serve`) mounting the docker socket, the shared staging dir, the **exchange**
+  (`VERITY_EXCHANGE`, client↔CP only) and a **persistent store** (`VERITY_STORE_ROOT`, durable
+  stores + task definitions); `just cp-serve` / `cp` / `cp-down` drive its lifecycle. The
+  **neither-reaches-a-worker** guarantee is `tests/test_daemon_volume_isolation.py` (offline, on a
+  real on-disk `ControlService`): a `WorkerSpec` has no host-bind-mount field at all, and the test
+  further asserts neither host path leaks (env / passthrough / command / input keys) and the answer
+  key never appears. The **live proof** is `tests/test_daemon_live.py` (`@docker @live`, auto-skip):
+  one running container lists **both `fe` and `code` task types**, runs an `fe` task
+  (ingest→create→run→results→export to the exchange) and a `code` task with **no rebuild between
+  them**, then **survives a restart** and re-runs the pre-restart task (durable definitions).
+  *Deviation from ADR 0004 sprint 3:* per the chosen layout, `compose.fe.yml` is left **unchanged**
+  (the one-shot `fe_run` batch path), so the image's default `ENTRYPOINT` stays `fe_run` and the
+  **daemon compose overrides it** to `verity serve` — the daemon is fully reachable, just selected by
+  `compose.daemon.yml` rather than baked as the image default.
+- **8.4 External HTTP/REST control API ✅** — the *same* FastAPI `build_app` (8.2), now bindable to a
+  **network TCP port** with **bearer-token auth**, completing Phase 8 v1. **Landed:** `verity serve
+  --http HOST:PORT` (or `$VERITY_HTTP`; `python -m verity.service` mirrors `verifier/__main__.py`)
+  serves the app over TCP and **refuses to start without `VERITY_API_TOKEN`**; the auth dependency
+  gates every route but `GET /health` (401 otherwise) and stashes the principal on the request (the
+  identity hook) — the UDS binding stays auth-free (the local trust boundary). Endpoint-parity with the
+  CLI is unchanged; the `Client`/CLI gained a TCP target (`--url`/`--token`, `$VERITY_URL`). The
+  minimal **over-the-wire byte data plane** was pulled forward so a client with no shared volume is
+  usable: raw-bytes `POST /objects` (capped, 413 over) + `GET /artifacts/{run_id}/{path}`. Tests
+  (`tests/test_service_http_external.py`, offline + a real-TCP round trip): `/health` open, 401
+  without/with-wrong token, 200 with it, the refuse-without-token guard, and a byte upload → create →
+  run → artifact-download round trip. **Resolves ADR 0004 open Q3 → bearer token** (mTLS/OAuth and the
+  full #3 data plane — removing the exchange volume, streaming — stay deferred).
 - *Deferred (placed seams, per ADR 0004):* crash recovery for in-flight runs (**#57**; Temporal a
   hardening candidate); the **multi-tenancy engine** — *cross-tenant* store isolation, the
   single-writer→Postgres store-engine upgrade, object GC, and parallel live runs (the residual beyond

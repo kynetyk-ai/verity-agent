@@ -132,6 +132,35 @@ point it at a local open model with `VERITY_LOCAL_BASE_URL`. The full env surfac
 example, and the topology are documented in [docs/api-surface.md](docs/api-surface.md) (*Worked
 example — the feature-engineering task*).
 
+**5. The standing daemon (Phase 8 — one container, many tasks, no rebuild).** Instead of a one-shot
+batch, run the control plane as a **long-lived service** you configure at runtime: define tasks,
+ingest data, run, and pull results — all without rebuilding an image (see
+[ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md)).
+
+```
+just cp-serve                                   # build images + start the verity-cp daemon
+just cp catalog                                 # list task types and their published contracts
+cp <dataset> "$VERITY_EXCHANGE_HOST/in/"        # default host exchange: /tmp/verity-exchange
+just cp ingest train.csv                        # -> a data handle
+just cp create --type fe --data <handle> --model … --max-cycles 4 --stop-on-accept   # -> a task id
+just cp run <task_id>                            # -> a run id (runs in the background)
+just cp results <run_id>                         # the RunReport + accepted-artifact ids
+just cp export  <run_id>                         # durable artifacts -> $VERITY_EXCHANGE_HOST/out/<run_id>/
+just cp-down                                     # stop the daemon (the store + exchange persist)
+```
+
+Files cross only through the **exchange** (in/ and out/); the exchange and the persistent **store**
+volume are mounted into the control-plane container alone and **never reach a worker**
+(`tests/test_daemon_volume_isolation.py`). Task definitions and provenance stores live under the
+store volume, so a created task survives a `docker restart`. The `verity` CLI is a thin client over a
+Unix socket inside the container — `just cp <subcommand>` is `docker exec verity-cp verity …`.
+
+For **remote / programmatic** use, the same image serves an **authenticated network API** instead of
+the local socket — `VERITY_API_TOKEN=<secret> verity serve --http 0.0.0.0:8080` — with bearer auth on
+every route but `/health`, and over-the-wire object upload + artifact download (no shared volume).
+Reach it with the same CLI: `verity --url http://host:8080 --token <secret> catalog`. See the
+*External HTTP/REST* section of [docs/api-surface.md](docs/api-surface.md).
+
 ## Repo layout
 
 ```
@@ -143,7 +172,7 @@ pyproject.toml / justfile   uv project + dev commands
 Dockerfile.sandbox          the image the container sandbox runs the agent in
 Dockerfile.verifier         the standing advisory-verifier service image (Phase 7.1)
 Dockerfile.controlplane     the task-agnostic control-plane image (launches worker containers)
-infra/            compose files for the containerized topology (compose.fe.yml)
+infra/            compose files for the containerized topology (compose.fe.yml one-shot; compose.daemon.yml standing)
 docs/             API reference, guides, and architecture decision records (see Docs below)
 src/verity/
   contracts/      the cross-service value model + service ports (no service depends on another)

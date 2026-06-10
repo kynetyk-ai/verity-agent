@@ -1,0 +1,69 @@
+# The long-lived Verity control-plane DAEMON (ROADMAP 8.3, ADR 0004).
+#
+# Unlike infra/compose.fe.yml (a one-shot batch `fe_run`), this brings up the GENERIC control plane
+# as a STANDING service — `verity serve` over a Unix-domain socket inside the container — that an
+# operator (or Claude Code) drives at runtime with NO image rebuild between tasks:
+#
+#     just cp-serve                          # build images + bring this up (detached)
+#     docker exec verity-cp verity catalog   # the `verity` CLI is a thin client over the socket
+#     docker exec verity-cp verity ingest train.csv      # data arrives via the exchange, not a mount
+#     docker exec verity-cp verity create --type fe --data <handle> --model …
+#     docker exec verity-cp verity run <task_id>
+#     docker exec verity-cp verity results <run_id>
+#     docker exec verity-cp verity export  <run_id>       # durable artifacts -> exchange out/
+#   (or: `just cp <subcommand>` / `just cp-down`)
+#
+# The CP launches ephemeral sandbox + code-runner WORKER containers as *siblings* on the host daemon
+# via the mounted /var/run/docker.sock (ADR 0003 §f — not docker-in-docker). Agent workers reach a
+# host-local model at host.docker.internal (set VERITY_LOCAL_BASE_URL) or a hosted API by key.
+#
+# Prereqs: build the images (just cp-serve does this for you):
+#   docker build -f Dockerfile.sandbox      -t verity-sandbox:latest .
+#   docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
+#
+# Volume model — three host dirs, each with a distinct job. The EXCHANGE and the STORE are mounted
+# into the CP container ONLY, never into a worker (ADR 0004 §f; the byte-provenance invariant): data
+# reaches a worker exclusively through the CP provisioning path (static_contents -> ephemeral
+# per-worker staging), so a worker can never see another task's files, an export in flight, or an
+# answer key. Drop input files into <exchange-host>/in/ before `verity ingest`; exports land under
+# <exchange-host>/out/<run_id>/.
+#
+# Ownership footgun (we have hit Docker bind-mount ownership walls before): the daemon runs as root
+# in the container, so files it writes to the exchange/store bind mounts are root-owned on the host.
+# `chown` them back, or run with a matched uid, if a non-root host user needs them.
+#
+# The staging dir is bind-mounted at an IDENTICAL host<->container path so worker bind-mount sources
+# (created by the CP container) resolve on the host daemon — see DockerBackend / VERITY_WORKER_STAGING.
+services:
+  controlplane:
+    image: verity-controlplane:latest
+    container_name: verity-cp
+    build:
+      context: ..
+      dockerfile: Dockerfile.controlplane
+    # Override the image's batch ENTRYPOINT (fe_run) with the standing daemon.
+    entrypoint: ["verity", "serve"]
+    restart: unless-stopped
+    environment:
+      # Where the daemon serves, stores, and exchanges (the container-side paths).
+      VERITY_SOCKET: "/run/verity.sock"
+      VERITY_EXCHANGE: "/exchange"
+      VERITY_STORE_ROOT: "/var/lib/verity"
+      VERITY_WORKER_STAGING: "/tmp/verity-staging"
+      # Worker selection + model wiring (per-task knobs are supplied at `verity create` time).
+      VERITY_SANDBOX_IMAGE: "verity-sandbox:latest"
+      VERITY_MODEL: "${VERITY_MODEL:-qwen3.6:27b-coding-mxfp8}"
+      VERITY_LOCAL_BASE_URL: "${VERITY_LOCAL_BASE_URL:-http://host.docker.internal:11434/v1}"
+      # Model credentials — the CP forwards the selected model's key env to the agent worker
+      # (sandbox env-passthrough). Empty unless a hosted model is used; a local model needs none.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+    volumes:
+      # The controlled host socket — the CP launches sibling workers through it (ADR 0003 §f).
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared staging at an identical path so worker bind-mount sources resolve on the host daemon.
+      - ${VERITY_WORKER_STAGING:-/tmp/verity-staging}:/tmp/verity-staging
+      # Client<->CP file exchange (in/ for ingest, out/ for export). CP-ONLY — never a worker.
+      - ${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}:/exchange
+      # Persistent provenance stores + task definitions (durable across restarts). CP-ONLY.
+      - ${VERITY_STORE_HOST:-/tmp/verity-store}:/var/lib/verity
