@@ -33,6 +33,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from verity.composition import FE_GOAL, ProvisioningConfig, build_fe_control_plane
 from verity.contracts import (
     Artifact,
     ArtifactStatus,
@@ -44,25 +45,15 @@ from verity.contracts import (
 )
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.config import TaskConfig
-from verity.control_plane.registries import (
-    DefaultRetrievalPolicy,
-    ObjectProvisioningPolicy,
-    ObjectProvisionMode,
-)
+from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import SqliteStore
 from verity.domains.code import DATASET, build_code_domain
-from verity.domains.feature_engineering import (
-    DATASET_VERSION,
-    SUBMISSION,
-    build_feature_engineering_domain,
-    build_feature_engineering_verifier,
-)
 from verity.eval import BenchmarkArm, ConfiguredTask, ModelPrice, run_benchmark
-from verity.sandbox.container_driver import DeepAgentsContainerDriver
+from verity.provisioning import DockerBackend
 from verity.sandbox.model_spec import ModelSpec
 from verity.sandbox.providers import local_spec
-from verity.sandbox.registration import build_container_sandbox, build_sandbox
-from verity.verifier import ContainerCodeRunner, FakeCodeRunner, RunResult
+from verity.sandbox.registration import build_container_sandbox
+from verity.verifier import FakeCodeRunner, RunResult
 
 _IMAGE = "verity-sandbox:latest"
 
@@ -106,13 +97,9 @@ async def _build_code_task(label: str, model_spec: ModelSpec) -> ConfiguredTask:
 
 
 # ------------------------------------------------- feature-engineering domain (real trained score)
-
-_FE_GOAL = "Improve balanced accuracy via feature engineering; keep training fast and simple."
-_FE_INSTRUCTIONS = (
-    "Engineer 1-3 features that improve balanced accuracy. Be FAST: train one small, fixed model "
-    "(no hyperparameter search, no cross-validation, no big ensembles); your edge is the features, "
-    "not the model. Run the script once to confirm it works, then submit — do not keep retraining."
-)
+#
+# The goal + instructions now live with the declarative wiring in ``verity.composition.fe``; this
+# module only subsamples the dataset and hands a split to ``build_fe_control_plane``.
 
 
 def _subsample(data: bytes, *, per_class: int, target: str = "class") -> bytes:
@@ -136,56 +123,17 @@ def _subsample(data: bytes, *, per_class: int, target: str = "class") -> bytes:
 async def _build_fe_task(
     label: str, model_spec: ModelSpec, split: object, *, max_cycles: int
 ) -> ConfiguredTask:
-    domain = build_feature_engineering_domain()
-    store = SqliteStore()
-    store.propose(
-        Artifact("ds", DATASET_VERSION, {"source": "stellar"}, ArtifactStatus.PROPOSED,
-                 "loader", "t0", is_root=True),
-        Operation("op-ds", "load", (), "ds", OperationStatus.SUCCESS, "t0"),
-    )
-    root = Path(tempfile.mkdtemp(prefix=f"verity-bench-fe-{label}-"))
-    # Code-writing over a dataset needs real recursion headroom (the agent writes + runs + debugs a
-    # script before submitting); the container default of 80 is for the trivial code task, so match
-    # the FE acceptance test (200 steps, 1500 s). Multi-cycle: omit id_source for fresh ids.
-    driver = DeepAgentsContainerDriver(
-        model="unused", spec=model_spec, image=_IMAGE,
-        recursion_limit=200, timeout_s=1500.0, memory="4g",
-    )
-    sandbox = build_sandbox(
-        schema=domain.schema, root=root, driver=driver,
-        proposer_identity=f"deepagents-container:{model_spec.provider_string()}",
-        static_contents={"data": {"train.csv": split.agent_train_csv,  # type: ignore[attr-defined]
-                                  "test.csv": split.reserved_test_csv}},  # type: ignore[attr-defined]
-    )
-    runner = ContainerCodeRunner(memory="2g", tmpfs_size="1g")
-    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
-    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
-    sp.register("fe", lambda: sandbox)
-    vp.register("fe", lambda: build_feature_engineering_verifier(
-        runner,
-        agent_train_csv=split.agent_train_csv,  # type: ignore[attr-defined]
-        reserved_test_csv=split.reserved_test_csv,  # type: ignore[attr-defined]
-        reserved_labels=split.reserved_labels,  # type: ignore[attr-defined]
-        timeout_s=600.0,
-    ))
-    cp = ControlPlane(
-        store, policy=OrchestrationPolicy(max_cycles=max_cycles),
-        sandbox_providers=sp, verifier_providers=vp,
-    )
-    config = TaskConfig(
-        task_id="fe", instructions=_FE_INSTRUCTIONS,
-        domain_instructions=domain.domain_instructions, schema=domain.schema,
-        gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key="fe", verifier_key="fe",
-        harvester=domain.harvester,
-        # Provision the agent's latest submission — its in-flight `revised` refine target or the
-        # accepted incumbent — so a refine cycle edits its prior script, not a rebuild (#51).
-        object_provisioning=ObjectProvisioningPolicy(
-            mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
-        ),
+    # Declarative wiring (ROADMAP 7.4.f): one builder seeds the dataset, registers the FE
+    # sandbox/verifier providers (backend-backed workers — the sandbox writes the script, the
+    # verifier runs it in an isolated worker), and assembles the TaskConfig. No hand-built wiring.
+    cp, config = build_fe_control_plane(
+        backend=DockerBackend(),
+        split=split,
+        provisioning=ProvisioningConfig(model_spec=model_spec, sandbox_image=_IMAGE),
+        max_cycles=max_cycles,
     )
     await cp.configure(config)
-    return ConfiguredTask(cp, task_id="fe", goal=_FE_GOAL, model_name=model_spec.model)
+    return ConfiguredTask(cp, task_id="fe", goal=FE_GOAL, model_name=model_spec.model)
 
 
 # --------------------------------------------------------------------------------- arms + runner
