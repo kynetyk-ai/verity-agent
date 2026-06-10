@@ -25,3 +25,11 @@ typecheck:
 
 # Full gate: lint + type-check + test. Must be green before any PR.
 check: lint typecheck test
+
+# Fully containerized FE run (ROADMAP 7.4): the control-plane container launches sibling worker
+# containers on the host daemon. Builds the images, then runs one FE task end to end.
+fe-containerized:
+    docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
+    docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
+    mkdir -p /tmp/verity-staging
+    docker compose -f infra/compose.fe.yml run --rm controlplane
