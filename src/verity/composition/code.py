@@ -13,7 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from verity.composition.fe import ProvisioningConfig
+from verity.composition.fe import ProvisioningConfig, provisioning_config_from
+from verity.composition.task_request import TaskRequest
 from verity.contracts import Artifact, ArtifactStatus, Operation, OperationStatus
 from verity.control_plane.api import ControlPlane
 from verity.control_plane.config import TaskConfig
@@ -24,7 +25,7 @@ from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
 from verity.verifier import BackendCodeRunner, CodeRunner
 
-__all__ = ["configure_code_task", "CODE_TASK_ID", "CODE_GOAL"]
+__all__ = ["configure_code_task", "build_code_task", "CODE_TASK_ID", "CODE_GOAL"]
 
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 
@@ -80,3 +81,15 @@ async def configure_code_task(
     )
     await cp.configure(config)
     return CODE_TASK_ID
+
+
+async def build_code_task(cp: ControlPlane, *, backend: WorkerBackend, request: TaskRequest) -> str:
+    """The ``code`` catalog builder (ROADMAP 8.1): configure the trivial task from a `TaskRequest`.
+
+    The genericity demonstration on the catalog path — the same multiplexer that runs FE runs this.
+    The ``code`` task needs no client data, so ``request.data`` is ignored; only the sandbox
+    provisioning selection is read. Returns the task id.
+    """
+    return await configure_code_task(
+        cp, backend=backend, provisioning=provisioning_config_from(request.sandbox)
+    )

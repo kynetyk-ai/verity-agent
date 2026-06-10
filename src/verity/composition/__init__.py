@@ -10,20 +10,53 @@ nothing from `verity.domains` (enforced by a layering test), so the CP stays gen
 
 from __future__ import annotations
 
-from verity.composition.code import CODE_GOAL, CODE_TASK_ID, configure_code_task
+from verity.composition.catalog import (
+    CatalogBuilder,
+    TaskCatalog,
+    UnknownTaskType,
+    default_catalog,
+)
+from verity.composition.code import (
+    CODE_GOAL,
+    CODE_TASK_ID,
+    build_code_task,
+    configure_code_task,
+)
 from verity.composition.fe import (
     FE_GOAL,
     FE_TASK_ID,
     ProvisioningConfig,
+    build_fe_task,
     configure_fe_task,
+    provisioning_config_from,
+)
+from verity.composition.task_request import (
+    DataRequest,
+    PolicyRequest,
+    SandboxRequest,
+    TaskRequest,
+    VerifierRequest,
 )
 
 __all__ = [
     "ProvisioningConfig",
+    "provisioning_config_from",
     "configure_fe_task",
+    "build_fe_task",
     "FE_GOAL",
     "FE_TASK_ID",
     "configure_code_task",
+    "build_code_task",
     "CODE_GOAL",
     "CODE_TASK_ID",
+    # the catalog + declarative request (ROADMAP 8.1)
+    "TaskCatalog",
+    "CatalogBuilder",
+    "UnknownTaskType",
+    "default_catalog",
+    "TaskRequest",
+    "SandboxRequest",
+    "VerifierRequest",
+    "PolicyRequest",
+    "DataRequest",
 ]

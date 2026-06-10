@@ -14,9 +14,11 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > model live-validated 2026-06-08, hosted-OpenAI live pending a key); **Phase 7 🚧** (service split &
 > full containerization — the seams are live, and the full-containerization **done-line is reached:
 > a generic control plane runs in a container and launches ephemeral worker containers, running FE via
-> its API — 7.5 ✅**). **Phase 8 ⬜** (the long-lived, configurable control-plane service — a standing
-> daemon configured + run via a CLI/HTTP, no image rebuild) is now scheduled, settled by
-> [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**.
+> its API — 7.5 ✅**). **Phase 8 🚧** (the long-lived, configurable control-plane service — a standing
+> daemon configured + run via a CLI/HTTP, no image rebuild), settled by
+> [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**: the
+> transport-agnostic **`ControlService` core + task catalog + per-task durable stores (8.1 ✅)** has
+> landed (the daemon + `verity` CLI is 8.2).
 > Remaining beyond that: hosted-model live validation, the multi-tenancy engine, and a `K8sBackend`.
 > The **control-plane API reference** (with a worked FE example) is
 > [`docs/api-surface.md`](docs/api-surface.md).
@@ -509,7 +511,7 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     shape-error → corrected → cycle 2 accepted, 5 Features grounded), with the 7.4.h worker labels and
     no stragglers.
 
-### Phase 8 — The long-lived, configurable control-plane service (ADR 0004) ⬜
+### Phase 8 — The long-lived, configurable control-plane service (ADR 0004) 🚧
 
 The batch control-plane container (7.5) becomes a **standing daemon** an operator (or Claude Code)
 delegates to: configure a task, select sandbox + verifier configs from a **catalog**, provide data,
@@ -524,7 +526,7 @@ a green, focused commit.
 #58); verifier **opacity** (no task/verifier locking — self-description + graceful run-time failure);
 and `composition/fe_run.py` + the library API stay valid.
 
-- **8.1 `ControlService` core + task catalog + per-task durable stores ⬜** — a transport-agnostic
+- **8.1 `ControlService` core + task catalog + per-task durable stores ✅** — a transport-agnostic
   async facade over a **per-task `ControlPlane` + `SqliteStore` multiplexer** (a store per task
   instance — no cross-task bleed, no kernel change; it mirrors `fe_run`'s one-CP-per-run shape); a
   `TaskCatalog` + a JSON `TaskRequest`; refactor `configure_fe_task` / `configure_code_task`
@@ -534,7 +536,14 @@ and `composition/fe_run.py` + the library API stay valid.
   **Carve-out (the riskiest new logic):** the split + answer-key (`reserved_labels`) derivation moves
   into the builder against client-supplied data — split-correctness tests + a positive
   **byte-provenance** test (and that two same-typed task instances never see each other's
-  `INCUMBENTS`). Offline on `FakeBackend`.
+  `INCUMBENTS`). Offline on `FakeBackend`. **Landed:** the new `verity.service` package
+  (`ControlService` + `TaskIndex`) over `verity.composition`'s `TaskCatalog` / `TaskRequest`
+  (`build_fe_task` / `build_code_task` consume a request; the old `configure_*_task` signatures are
+  preserved); run identity is unified by injecting the daemon `RunRecordStore` + a per-run id cell
+  into each per-task CP (kernel untouched, the AST genericity guard stays green). Tests:
+  `test_dataset_split_carveout`, `test_fe_builder_byte_provenance` (answer key absent from every
+  worker), `test_per_task_store_isolation` (no `INCUMBENTS` bleed), `test_control_service`
+  (create → run → results + restart-then-run rehydration + catalog dispatch of the `code` type).
 - **8.2 The daemon + internal IPC + the `verity` CLI ⬜** — `verity serve` (the multiplexer +
   `DockerBackend`; a **background-task executor** + a global run lock; `status`/`results` served
   concurrently with an in-flight run) over a **Unix-domain socket**; the `verity` console-script

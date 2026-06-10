@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from verity.composition.dataset import stratified_split, subsample
+from verity.composition.task_request import SandboxRequest, TaskRequest
 from verity.contracts import Artifact, ArtifactStatus, Operation, OperationStatus
 from verity.control_plane.api import ControlPlane
 from verity.control_plane.config import TaskConfig
@@ -40,7 +42,14 @@ from verity.sandbox.model_spec import ModelSpec
 from verity.sandbox.registration import build_sandbox
 from verity.verifier import BackendCodeRunner
 
-__all__ = ["ProvisioningConfig", "configure_fe_task", "FE_GOAL", "FE_TASK_ID"]
+__all__ = [
+    "ProvisioningConfig",
+    "configure_fe_task",
+    "build_fe_task",
+    "provisioning_config_from",
+    "FE_GOAL",
+    "FE_TASK_ID",
+]
 
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 
@@ -137,3 +146,49 @@ async def configure_fe_task(
     )
     await cp.configure(config)
     return FE_TASK_ID
+
+
+def provisioning_config_from(sandbox: SandboxRequest) -> ProvisioningConfig:
+    """Reconstruct the (off-`TaskConfig`) `ProvisioningConfig` from a declarative `SandboxRequest`.
+
+    Shared by the FE and `code` catalog builders so the request -> substrate mapping lives in one
+    place. The control plane never sees this; it stays on the provisioning side (ADR 0003).
+    """
+    return ProvisioningConfig(
+        sandbox_image=sandbox.sandbox_image,
+        code_image=sandbox.code_image,
+        model_spec=sandbox.to_model_spec(),
+        runtime=sandbox.runtime,
+        sandbox_memory=sandbox.sandbox_memory,
+        code_memory=sandbox.code_memory,
+        code_tmpfs_size=sandbox.code_tmpfs_size,
+        recursion_limit=sandbox.recursion_limit,
+        sandbox_timeout_s=sandbox.sandbox_timeout_s,
+        code_timeout_s=sandbox.code_timeout_s,
+    )
+
+
+async def build_fe_task(cp: ControlPlane, *, backend: WorkerBackend, request: TaskRequest) -> str:
+    """The FE catalog builder: configure the §12 task from a declarative `TaskRequest`.
+
+    **The carve-out (ADR 0004 (b), the riskiest new logic):** the dataset split + the answer-key
+    (``reserved_labels``) derivation, which today happen in the *caller* (`fe_run`), move *here* —
+    against client-supplied data read from the task's own store by its immutable ``data_ref``. The
+    split is then wired exactly as `configure_fe_task` does: ``agent_train_csv`` /
+    ``reserved_test_csv`` into the sandbox worker's read-only role, ``reserved_labels`` into the
+    in-process verifier **only** — so the answer key is absent from every worker (proven by a
+    byte-provenance test). Returns the task id.
+    """
+    if request.data.data_ref is None:
+        raise ValueError("the FE task requires input data; create the task with `data=<csv bytes>`")
+    raw = cp.store.get_object(request.data.data_ref)
+    sub = subsample(raw, per_class=request.data.per_class, target=request.data.target)
+    split = stratified_split(
+        sub,
+        target=request.data.target,
+        id_column=request.data.id_column,
+        reserved_fraction=request.data.reserved_fraction,
+    )
+    return await configure_fe_task(
+        cp, backend=backend, split=split, provisioning=provisioning_config_from(request.sandbox)
+    )
