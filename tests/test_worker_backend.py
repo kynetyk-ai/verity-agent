@@ -33,12 +33,12 @@ def test_sandbox_posture_runs_and_harvests_the_outbox() -> None:
         command=("python", "-m", "verity.sandbox.container_entry"),
         labels=Labels(role="sandbox", run="r1", cycle="0", config="fe"),
         readonly_inputs={
-            "sandbox/input.json": b'{"system_prompt": "..."}',
-            "work/data/train.csv": b"a,b\n1,2\n",
-            "work/spec/schema.json": b"{}",
+            "/sandbox/input.json": b'{"system_prompt": "..."}',
+            "/work/data/train.csv": b"a,b\n1,2\n",
+            "/work/spec/schema.json": b"{}",
         },
         writable_dirs=("/work",),
-        output_globs=("outbox/*",),
+        output_globs=("/work/outbox/*",),
         network=True,
         limits=ResourceLimits(memory="4g", cpus="2", pids=512),
         scratch=Tmpfs(size="256m"),
@@ -47,17 +47,17 @@ def test_sandbox_posture_runs_and_harvests_the_outbox() -> None:
     backend = FakeBackend(
         script=lambda _s: CompletedWorker(
             exit_code=0, stdout="ok", stderr="",
-            outputs={"outbox/__proposal__.json": b'{"op_name": "submit"}'},
+            outputs={"/work/outbox/__proposal__.json": b'{"op_name": "submit"}'},
         )
     )
 
     result = asyncio.run(backend.run_to_completion(spec))
 
     assert result.exit_code == 0
-    assert result.outputs["outbox/__proposal__.json"] == b'{"op_name": "submit"}'
+    assert result.outputs["/work/outbox/__proposal__.json"] == b'{"op_name": "submit"}'
     assert backend.launched[0] is spec  # the worker got exactly this spec
     # the gold roles + cycle input are read-only, NOT in the writable area (the isolation invariant)
-    assert "work/data/train.csv" in spec.readonly_inputs
+    assert "/work/data/train.csv" in spec.readonly_inputs
     assert spec.writable_dirs == ("/work",)
     assert spec.network is True
 
@@ -70,12 +70,12 @@ def test_code_runner_posture_no_network_collects_result() -> None:
         command=("sh", "-c", "pip install -r requirements.txt && python submission.py"),
         labels=Labels(role="code-runner", run="r1", cycle="0", config="fe"),
         readonly_inputs={
-            "work/submission.py": b"print('train')",
-            "work/requirements.txt": b"scikit-learn==1.5.0\n",
-            "data/train.csv": b"a,b\n1,2\n",
+            "/work/submission.py": b"print('train')",
+            "/work/requirements.txt": b"scikit-learn==1.5.0\n",
+            "/data/train.csv": b"a,b\n1,2\n",
         },
         writable_dirs=("/out",),
-        output_globs=("out/result.json",),
+        output_globs=("/out/result.json",),
         network=True,  # deps install needs outbound (the gate sets this); strict default is False
         limits=ResourceLimits(memory="2g", cpus="1", pids=128),
         scratch=Tmpfs(size="1g", allow_exec=True),
@@ -83,15 +83,15 @@ def test_code_runner_posture_no_network_collects_result() -> None:
     )
     backend = FakeBackend(
         script=lambda _s: CompletedWorker(
-            exit_code=0, stdout="", stderr="", outputs={"out/result.json": b'{"score": 0.91}'}
+            exit_code=0, stdout="", stderr="", outputs={"/out/result.json": b'{"score": 0.91}'}
         )
     )
 
     result = asyncio.run(backend.run_to_completion(spec))
 
-    assert result.outputs["out/result.json"] == b'{"score": 0.91}'
+    assert result.outputs["/out/result.json"] == b'{"score": 0.91}'
     assert spec.scratch.allow_exec is True  # the deps path
-    assert "work/submission.py" in spec.readonly_inputs  # the script can't rewrite itself
+    assert "/work/submission.py" in spec.readonly_inputs  # the script can't rewrite itself
     assert spec.writable_dirs == ("/out",)
 
 

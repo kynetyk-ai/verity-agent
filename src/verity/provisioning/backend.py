@@ -9,12 +9,13 @@ driver, the code-runner) drive a backend behind their ports. ``DockerBackend`` e
 substrate (a shared host filesystem is a Docker detail, absent on k8s). Three buckets, because plain
 "files in / files out" would break the sandbox's *physical* gold-data isolation (§3.5):
 
-* ``readonly_inputs`` — materialized **physically read-only** (gold roles, the cycle input, the
-  submitted code + datasets): the agent/script reads but never mutates them.
-* ``writable_dirs`` — fresh writable-ephemeral areas the backend provides (the sandbox
-  scratch+outbox, the code-runner output dir); discarded with the worker.
-* ``output_globs`` — workspace-relative globs collected from the writable areas after exit; absence
-  matches nothing (the consumer decides what an empty harvest means).
+* ``readonly_inputs`` — ``{absolute container path: bytes}``, materialized **physically read-only**
+  (gold roles, the cycle input, the submitted code + datasets); the agent/script reads but never
+  mutates them (a ro input under a writable dir is overlaid ro on top).
+* ``writable_dirs`` — absolute container paths of fresh writable-ephemeral areas the backend gives
+  (the sandbox scratch+outbox, the code-runner output dir); discarded with the worker.
+* ``output_globs`` — absolute glob patterns (under a ``writable_dir``) collected after exit, keyed
+  by absolute container path; absence matches nothing (the consumer decides what empty means).
 
 Two principles fix the *mechanism*, not just the surface (ADR 0003 §f, and `contracts/wire.py`):
 **backend-mediated** — inputs handed in, outputs collected out, the worker never touches the durable
@@ -100,7 +101,7 @@ class WorkerSpec:
     image: str
     command: tuple[str, ...]
     labels: Labels
-    readonly_inputs: Mapping[str, bytes] = field(default_factory=dict)  # path -> bytes, ro-mounted
+    readonly_inputs: Mapping[str, bytes] = field(default_factory=dict)  # abs path -> bytes, ro
     writable_dirs: tuple[str, ...] = ()
     output_globs: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)

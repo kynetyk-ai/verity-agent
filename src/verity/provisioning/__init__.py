@@ -19,6 +19,7 @@ from verity.provisioning.backend import (
     WorkerSpec,
     WorkerStatus,
 )
+from verity.provisioning.docker import DockerBackend, docker_available
 from verity.provisioning.fake import FakeBackend, WorkerScript
 
 __all__ = [
@@ -32,4 +33,6 @@ __all__ = [
     "Tmpfs",
     "FakeBackend",
     "WorkerScript",
+    "DockerBackend",
+    "docker_available",
 ]
