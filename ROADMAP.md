@@ -447,18 +447,22 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     worker**, never an in-process subprocess. The FE verifier's gate **logic stays trusted + held
     across the run** (its in-memory incumbent ledger forbids per-cycle disposal); `reserved_labels`
     (the answer key) never enters any worker.
-  - **e. `InProcessBackend`** — `provisioning/inprocess.py`: the trivial backend, so the *same
-    declarative config* selects `backend_key="inprocess"` vs `"docker"` and the capstone runs in the
-    default offline suite.
+  - *(Test substrate: stubs-or-integration, no in-process middle.)* Offline tests use **`FakeBackend`**
+    (a proper stub — scripts the worker boundary, runs nothing, real gate logic in-process);
+    integration uses **`DockerBackend`** (`@docker`/`@live`). An "`InProcessBackend`" was considered and
+    **dropped** — a half-real backend is neither a deterministic stub nor a faithful substrate, and it
+    would drag sandbox/verifier knowledge into the neutral `provisioning/` layer. Backends are
+    *substrates* (Docker now, k8s later); it is addable later behind the same port if Docker-free
+    real-logic execution is ever needed.
   - **f. Declarative wiring at the registration layer** (kills the ad-hoc wiring) — a
     `ProvisioningConfig` (backend + per-role spec templates) consumed by a generic registration helper
     + an FE-domain registration builder; replaces `_build_fe_task`. `TaskConfig` and `ControlPlane`
-    unchanged.
+    unchanged. Retires the old `DeepAgentsContainerDriver`/`ContainerCodeRunner` wiring.
   - **g. FE-via-config acceptance** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
     built purely from declarative config + a backend selection; asserts an accepted `Submission`, the
     no-cross-cycle-bleed property (§3.5), untrusted code in a `{role:code-runner}`-labelled worker, and
-    `reserved_labels` absent from every worker. Green on `InProcessBackend` (offline) and
-    `DockerBackend` (`@docker`, `@live` for the real model).
+    `reserved_labels` absent from every worker. Green on `FakeBackend` (offline — config-driven flow +
+    real gate logic, scripted execution) and `DockerBackend` (`@docker`, `@live` for the real model).
   - **h. Placed seams** — `tenant_id`/`run_id`/`cycle` in worker labels; a `RunRecord` at run end; a
     label-reaper + `verity-reaper` entrypoint (ADR e).
   - *Deferred (placed seams, per ADR 0003 — see the tracks below):* the reconciliation-loop + per-tenant
