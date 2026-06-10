@@ -480,6 +480,26 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     ADR j); rootless + `docker-socket-proxy` posture and a Ryuk-style GC death-switch (deployment config,
     ADR f); gVisor/microVM (`WorkerSpec.runtime`, ADR i).
 
+- **7.5 Fully containerized control plane — generic CP + FE via config (proven live) ✅** — the real
+  done-line: a **task-agnostic** control plane runs *in a container* and launches the sandbox +
+  code-runner **worker containers** as siblings on the host daemon (controlled `/var/run/docker.sock`,
+  ADR 0003 §f — not docker-in-docker), running the §12 FE test by **configuring the CP via its API**,
+  no ad-hoc wiring. Sub-parts:
+  - **Decouple the CP from FE.** `build_fe_control_plane` (which built a `ControlPlane` *inside* an
+    FE-specific function) is deleted. The CP is constructed generic; a task is applied through the CP's
+    API (`register_sandbox`/`register_verifier` + `configure`) by `composition.fe.configure_fe_task` /
+    `configure_code_task`. Enforced **mechanically**: an AST guard asserts `verity.control_plane`
+    imports nothing from `verity.domains`, and one generic CP runs both the FE and `code` tasks.
+  - **Sibling-mount fix.** `DockerBackend(staging_root=…)` / `VERITY_WORKER_STAGING` — staging dirs go
+    under a host↔CP-container shared path so worker bind mounts resolve on the host daemon.
+  - **CP image + entrypoint.** `Dockerfile.controlplane` (verity core + the docker CLI, no sandbox
+    extra) + `python -m verity.composition.fe_run` (generic CP, FE applied via its API). The
+    stratified-split helper moved into the package (`verity.composition.dataset`).
+  - **Wiring + live proof.** `infra/compose.fe.yml` + `just fe-containerized`. Live on the local model:
+    the CP container launched both worker roles and reached an **accepted Submission** (cycle 1
+    shape-error → corrected → cycle 2 accepted, 5 Features grounded), with the 7.4.h worker labels and
+    no stragglers.
+
 ### Woven through Phases 6–7
 
 - **Code-runner hardening / generalization** — a declarative runner config (image, network policy,
