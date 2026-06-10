@@ -14,8 +14,11 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > model live-validated 2026-06-08, hosted-OpenAI live pending a key); **Phase 7 🚧** (service split &
 > full containerization — the seams are live, and the full-containerization **done-line is reached:
 > a generic control plane runs in a container and launches ephemeral worker containers, running FE via
-> its API — 7.5 ✅**). Remaining: hosted-model live validation, the multi-tenancy engine, and a
-> `K8sBackend`. The **control-plane API reference** (with a worked FE example) is
+> its API — 7.5 ✅**). **Phase 8 ⬜** (the long-lived, configurable control-plane service — a standing
+> daemon configured + run via a CLI/HTTP, no image rebuild) is now scheduled, settled by
+> [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**.
+> Remaining beyond that: hosted-model live validation, the multi-tenancy engine, and a `K8sBackend`.
+> The **control-plane API reference** (with a worked FE example) is
 > [`docs/api-surface.md`](docs/api-surface.md).
 
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
@@ -506,6 +509,54 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     shape-error → corrected → cycle 2 accepted, 5 Features grounded), with the 7.4.h worker labels and
     no stragglers.
 
+### Phase 8 — The long-lived, configurable control-plane service (ADR 0004) ⬜
+
+The batch control-plane container (7.5) becomes a **standing daemon** an operator (or Claude Code)
+delegates to: configure a task, select sandbox + verifier configs from a **catalog**, provide data,
+run, and pull results + durable artifacts — **without rebuilding any image**. "Wrap, don't rebuild":
+an additive control/data plane over the *unchanged* kernel and the ADR 0003 worker model. **Activates
+issue #3**; settled by [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md). Each sprint
+a green, focused commit.
+
+**Guardrails (held throughout):** genericity (`verity.control_plane` imports no domain); the sandbox
+**byte-provenance** isolation invariant (the answer key / wrong-role bytes never reach a worker);
+**per-task store isolation** (a store per task instance — no same-typed `INCUMBENTS`/manifest bleed,
+#58); verifier **opacity** (no task/verifier locking — self-description + graceful run-time failure);
+and `composition/fe_run.py` + the library API stay valid.
+
+- **8.1 `ControlService` core + task catalog + per-task durable stores ⬜** — a transport-agnostic
+  async facade over a **per-task `ControlPlane` + `SqliteStore` multiplexer** (a store per task
+  instance — no cross-task bleed, no kernel change; it mirrors `fe_run`'s one-CP-per-run shape); a
+  `TaskCatalog` + a JSON `TaskRequest`; refactor `configure_fe_task` / `configure_code_task`
+  (`composition/`) into catalog entries consuming a `TaskRequest` (old signatures preserved);
+  **persist the `TaskRequest`** so tasks are durable, rehydratable runnable entities; wire the
+  `JobQueue` + daemon-level `RunRecord` seams (`contracts/jobqueue.py`, `control_plane/run_record.py`).
+  **Carve-out (the riskiest new logic):** the split + answer-key (`reserved_labels`) derivation moves
+  into the builder against client-supplied data — split-correctness tests + a positive
+  **byte-provenance** test (and that two same-typed task instances never see each other's
+  `INCUMBENTS`). Offline on `FakeBackend`.
+- **8.2 The daemon + internal IPC + the `verity` CLI ⬜** — `verity serve` (the multiplexer +
+  `DockerBackend`; a **background-task executor** + a global run lock; `status`/`results` served
+  concurrently with an in-flight run) over a **Unix-domain socket**; the `verity` console-script
+  **client** over that socket (`catalog` / `ingest` / `task create` / `run` / `status` / `results` /
+  `export`); registry **self-description** (each sandbox/verifier publishes its contract) rendered by
+  `verity catalog`; an incompatible task/verifier pairing **fails gracefully + informatively** via the
+  existing degrade-don't-crash path (tested).
+- **8.3 Container wiring + live proof (the done-line) ⬜** — `Dockerfile.controlplane` ENTRYPOINT → the
+  daemon; `infra/compose.fe.yml` mounts the **exchange** + **persistent store** volumes (+ a test that
+  **neither reaches a worker**). Live: one running container runs **two task types / two datasets with
+  no rebuild between them**, exports artifacts to the exchange, and runs a **pre-restart task after a
+  restart** (durable definitions).
+- **8.4 External HTTP/REST control API ⬜** — FastAPI over the same `ControlService` core (`service`
+  extra; mirror `verifier/__main__.py`), endpoint-parity with the CLI, an in-process/loopback test —
+  paired with the auth story when it lands.
+- *Deferred (placed seams, per ADR 0004):* crash recovery for in-flight runs (**#57**; Temporal a
+  hardening candidate); the **multi-tenancy engine** — *cross-tenant* store isolation, the
+  single-writer→Postgres store-engine upgrade, object GC, and parallel live runs (the residual beyond
+  v1's per-task stores — **#58** / **#27** / **#9**); the **over-the-wire file API** (removes the
+  shared exchange volume — #3 proper); the **plugin loader** for runtime domain-code registration; and
+  **auth/authz** on the external HTTP surface.
+
 ### Woven through Phases 6–7
 
 - **Code-runner hardening / generalization** — a declarative runner config (image, network policy,
@@ -548,6 +599,11 @@ added adapter, not a reshape.
   reconciliation loop + per-tenant concurrency slots/fairness (ADR c/h), and the commit-under-concurrency
   correctness (re-read incumbents inside the commit `transaction()`, ADR j). The `WorkerBackend` (7.4)
   is the seam it drives; a **`K8sBackend`** is the second impl of that port for a cluster deployment.
+- **Phase 8 takes the first engine increment.** The long-lived control-plane service (ADR 0004) wires
+  the `JobQueue`/`RunRecord` seams into a *standing daemon* (serial, single default tenant) and
+  activates the #3 control half. It already isolates **per task** (a store per task instance, 8.1);
+  the residual **cross-tenant** isolation (namespaced / Postgres stores, no cross-tenant reads) +
+  concurrency stay this deferred engine (#58).
 - **Not here:** authentication / authorization (still *further out*); parallel agents against one task
   (a related but separate concurrency concern, below).
 
@@ -557,7 +613,7 @@ Where each tracked issue folds in (so the backlog and the plan stay linked):
 
 | Issue | Folds into |
 | --- | --- |
-| **#3** standing control-plane data plane | 7.2 networked transport + the multi-tenancy engine |
+| **#3** standing control-plane data plane | **Phase 8** (long-lived control-plane service, ADR 0004) + the multi-tenancy engine |
 | **#5** spec sync: collapse §8.2 tool registry | *Further out* — doc housekeeping (already true in code) |
 | **#6** harness-bound executable tools | 5.4 sandbox tools & extensibility (the PDF-read tool) |
 | **#9** object retention / GC | multi-tenancy engine (with the store-engine upgrade) |
@@ -566,6 +622,8 @@ Where each tracked issue folds in (so the backlog and the plan stay linked):
 | **#12** stamp workspace-contract version | 5.1 reliability hardening |
 | **#13** JSON-object proposal payloads | 5.2 agent-harness hardening |
 | **#27** multi-tenancy epic | the Multi-tenancy & run-control track |
+| **#57** crash recovery for in-flight runs | Phase 8 deferred (durable run-status; Temporal at hardening) |
+| **#58** store-isolation tiers | per-task in **Phase 8.1**; cross-tenant in the multi-tenancy engine |
 
 **Already done (closed):** **#2** (CI on every push/PR — now gates `main`/`develop` with branch
 protection) and **#8** (supersede-on-beat — the selection verdict names the incumbent it replaces,
@@ -579,6 +637,11 @@ Designed-for, not yet scheduled; each becomes an issue/epic when its time comes:
 - Parallel agents against one task (diversity / race — N sandboxes → 1 control plane). The 7.4
   worker model + labels (`run`, `cycle`) are the placed seam (ADR 0003); building it = the concurrency
   engine in the Multi-tenancy track above.
+- Runtime registration of new **domain code** — a plugin loader / `verity.task_types` entry-point group
+  (ADR 0004 (i)); Phase 8 v1 requires an image build for a brand-new domain (only *config* is
+  rebuild-free).
+- Over-the-wire **file ingestion/egress API** — removes Phase 8's shared exchange volume (ADR 0004 (f)
+  seam / the #3 networked data plane).
 - Spec sync: collapse the §8.2 tool registry into operation signatures (**#5**) — already true in code.
 - Secrets / egress policy once local + networked services land.
 - True schema migration / regime transition (spec §15).
