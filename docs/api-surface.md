@@ -794,6 +794,40 @@ the `VERITY_*` env through. For a local model instead of Anthropic, set `VERITY_
 accepted submission ids, and `verity-reaper` (the `verity.provisioning.reaper:main` console script)
 clears any orphaned workers by label.
 
+### C. The standing daemon — one container, many tasks, no rebuild (Phase 8, ADR 0004)
+
+The same image also runs a **long-lived control-plane daemon** (`verity serve`) you configure at
+runtime — define tasks, ingest data, run, and pull results without rebuilding (ADR 0004). The daemon
+keeps a `DockerBackend`, the `TaskCatalog`, and a **generic `ControlPlane` + `SqliteStore` per task
+instance** as process state, and serves an HTTP surface over a **Unix-domain socket** inside the
+container. The `verity` console script is a thin **client** over that socket; `just cp <verb>` is
+`docker exec verity-cp verity <verb>`.
+
+Lifecycle: `just cp-serve` (build images + `docker compose -f infra/compose.daemon.yml up -d`),
+`just cp <verb>`, `just cp-down`. Verbs: `catalog` (task types + published contracts), `ingest`
+(exchange file → a data handle), `create` (a `TaskRequest` → a `task_id`), `run` (background → a
+`run_id`), `status` / `results`, `export` (durable artifacts → the exchange out-dir).
+
+`infra/compose.daemon.yml` adds two CP-only volumes on top of the socket + staging mounts:
+
+| Env var | Default (container) | Meaning |
+|---|---|---|
+| `VERITY_SOCKET` | `/run/verity.sock` | The daemon's IPC socket; the v1 trust boundary (local / `docker exec`-only, no auth). |
+| `VERITY_EXCHANGE` | `/exchange` | The client↔CP file channel (`in/` for ingest, `out/` for export). **CP-only — never a worker.** Host dir via `VERITY_EXCHANGE_HOST` (default `/tmp/verity-exchange`). |
+| `VERITY_STORE_ROOT` | `/var/lib/verity` | Persistent per-task stores + task definitions (durable across restart). **CP-only.** Host dir via `VERITY_STORE_HOST` (default `/tmp/verity-store`). |
+
+`VERITY_WORKER_STAGING`, `VERITY_SANDBOX_IMAGE`, `VERITY_MODEL`, `VERITY_LOCAL_BASE_URL`, and the
+model key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, forwarded to the agent worker via sandbox
+env-passthrough) carry over from section B. The exchange + store volumes reach the control-plane
+container alone — workers receive bytes **only** through the CP provisioning path, asserted by
+`tests/test_daemon_volume_isolation.py` (a `WorkerSpec` has no host-bind-mount field; neither host
+path nor the answer key reaches a worker). The end-to-end live proof — two task types and a restart,
+no rebuild — is `tests/test_daemon_live.py`.
+
+> **Entrypoint note.** The image's default `ENTRYPOINT` stays the one-shot `fe_run` (so
+> `compose.fe.yml` is unchanged); `compose.daemon.yml` overrides it to `verity serve`. A minor,
+> deliberate deviation from ADR 0004 sprint 3's literal "ENTRYPOINT → the daemon."
+
 ---
 
 ## Notable findings

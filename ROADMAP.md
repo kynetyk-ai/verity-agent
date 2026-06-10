@@ -17,10 +17,12 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > its API — 7.5 ✅**). **Phase 8 🚧** (the long-lived, configurable control-plane service — a standing
 > daemon configured + run via a CLI/HTTP, no image rebuild), settled by
 > [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**: the
-> transport-agnostic **`ControlService` core (8.1 ✅)** and the **standing daemon + `verity` CLI over a
-> Unix socket (8.2 ✅)** have landed (HTTP/FastAPI over `uds=`, background runs behind a run lock,
-> registry self-description). Next: **8.3** — container ENTRYPOINT → the daemon + the live proof.
-> Remaining beyond that: hosted-model live validation, the multi-tenancy engine, and a `K8sBackend`.
+> transport-agnostic **`ControlService` core (8.1 ✅)**, the **standing daemon + `verity` CLI over a
+> Unix socket (8.2 ✅)**, and the **container wiring + isolation proof (8.3 ✅)** have landed
+> (HTTP/FastAPI over `uds=`, background runs behind a run lock, registry self-description; the image
+> now serves the daemon, with exchange + persistent-store volumes that never reach a worker). Next:
+> **8.4** — the external HTTP/REST control API (paired with auth). Remaining beyond that: hosted-model
+> live validation, the multi-tenancy engine, and a `K8sBackend`.
 > The **control-plane API reference** (with a worked FE example) is
 > [`docs/api-surface.md`](docs/api-surface.md).
 
@@ -562,11 +564,24 @@ and `composition/fe_run.py` + the library API stay valid.
   `test_control_service_concurrency` (background + concurrent reads + graceful abort-with-reason),
   `test_catalog_describe`, `test_service_http` (full ingest→create→run→results→export over ASGI +
   a real-`uds` round-trip; fastapi/httpx `importorskip`, so the lean gate skips cleanly).
-- **8.3 Container wiring + live proof (the done-line) ⬜** — `Dockerfile.controlplane` ENTRYPOINT → the
-  daemon; `infra/compose.fe.yml` mounts the **exchange** + **persistent store** volumes (+ a test that
-  **neither reaches a worker**). Live: one running container runs **two task types / two datasets with
-  no rebuild between them**, exports artifacts to the exchange, and runs a **pre-restart task after a
-  restart** (durable definitions).
+- **8.3 Container wiring + live proof (the done-line) ✅** — the control-plane image now also serves
+  the standing daemon, with the **exchange** + **persistent-store** volumes wired and proven isolated.
+  **Landed:** `Dockerfile.controlplane` carries the `service` extra (fastapi/uvicorn/httpx) so it can
+  run `verity serve`; a new **`infra/compose.daemon.yml`** brings up a long-lived `verity-cp` container
+  (entrypoint `verity serve`) mounting the docker socket, the shared staging dir, the **exchange**
+  (`VERITY_EXCHANGE`, client↔CP only) and a **persistent store** (`VERITY_STORE_ROOT`, durable
+  stores + task definitions); `just cp-serve` / `cp` / `cp-down` drive its lifecycle. The
+  **neither-reaches-a-worker** guarantee is `tests/test_daemon_volume_isolation.py` (offline, on a
+  real on-disk `ControlService`): a `WorkerSpec` has no host-bind-mount field at all, and the test
+  further asserts neither host path leaks (env / passthrough / command / input keys) and the answer
+  key never appears. The **live proof** is `tests/test_daemon_live.py` (`@docker @live`, auto-skip):
+  one running container lists **both `fe` and `code` task types**, runs an `fe` task
+  (ingest→create→run→results→export to the exchange) and a `code` task with **no rebuild between
+  them**, then **survives a restart** and re-runs the pre-restart task (durable definitions).
+  *Deviation from ADR 0004 sprint 3:* per the chosen layout, `compose.fe.yml` is left **unchanged**
+  (the one-shot `fe_run` batch path), so the image's default `ENTRYPOINT` stays `fe_run` and the
+  **daemon compose overrides it** to `verity serve` — the daemon is fully reachable, just selected by
+  `compose.daemon.yml` rather than baked as the image default.
 - **8.4 External HTTP/REST control API ⬜** — FastAPI over the same `ControlService` core (`service`
   extra; mirror `verifier/__main__.py`), endpoint-parity with the CLI, an in-process/loopback test —
   paired with the auth story when it lands.

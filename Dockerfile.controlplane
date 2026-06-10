@@ -1,18 +1,25 @@
-# The Verity control-plane image (ROADMAP 7.4, Part C). Build from the REPO ROOT:
+# The Verity control-plane image (ROADMAP 7.4 Part C; daemon wiring 8.3). Build from the REPO ROOT:
 #
 #   docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
 #
 # Runs a GENERIC, task-agnostic control plane that launches ephemeral sandbox + code-runner WORKER
 # containers as *siblings* on the host daemon, via a mounted /var/run/docker.sock (the controlled,
-# audited socket of ADR 0003 f — not docker-in-docker). The default entrypoint runs the §12 FE task
-# through the control plane's API (`python -m verity.composition.fe_run`); the control-plane code is
-# not built around FE (it carries every task), the entrypoint merely configures one.
+# audited socket of ADR 0003 f — not docker-in-docker). The control-plane code is not built around
+# FE (it carries every task); an entrypoint merely configures one. Two ways to run, both off this
+# one image (no rebuild between them):
+#   - BATCH (the default ENTRYPOINT): `python -m verity.composition.fe_run` runs the §12 FE task once
+#     and exits — wired by infra/compose.fe.yml (`just fe-containerized`).
+#   - DAEMON (ROADMAP 8.3, ADR 0004): the long-lived `verity serve` control surface over a
+#     Unix-domain socket — selected by infra/compose.daemon.yml (`just cp-serve`), which overrides
+#     the entrypoint. Configure tasks, ingest data, run, and export at runtime, no image rebuild.
 #
-# Carries verity CORE only — NOT the sandbox extra (deepagents/langchain live in the worker image)
-# and NOT the service extra. Plus the docker CLI, so `DockerBackend` can drive the mounted socket.
+# Carries verity CORE + the `service` extra (fastapi/uvicorn/httpx — the daemon's HTTP-over-UDS
+# surface) — NOT the sandbox extra (deepagents/langchain live in the worker image). Plus the docker
+# CLI, so `DockerBackend` can drive the mounted socket.
 #
-# Run (see infra/compose.fe.yml for the full wiring): mount the socket, a shared staging dir at an
-# identical host<->container path (VERITY_WORKER_STAGING), and the dataset.
+# Run (see the compose files for the full wiring): mount the socket and a shared staging dir at an
+# identical host<->container path (VERITY_WORKER_STAGING); the daemon also mounts an exchange dir
+# (VERITY_EXCHANGE) + a persistent store volume (VERITY_STORE_ROOT).
 FROM python:3.12-slim
 
 # The docker CLI only (no engine) — to talk to the mounted host socket.
@@ -23,8 +30,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 COPY . /app
 
-# Bake verity CORE into a venv in the image — no dev/test deps, no sandbox/model/service libs.
-RUN uv sync --frozen --no-dev
+# Bake verity CORE + the `service` extra into a venv — no dev/test deps, no sandbox/model libs.
+# The service extra (fastapi/uvicorn/httpx) is what the `verity serve` daemon (8.3) needs.
+RUN uv sync --frozen --no-dev --extra service
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
