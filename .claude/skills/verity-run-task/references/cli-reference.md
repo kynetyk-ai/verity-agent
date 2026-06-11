@@ -59,8 +59,10 @@ verity create --type fe --data <handle> \
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--type` (required) | — | task type from `verity catalog` (e.g. `fe`, `code`) |
-| `--data` | — | a handle from `verity ingest` (omit for data-less types) |
+| `--type` | — | task type from `verity catalog` (e.g. `fe`, `code`, `fe-kaggle`); required unless `--request-file` is given |
+| `--request-file` | — | path to a full `TaskRequest` JSON (e.g. a task package's `task.json`); supersedes the request-shaping flags — only `--data`/`--test-data`/`--goal` still apply |
+| `--data` | — | a handle from `verity ingest` (the primary/train input; omit for data-less types) |
+| `--test-data` | — | a second `verity ingest` handle — a task's second input (e.g. `fe-kaggle`'s real test set) |
 | `--goal` | `""` | the run goal (task instructions) |
 | `--model` | builder default (Anthropic) | the sandbox model. **With `--base-url`** it is a literal OpenAI-compatible name (Ollama `name:tag`); **without** it is a native `provider:model` string (`anthropic:claude-sonnet-4-6`). |
 | `--base-url` | — | OpenAI-compatible endpoint for a local/hosted model |

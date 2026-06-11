@@ -135,13 +135,18 @@ def build_app(
         if not isinstance(spec, dict):
             raise HTTPException(status_code=422, detail="'request' (a TaskRequest) is required")
         task_request = TaskRequest.from_dict(spec)
-        data: bytes | None = None
-        handle = body.get("data")
-        if handle is not None:
+
+        def _resolve(field: str) -> bytes | None:
+            handle = body.get(field)
+            if handle is None:
+                return None
             if handle not in staging:
                 raise HTTPException(status_code=404, detail=f"unknown data handle: {handle}")
-            data = staging[handle]
-        task_id = service.create_task(task_request, data=data)
+            return staging[handle]
+
+        task_id = service.create_task(
+            task_request, data=_resolve("data"), test_data=_resolve("test_data")
+        )
         return {"task_id": task_id}
 
     @app.get("/tasks")

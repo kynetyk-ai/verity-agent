@@ -74,7 +74,7 @@ def test_http_full_flow_in_process(tmp_path) -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://verity") as client:
             # catalog
             cat = (await client.get("/catalog")).json()
-            assert {t["type_name"] for t in cat["task_types"]} == {"fe", "code"}
+            assert {t["type_name"] for t in cat["task_types"]} == {"fe", "fe-kaggle", "code"}
 
             # ingest -> create -> run
             handle = (await client.post("/objects", json={"name": "train.csv"})).json()["handle"]

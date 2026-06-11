@@ -288,6 +288,17 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   on the actual stellar dataset, improving on the provisioned incumbent — auto-skips without a key /
   Docker / the dataset.
 - **Exit ✅:** **all twelve §13 acceptance criteria pass → MVP reached.**
+- **Enhancement — `fe-kaggle`: the real Kaggle leaderboard as the final-test gate ✅.** An additive
+  task type (`domains/feature_engineering_kaggle.py` + `composition/fe_kaggle.py`, registered in the
+  catalog) that keeps the FE domain but swaps the verifier for a **two-tier ladder**: a cheap
+  local-hold-out proxy filters every cycle, then a hard gate regenerates the submission on the full
+  train + the real `test.csv`, **submits to a live Kaggle competition** (`KaggleScorer` seam +
+  `RealKaggleScorer`, the `kaggle` extra), and accepts only what beats our best **public-leaderboard**
+  score. Trusted-submitter (creds never reach a worker); the ~5/day cap is read from the API and the
+  gate blocks until budget frees; degrade-don't-crash on API failure. New `verity create
+  --request-file` + `--test-data` (two inputs); the committed, runnable task package
+  (`feature-engineering-test/{PROTOCOL.md,task.json,run.sh}`, local-agent default). Offline-tested on a
+  `FakeKaggleScorer`; a `@kaggle @live` test submits for real (auto-skips without creds).
 
 ---
 

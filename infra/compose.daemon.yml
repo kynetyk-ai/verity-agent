@@ -58,6 +58,10 @@ services:
       # (sandbox env-passthrough). Empty unless a hosted model is used; a local model needs none.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      # Kaggle creds for the fe-kaggle task — read by the trusted in-process verifier on the CP to
+      # submit + score; NOT in the sandbox env-passthrough, so they never reach a worker.
+      KAGGLE_USERNAME: "${KAGGLE_USERNAME:-}"
+      KAGGLE_KEY: "${KAGGLE_KEY:-}"
     volumes:
       # The controlled host socket — the CP launches sibling workers through it (ADR 0003 §f).
       - /var/run/docker.sock:/var/run/docker.sock

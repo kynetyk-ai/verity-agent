@@ -34,6 +34,12 @@ service = [
 telemetry = [
     "prometheus-client>=0.20",
 ]
+# The Kaggle client (fe-kaggle task): the real-leaderboard final-test gate submits + reads the public
+# score through it. Baked into the control-plane image; the lean core imports it only lazily (the
+# `RealKaggleScorer`), so the offline suite + CI never need it.
+kaggle = [
+    "kaggle>=1.6",
+]
 
 [dependency-groups]
 dev = [
@@ -74,6 +80,8 @@ module = [
     "fastapi.*", "uvicorn.*", "httpx.*", "starlette.*",
     # The `telemetry` extra (Phase 7.3): lazy Prometheus import, absent in CI's `mypy src`.
     "prometheus_client.*",
+    # The `kaggle` extra (fe-kaggle): lazy import in RealKaggleScorer, absent in CI's `mypy src`.
+    "kaggle.*",
 ]
 ignore_missing_imports = true
 
@@ -99,4 +107,5 @@ addopts = "-ra"
 markers = [
     "docker: integration test requiring a reachable Docker daemon (auto-skipped when absent)",
     "live: integration test requiring a live model API key (auto-skipped when absent)",
+    "kaggle: integration test requiring Kaggle creds + the `kaggle` client (auto-skipped when absent)",
 ]

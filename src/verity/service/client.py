@@ -106,8 +106,12 @@ class Client:
         """Fetch a single durable artifact object's bytes over the wire."""
         return (await self._request("GET", f"/artifacts/{run_id}/{object_path}")).content
 
-    async def create_task(self, request: dict[str, Any], *, data: str | None = None) -> Any:
-        return await self._call("POST", "/tasks", json={"request": request, "data": data})
+    async def create_task(
+        self, request: dict[str, Any], *, data: str | None = None, test_data: str | None = None
+    ) -> Any:
+        return await self._call(
+            "POST", "/tasks", json={"request": request, "data": data, "test_data": test_data}
+        )
 
     async def list_tasks(self) -> Any:
         return await self._call("GET", "/tasks")

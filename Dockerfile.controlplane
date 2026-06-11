@@ -30,9 +30,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 COPY . /app
 
-# Bake verity CORE + the `service` extra into a venv — no dev/test deps, no sandbox/model libs.
-# The service extra (fastapi/uvicorn/httpx) is what the `verity serve` daemon (8.3) needs.
-RUN uv sync --frozen --no-dev --extra service
+# Bake verity CORE + the `service` and `kaggle` extras into a venv — no dev/test deps, no sandbox
+# libs. `service` (fastapi/uvicorn/httpx) is the `verity serve` daemon (8.3); `kaggle` is the
+# real-leaderboard final-test gate for the fe-kaggle task (the verifier submits on the trusted CP side).
+RUN uv sync --frozen --no-dev --extra service --extra kaggle
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1

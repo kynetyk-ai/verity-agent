@@ -18,6 +18,8 @@ from verity.verifier.code_runner import (
     docker_available,
 )
 from verity.verifier.errors import VerifierError
+from verity.verifier.kaggle import DAILY_SUBMISSION_LIMIT, FakeKaggleScorer, KaggleScorer
+from verity.verifier.kaggle_client import RealKaggleScorer
 from verity.verifier.model_client import (
     AnthropicModelClient,
     FakeModelClient,
@@ -59,4 +61,8 @@ __all__ = [
     "docker_available",
     "GateStep",
     "SdkVerifier",
+    "KaggleScorer",
+    "FakeKaggleScorer",
+    "RealKaggleScorer",
+    "DAILY_SUBMISSION_LIMIT",
 ]
