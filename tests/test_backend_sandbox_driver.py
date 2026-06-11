@@ -82,6 +82,31 @@ def test_readonly_roles_seed_physically_read_only_inputs(tmp_path: Path) -> None
     assert "/work/data/train.csv" not in spec.writable_dirs
 
 
+def test_provisioned_objects_reach_the_worker(tmp_path: Path) -> None:
+    # The control plane materializes the prior accepted submission into the writable `scratch` role
+    # (ObjectProvisioningPolicy → `provided/`). The agent runs INSIDE the worker, so these must be
+    # carried in — else it never sees its incumbent and restarts from zero every cycle. (Regression:
+    # the driver used to carry only the read-only roles, silently dropping `scratch/provided/`.)
+    backend = FakeBackend(script=lambda _s: _outbox(_proposal()))
+    sandbox = AgentSandbox(
+        root=tmp_path / "ws", driver=BackendSandboxDriver(backend=backend),
+        schema=_SCHEMA, proposer_identity="p",
+    )
+    asyncio.run(sandbox.provision())
+    asyncio.run(sandbox.serve_context(ServedContext(
+        system_prompt="SYS", tail="build on the incumbent",
+        workspace_objects={"scratch": {
+            "provided/submission.py": b"# prior incumbent\n",
+            "provided/INDEX.md": b"rank 01: accepted\n",
+        }},
+    )))
+    asyncio.run(sandbox.collect_proposal())
+
+    spec = backend.launched[0]
+    assert spec.readonly_inputs["/work/scratch/provided/submission.py"] == b"# prior incumbent\n"
+    assert "/work/scratch/provided/INDEX.md" in spec.readonly_inputs
+
+
 def test_nonzero_worker_exit_degrades_to_a_sandbox_error(tmp_path: Path) -> None:
     backend = FakeBackend(
         script=lambda _s: CompletedWorker(exit_code=1, stdout="", stderr="boom in the worker")
