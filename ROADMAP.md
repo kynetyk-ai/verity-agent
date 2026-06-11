@@ -669,23 +669,32 @@ added adapter, not a reshape.
 
 Where each tracked issue folds in (so the backlog and the plan stay linked):
 
+Currently-open issues (kept in sync with GitHub):
+
 | Issue | Folds into |
 | --- | --- |
-| **#3** standing control-plane data plane | **Phase 8** (long-lived control-plane service, ADR 0004) + the multi-tenancy engine |
-| **#5** spec sync: collapse §8.2 tool registry | *Further out* — doc housekeeping (already true in code) |
-| **#6** harness-bound executable tools | 5.4 sandbox tools & extensibility (the PDF-read tool) |
+| **#3** standing control-plane data plane | **Phase 8** (ADR 0004) + the multi-tenancy engine; the over-the-wire file API (removes the exchange volume) |
+| **#5** spec sync: collapse §8.2 tool registry | *Further out* — spec housekeeping (already true in code) |
 | **#9** object retention / GC | multi-tenancy engine (with the store-engine upgrade) |
-| **#10** networked verifier transport | 7.2 networked transport |
-| **#11** LLM-judge reproducibility (§5.8) | 5.1 reliability hardening |
-| **#12** stamp workspace-contract version | 5.1 reliability hardening |
-| **#13** JSON-object proposal payloads | 5.2 agent-harness hardening |
+| **#10** networked verifier transport | 7.2 — transport is live; residual: capability advertisement |
+| **#11** LLM-judge reproducibility (§5.8) | 5.1 — when a judge enters a live gate stack |
 | **#27** multi-tenancy epic | the Multi-tenancy & run-control track |
+| **#32** durable failure-provenance (record failed cycles in the store) | 5.1 reliability (split-out) |
+| **#40** revisit Docker Model Runner (vllm-metal) as the managed local-model host | Phase 6 (woven model-server hardening) |
+| **#42** extensible stop/continuation predicate (accumulate-to-K / optimize-until-plateau) | acceptance-modes extensibility on `OrchestrationPolicy` |
+| **#51** provision the in-flight *revised* submission on refine | object-provisioning (largely covered by `LAST_REVISED_OR_ACCEPTED`; confirm/close) |
+| **#55** re-audit `docs/context-and-data-flow.md` to the current build | docs housekeeping |
 | **#57** crash recovery for in-flight runs | Phase 8 deferred (durable run-status; Temporal at hardening) |
-| **#58** store-isolation tiers | per-task in **Phase 8.1**; cross-tenant in the multi-tenancy engine |
+| **#58** store-isolation tiers | per-task in **Phase 8.1 ✅**; cross-tenant in the multi-tenancy engine |
+| **#64** make the domain concept optional | architecture — a generic default domain + verifier-criteria in the prompt (§8 / §3.4) |
+| **#65** per-task agent skills in the sandbox (harness-agnostic) | 5.4 sandbox extensibility (successor to the `read_pdf` tool seam) |
+| **#66** extender docs for sandboxes & verifiers | the woven "configuration guide" item (docs slice) |
 
-**Already done (closed):** **#2** (CI on every push/PR — now gates `main`/`develop` with branch
-protection) and **#8** (supersede-on-beat — the selection verdict names the incumbent it replaces,
-shipped in 4.2 and exercised live).
+**Already done (closed):** **#2** (CI gates `main`/`develop`), **#8** (supersede-on-beat, 4.2),
+**#6** (harness-bound executable tools — the `read_pdf` seam, 5.4), **#12** (workspace-contract/orientation
+version stamp, 5.1), **#13** (JSON-object proposal payloads, 5.1), and the early correctness fixes
+**#16/#17/#18/#20/#21** (naming, `refine_cap` enforcement, the dead manifest path, provisioned-object
+naming + manifest, and sandbox-cycle-failure-skips-not-aborts).
 
 ### Further out / seamed (spec §16)
 

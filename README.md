@@ -8,17 +8,18 @@ is *git + a type system + a verifier-aware lifecycle for agent artifacts.*
 The name carries the point: **verity** = truth, and *verify*. The system exists to answer one
 question — *can you trust, and audit, what the system believes?*
 
-> **Status: post-MVP.** Phases 0–5 are complete — the control plane, the opaque verifier, the real
-> Deep Agents sandbox, and the feature-engineering domain (spec §12) reached MVP with the **twelve §13
-> acceptance criteria passing**, plus the Phase 5 reliability & observability hardening
-> (degrade-don't-crash on both service boundaries, typed errors, retries, atomic commits, a
-> store-derived `RunReport`). **Phase 6 (model breadth)** is code-complete and **live-validated on a
-> local open model** (`good proposals from cheap models` — the thesis); hosted-OpenAI live validation
-> is pending a key. **Phase 7 (service split & full containerization)** has reached its done-line: a
-> task-agnostic control plane runs *in a container* and launches ephemeral sandbox + code-runner
-> **worker containers**, running the §12 FE test by configuring the CP through its API. See
-> [ROADMAP.md](ROADMAP.md) for the live plan and *Run the feature-engineering demo* below. Stack:
-> Python, managed with [uv](https://docs.astral.sh/uv/) (see *Coding habits* in [CLAUDE.md](CLAUDE.md)).
+> **Status: post-MVP; Phase 8 v1 complete.** Phases 0–5 are complete — the control plane, the opaque
+> verifier, the real Deep Agents sandbox, and the feature-engineering domain (spec §12) reached MVP with
+> the **twelve §13 acceptance criteria passing**, plus the Phase 5 reliability & observability hardening.
+> **Phase 6 (model breadth)** is code-complete and live-validated on a local open model (`good proposals
+> from cheap models` — the thesis; hosted-OpenAI live still pending a key). **Phase 7 (service split &
+> full containerization)** reached its done-line. **Phase 8 (the long-lived, configurable control-plane
+> service)** is **v1 complete**: one image serves a standing daemon over a local Unix socket **and** an
+> authenticated (bearer-token) network HTTP API, configured + run via the `verity` CLI with no image
+> rebuild and durable across restart. A **`fe-kaggle`** variant has been validated **live on the real
+> Kaggle leaderboard** (0.92253 with a local model). See [ROADMAP.md](ROADMAP.md) for the live plan and
+> *Run the feature-engineering demo* below. Stack: Python, managed with
+> [uv](https://docs.astral.sh/uv/) (see *Coding habits* in [CLAUDE.md](CLAUDE.md)).
 
 ## The specification (self-contained)
 
@@ -197,6 +198,32 @@ The load-bearing facts: only a **hard** gate reaches `accepted` (cheap checks re
 **supersession is entirely verifier-driven** (the gate's verdict names what it replaces). So a task
 chooses its mode by how its verifier is built; `--stop-on-accept` is the per-run CLI knob. A task type's
 `verity catalog` entry describes its acceptance behaviour under `verifier_approach`.
+
+## Sandboxes and verifiers (what ships today)
+
+A task **selects a sandbox and a verifier**; the control plane stays generic. What's in the current
+build (read the live set + each one's published contract with `verity catalog`):
+
+**Sandboxes** — the agent runtime + the model it runs:
+- **Harness:** Deep Agents (a general-purpose coding agent in YOLO mode), with in-process and
+  container/worker drivers. The harness is **pluggable** (ADR 0002) — Deep Agents is the first one.
+- **Model arms** (selected per task with `--model`/`--base-url`, via the `ModelSpec` seam): frontier
+  **Anthropic** (`anthropic:claude-…`), any **local / self-hosted OpenAI-compatible** endpoint
+  (`local_spec` — Ollama / vLLM / llama.cpp, reached at `host.docker.internal`), and **hosted OpenAI**
+  (`openai_spec`). Non-propose executable tools can be bound into the agent (the `read_pdf` seam).
+
+**Verifiers** — the opaque gate package that judges a proposal (ADR 0001), built from a gate-primitive
+SDK (deterministic-check, numeric-scorer, LLM-judge, auto-code-runner, human-in-the-loop) staged
+cheap → `tentative`, hard → `accepted`. Task types shipping today:
+- **`fe`** — feature engineering: runs-clean + features-defined + a balanced-accuracy selection gate on
+  a reserved hold-out (optimizer mode).
+- **`fe-kaggle`** — the same, but the authoritative gate is the **real Kaggle leaderboard**.
+- **`code`** — a minimal code-execution task (parses + runs-clean).
+
+**Extensibility:** both are pluggable extension points — you can add a sandbox arm (or a whole harness)
+and a verifier approach without touching the kernel. **A how-to guide for adding sandboxes and verifiers
+is forthcoming** ([#66](https://github.com/kynetyk-ai/verity/issues/66)); until then, the FE / `code`
+composition builders (`src/verity/composition/`) are the worked references.
 
 ## Repo layout
 

@@ -92,13 +92,31 @@ retries, atomic commits, the store-derived `RunReport`).
 
 **Phase 6 — model breadth** (the thesis payoff) is code-complete and **live-validated on a local open
 model** (Ollama / Qwen on Apple Silicon, 2026-06-08); hosted-OpenAI live validation is pending a key.
-**Phase 7 — service split & full containerization** has reached its done-line (7.5): a **task-agnostic
+**Phase 7 — service split & full containerization** reached its done-line (7.5): a **task-agnostic
 control plane runs in a container** and launches ephemeral sandbox + code-runner **worker containers**
 as siblings on the host daemon (ADR 0003), running the §12 FE test by configuring the CP through its
-API (`composition.configure_fe_task` / `just fe-containerized`). **Remaining:** hosted-model live
-validation, the multi-tenancy engine (real queue + tenant isolation), and a `K8sBackend`. See
-[ROADMAP.md](ROADMAP.md) for the live plan and [docs/api-surface.md](docs/api-surface.md) for the
-control-plane API reference.
+API (`composition.configure_fe_task` / `just fe-containerized`).
+
+**Phase 8 — the long-lived control-plane service (v1 complete)** (ADR 0004): the CP now runs as a
+**standing daemon** (`verity serve`) that multiplexes many tasks (per-task `ControlPlane` + durable
+`SqliteStore`) behind one process, with a `verity` **CLI** as a thin client. Two control surfaces: a
+local **Unix socket** (`docker exec verity-cp verity …` / `just cp …`, unauthenticated, local-only) and
+an authenticated **network HTTP API** (`verity serve --http HOST:PORT` + bearer `VERITY_API_TOKEN`),
+plus a **byte data plane** (raw `POST /objects`, `GET /artifacts/{run_id}/{path}`). Tasks are created,
+run (async — poll `status`, read `results`, `export` artifacts), and survive daemon restart; no rebuild
+to drive a new task. A **task catalog** self-describes each installed type's output-shape contract,
+`verifier_approach`, and `sandbox_notes`. Added the **`fe-kaggle`** task variant: a two-tier gate
+(cheap local hold-out proxy + a hard real **Kaggle-leaderboard** gate, trusted-submitter so creds never
+reach a worker), **live-validated** at 0.92253 balanced accuracy on `playground-series-s6e6` with local
+Qwen. The three **acceptance modes** (optimizer / accumulate / first-acceptable) are documented as
+emergent from verifier gate composition × `--stop-on-accept` × object-provisioning mode (README + the
+`verity-run-task` skill).
+
+**Remaining / open tracks:** hosted-model live validation; the multi-tenancy engine (real queue +
+tenant isolation, issue #3); a `K8sBackend`; and three research-driven docs/feature tracks — making the
+domain concept optional (#64), per-task harness-agnostic agent skills via the CLI (#65), and extender
+docs for adding sandboxes & verifiers (#66). See [ROADMAP.md](ROADMAP.md) for the live plan and
+[docs/api-surface.md](docs/api-surface.md) for the control-plane API reference.
 
 **Stack: Python, managed with uv** (see *Coding habits*).
 
