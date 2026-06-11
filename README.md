@@ -80,12 +80,14 @@ needs neither.
 ## Run the feature-engineering demo
 
 The §12 feature-engineering domain is the MVP validation target: an agent is given a dataset and asked
-to design 1–5 features that improve a model, judged by running its submitted script on a **reserved
-hold-out it never sees** (a per-class, deterministic split of the training data; the agent gets the
-labelled remainder, the gate keeps the reserved labels). Several ways to exercise it, in increasing
-cost — and a variant (#6) whose gate is the **real Kaggle leaderboard**:
+to write a single self-contained script that predicts better than the incumbent — by any means that
+fits in one script (engineered features, model choice, ensembling, calibration), judged by running it
+on a **reserved hold-out it never sees** (a per-class, deterministic split of the training data; the
+agent gets the labelled remainder, the gate keeps the reserved labels). The submission is the unit and
+the gate is reject-only. Several ways to exercise it, in increasing cost — and a variant (#6) whose
+gate is the **real Kaggle leaderboard**:
 
-**1. The twelve §13 acceptance criteria (offline — no key, no Docker).** The whole
+**1. The §13 acceptance criteria (offline — no key, no Docker).** The whole
 read → propose → gate → commit loop on a deterministic fake runner:
 
 ```

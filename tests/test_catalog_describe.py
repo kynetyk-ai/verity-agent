@@ -14,10 +14,11 @@ from verity.composition import UnknownTaskType, default_catalog
 def test_describe_fe_publishes_shape_and_approach() -> None:
     desc = default_catalog().describe("fe").to_dict()
     assert desc["type_name"] == "fe"
-    assert {"DatasetVersion", "Submission", "Feature"} <= set(desc["artifact_types"])
-    assert "Submission" in desc["gated_types"] and "Feature" in desc["gated_types"]
+    assert {"DatasetVersion", "Submission"} <= set(desc["artifact_types"])
+    assert "Feature" not in desc["artifact_types"]  # the broadened domain dropped feature harvest
+    assert "Submission" in desc["gated_types"]
     op_names = {o["name"] for o in desc["operations"]}
-    assert {"submit", "revises", "harvest"} <= op_names
+    assert {"submit", "revises"} <= op_names and "harvest" not in op_names
     assert all("required_payload_keys" in o for o in desc["operations"])  # the shape contract
     assert desc["domain_instructions"]  # the formal, agent-facing half
     assert "balanced accuracy" in desc["verifier_approach"]  # the approval-semantics prose

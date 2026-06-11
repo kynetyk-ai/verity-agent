@@ -1,6 +1,6 @@
 """Apply the FE-Kaggle task to a generic control plane (the `fe-kaggle` task type).
 
-Reuses the §12 feature-engineering domain (schema / shape / instructions / harvester) and the
+Reuses the §12 feature-engineering domain (schema / shape / instructions) and the
 worker-provisioning wiring of :mod:`verity.composition.fe`; the only swap is the **verifier**, whose
 authoritative gate is the real Kaggle leaderboard (`build_feature_engineering_kaggle_verifier`).
 
@@ -159,7 +159,6 @@ async def configure_fe_kaggle_task(
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
         sandbox_key=FE_KAGGLE_TASK_ID, verifier_key=FE_KAGGLE_TASK_ID,
-        harvester=domain.harvester,
         object_provisioning=ObjectProvisioningPolicy(
             mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
         ),

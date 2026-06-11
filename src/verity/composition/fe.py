@@ -57,10 +57,11 @@ _FE_VERIFIER_APPROACH = (
     "Two gates over one cached run of the submitted script (train on the agent's data, predict the "
     "reserved hold-out the agent never sees). The cheap 'runs-clean' gate (rung 2, free) earns "
     "'tentative' on a clean exit with a well-formed prediction for every reserved row. The hard "
-    "'selection' gate (rung 1) scores balanced accuracy net of a per-feature complexity penalty, "
-    "deflated by the rejected-log trial count, and accepts only when it beats the incumbent — so "
-    "acceptance means a measured improvement on held-out data, not just that the code ran. Each "
-    "accepted submission's declared features are then harvested and grounded individually."
+    "'selection' gate (rung 1) scores balanced accuracy, deflated by the rejected-log trial "
+    "count, and accepts only when it beats the incumbent — so acceptance means a measured "
+    "improvement on held-out data, not just that the code ran. The submission is the unit; the "
+    "gate is reject-only (no refine) and does not care how the gain was achieved (features, model, "
+    "ensemble, ...)."
 )
 _FE_SANDBOX_NOTES = (
     "A general-purpose coding agent that writes and runs Python in an isolated worker; needs the "
@@ -157,7 +158,6 @@ async def configure_fe_task(
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator, sandbox_key=FE_TASK_ID, verifier_key=FE_TASK_ID,
-        harvester=domain.harvester,
         object_provisioning=ObjectProvisioningPolicy(
             mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
         ),

@@ -39,7 +39,6 @@ from verity.control_plane.store import SqliteStore
 from verity.domains.feature_engineering import (
     DATASET_VERSION,
     ENTRYPOINT,
-    FEATURE,
     REQUIREMENTS,
     SUBMISSION,
     build_feature_engineering_domain,
@@ -54,22 +53,22 @@ def test_schema_and_gating_match_section_12() -> None:
     domain = build_feature_engineering_domain()
     types = {t.name: t for t in domain.schema.types()}
     assert types[DATASET_VERSION].is_root is True
-    assert types[SUBMISSION].is_root is False and types[FEATURE].is_root is False
+    assert types[SUBMISSION].is_root is False
+    # the broadened domain dropped the harvested Feature type (submission is the unit)
+    assert FEATURE_REMOVED not in types
     ops = {o.name: o for o in domain.schema.operations()}
     assert ops["submit"].inputs == (DATASET_VERSION,) and ops["submit"].output == SUBMISSION
-    assert ops["harvest"].inputs == (SUBMISSION,) and ops["harvest"].output == FEATURE
     assert ops["revises"].inputs == (SUBMISSION,) and ops["revises"].output == SUBMISSION
-    # Submission is gated with the incumbents + rejected-log slice; Feature is gated, slice empty.
-    assert domain.gated_types.is_gated(SUBMISSION) and domain.gated_types.is_gated(FEATURE)
-    assert domain.gated_types.resolve(FEATURE) == frozenset()
+    assert "harvest" not in ops  # no feature harvest
+    # Submission is gated with the incumbents + rejected-log slice; no Feature type is gated.
+    assert domain.gated_types.is_gated(SUBMISSION)
+
+
+FEATURE_REMOVED = "Feature"  # the type the broadened domain no longer registers
 
 
 def _submission_payload() -> dict[str, object]:
-    return {
-        "entrypoint": ENTRYPOINT,
-        "requirements": REQUIREMENTS,
-        "features": [{"name": "u_g", "definition": "u - g", "rationale": "colour index"}],
-    }
+    return {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS}
 
 
 def _artifact(payload: object, *, type_: str = SUBMISSION) -> Artifact:
@@ -88,24 +87,12 @@ def test_shape_accepts_a_well_formed_submission() -> None:
     [
         lambda p: p.pop("entrypoint"),
         lambda p: p.pop("requirements"),
-        lambda p: p.update(features=[]),
-        lambda p: p.update(features=[{"name": "x"}]),  # missing definition/rationale
-        lambda p: p.update(features=[{"name": "x", "definition": "y", "rationale": ""}]),
     ],
 )
 def test_shape_rejects_malformed_submissions(mutate: object) -> None:
     domain = build_feature_engineering_domain()
     payload = _submission_payload()
     mutate(payload)  # type: ignore[operator]
-    assert isinstance(domain.shape_validator(_artifact(payload)), ShapeError)
-
-
-def test_more_than_five_features_is_malformed() -> None:
-    domain = build_feature_engineering_domain()
-    payload = _submission_payload()
-    payload["features"] = [
-        {"name": f"f{i}", "definition": "d", "rationale": "r"} for i in range(6)
-    ]
     assert isinstance(domain.shape_validator(_artifact(payload)), ShapeError)
 
 
