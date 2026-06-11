@@ -3,6 +3,11 @@
 The control plane runs as a long-lived container (`verity-cp`) that launches sibling worker containers
 on the host Docker daemon. This is the deployment the `verity` CLI talks to.
 
+> **Already have a running daemon?** Skip this whole page. The runtime flow in `SKILL.md`
+> (`docker exec <container> verity …`) drives an existing daemon and needs **nothing from the Verity
+> source repo**. This page covers *bringing one up*, which **does require the repo** (it builds the
+> images and uses the compose/justfile). If you only have the running container, jump to the CLI.
+
 ## Prerequisites
 
 - **Docker** running (the CP launches sibling workers via the mounted `/var/run/docker.sock`).
@@ -80,5 +85,21 @@ uses is the one you pass to `verity create`** (`--model` / `--base-url`).
 - **Hosted model unauthorized** — ensure `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) is in the daemon
   container's env (set on the host before `up`).
 
-The full env surface, the worked API example, and the topology are in
-[`docs/api-surface.md`](../../../../docs/api-surface.md) (the *standing daemon* section).
+## Kaggle creds (only for the `fe-kaggle` task)
+
+The `fe-kaggle` task type submits to a live competition, so its gate needs a Kaggle API token:
+
+- Create one at <https://www.kaggle.com/settings> → *Create New Token* (downloads `kaggle.json`); put
+  its `username`/`key` in the daemon container's env as `KAGGLE_USERNAME` / `KAGGLE_KEY` (the daemon
+  compose forwards them to the control plane **only** — never to a worker).
+- **Accept the competition's rules** on its Kaggle page once, or the API returns **403** on that
+  competition (auth can otherwise be fine — a 401 elsewhere means a bad token).
+- The cap is ~5 submissions/day per team; the gate reads remaining budget from the API and blocks
+  until it frees. Full package + protocol: the task's own `PROTOCOL.md` (in the Verity repo, under
+  `feature-engineering-test/`).
+
+---
+
+The control-plane API reference (the full env surface, the worked example, the topology) lives in the
+Verity repo at `docs/api-surface.md` (the *standing daemon* + *External HTTP/REST* sections). The
+authoritative, never-stale source for what's installed is always `verity catalog`.

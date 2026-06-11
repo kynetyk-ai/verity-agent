@@ -42,9 +42,12 @@ Any task where work products are **typed artifacts with provenance** and "worth 
 The thesis payoff (Phase 6): *good proposals from cheap models* — the disciplined record + gate let
 smaller/local models contribute, because trust comes from the verifier, not the proposer.
 
-## Pointers
+## Pointers (in the Verity source repo — not bundled with this skill)
+
+These resolve only if you have the repo checked out; at runtime the live source of truth is
+`verity catalog`.
 
 - `spec/self-revising-discovery-harness.md` — authoritative specification (cited `§N`).
 - `spec/references/` — the origin paper + prior-art analyses.
-- `docs/api-surface.md` — the control-plane API reference (incl. the standing-daemon surface).
+- `docs/api-surface.md` — the control-plane API reference (incl. the standing-daemon + HTTP surfaces).
 - `ROADMAP.md` — where the implementation is and what's next.
