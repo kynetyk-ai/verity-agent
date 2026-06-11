@@ -19,6 +19,11 @@ from collections.abc import Awaitable, Callable
 from verity.composition.code import CODE_TASK_ID, build_code_task, describe_code_task
 from verity.composition.description import TaskTypeDescription
 from verity.composition.fe import FE_TASK_ID, build_fe_task, describe_fe_task
+from verity.composition.fe_kaggle import (
+    FE_KAGGLE_TASK_ID,
+    build_fe_kaggle_task,
+    describe_fe_kaggle_task,
+)
 from verity.composition.task_request import TaskRequest
 from verity.control_plane.api import ControlPlane
 from verity.provisioning.backend import WorkerBackend
@@ -92,5 +97,6 @@ def default_catalog() -> TaskCatalog:
     """The built-in catalog: the FE and trivial-`code` task types installed in the image."""
     catalog = TaskCatalog()
     catalog.register(FE_TASK_ID, build_fe_task, describe=describe_fe_task)
+    catalog.register(FE_KAGGLE_TASK_ID, build_fe_kaggle_task, describe=describe_fe_kaggle_task)
     catalog.register(CODE_TASK_ID, build_code_task, describe=describe_code_task)
     return catalog

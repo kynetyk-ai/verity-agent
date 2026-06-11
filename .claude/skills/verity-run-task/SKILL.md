@@ -37,22 +37,27 @@ the source of truth; this skill deliberately does not hardcode the list.
 
 ## The flow at a glance
 
+Every verb is `docker exec <container> verity <verb>` against the running daemon — **this works with
+only the running container; you do NOT need the Verity source repo** (`$CP` defaults to `verity-cp`):
+
 ```bash
-just cp-serve                               # build images + start the daemon (see references/setup.md)
-just cp catalog                             # step 0: discover task types + their contracts
-# put your input file in the exchange in/ dir, then:
-just cp ingest train.csv                    # -> {"handle": "<sha>"}
-just cp create --type fe --data <handle> \
+docker exec $CP verity catalog                       # step 0: discover task types + contracts
+# put your input file where the daemon's exchange in/ dir is mounted, then:
+docker exec $CP verity ingest train.csv              # -> {"handle": "<sha>"}
+docker exec $CP verity create --type fe --data <handle> \
   --model qwen3.6:27b-coding-mxfp8 \
   --base-url http://host.docker.internal:11434/v1 \
-  --max-cycles 4 --per-class 150            # -> {"task_id": "..."}
-just cp run <task_id>                        # -> {"run_id": "..."}  (async)
-just cp status <run_id>                      # poll until "done" / "failed"
-just cp results <run_id>                     # RunReport + accepted-artifact ids
-just cp export  <run_id>                     # durable artifacts -> exchange out/<run_id>/
+  --max-cycles 4 --per-class 150                     # -> {"task_id": "..."}
+docker exec $CP verity run <task_id>                 # -> {"run_id": "..."}  (async)
+docker exec $CP verity status <run_id>               # poll until "done" / "failed"
+docker exec $CP verity results <run_id>              # RunReport + accepted-artifact ids
+docker exec $CP verity export <run_id>               # durable artifacts -> exchange out/<run_id>/
 ```
 
-Or run the whole sequence with the bundled orchestrator (daemon must already be up):
+**Bringing the daemon up needs the repo** (it builds images + uses compose); see
+[references/setup.md](references/setup.md). With a repo checkout, `just cp <verb>` is shorthand for
+`docker exec verity-cp verity <verb>` and `just cp-serve` starts it. Or run the whole sequence with
+the bundled orchestrator (daemon must already be up):
 
 ```bash
 bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type fe --data train.csv --max-cycles 4 --per-class 150
@@ -71,10 +76,13 @@ bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type fe --data train.csv --max-cy
   pass `--url`/`--token`. The default Unix-socket (`docker exec`) path is local-only and unauthenticated.
 - **Degrade-don't-crash.** A failed cycle is recorded and fed back, not fatal — a run can finish with a
   mix of accept / refine / reject / sandbox-fail outcomes (see `results`).
+- **Multi-input tasks** (e.g. `fe-kaggle`, which takes a train set + a real test set, and a competition
+  slug) are created from a JSON request: `verity create --request-file task.json --data <train-handle>
+  --test-data <test-handle>`. `--request-file` reads a full `TaskRequest`; see the CLI ref.
 
 ## More detail
 
-- **Stand it up / from a fresh clone** → [references/setup.md](references/setup.md)
+- **Stand it up / from a fresh clone (needs the repo)** → [references/setup.md](references/setup.md)
 - **Full CLI surface** (every verb, flags, JSON output, the catalog self-description, the network/auth
   mode, the byte data plane) → [references/cli-reference.md](references/cli-reference.md)
 - **What Verity is & where it generalizes** (the domain-agnostic kernel; spec/paper-grounded) →

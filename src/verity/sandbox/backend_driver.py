@@ -45,6 +45,13 @@ __all__ = ["BackendSandboxDriver"]
 log = get_logger("verity.sandbox.backend_driver")
 
 _READ_ONLY_ROLES = ("data", "context", "tools", "spec")
+# Writable roles whose control-plane-provisioned content must also reach the worker. Before the
+# worker runs, the writable `scratch` role holds only what the control plane materialized this turn:
+# the durable objects from `ObjectProvisioningPolicy` (e.g. the prior accepted submission under
+# `scratch/provided/` — the FE incumbent the agent builds on). The agent runs in the worker, so
+# these must be carried in, else it never sees its incumbent and restarts from zero each cycle.
+# Read-only is fine: it reads the prior script and writes a fresh one to the outbox, not editing it.
+_PROVISIONED_ROLES = ("scratch",)
 _ENTRYPOINT = ("python", "-m", "verity.sandbox.container_entry")
 
 
@@ -131,7 +138,7 @@ class BackendSandboxDriver:
         # agent's outbox comes back as bytes. Data rides via the `data` role (static_contents), not
         # host-path mounts -- so the spec carries no host paths (k8s-portable).
         readonly: dict[str, bytes] = {CONTAINER_INPUT_PATH: cycle.to_json()}
-        for role in _READ_ONLY_ROLES:
+        for role in (*_READ_ONLY_ROLES, *_PROVISIONED_ROLES):
             role_dir = workspace.path_for(role)
             for path in sorted(role_dir.rglob("*")):
                 if path.is_file():

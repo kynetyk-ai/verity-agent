@@ -35,7 +35,7 @@ def test_describe_code_publishes_its_contract() -> None:
 def test_describe_all_covers_every_catalog_type() -> None:
     catalog = default_catalog()
     described = {d.type_name for d in catalog.describe_all()}
-    assert described == set(catalog.types()) == {"fe", "code"}
+    assert described == set(catalog.types()) == {"fe", "fe-kaggle", "code"}
 
 
 def test_describe_unknown_type_raises() -> None:

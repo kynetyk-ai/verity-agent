@@ -59,8 +59,10 @@ verity create --type fe --data <handle> \
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--type` (required) | — | task type from `verity catalog` (e.g. `fe`, `code`) |
-| `--data` | — | a handle from `verity ingest` (omit for data-less types) |
+| `--type` | — | task type from `verity catalog` (e.g. `fe`, `code`, `fe-kaggle`); required unless `--request-file` is given |
+| `--request-file` | — | path to a full `TaskRequest` JSON (e.g. a task package's `task.json`); supersedes the request-shaping flags — only `--data`/`--test-data`/`--goal` still apply |
+| `--data` | — | a handle from `verity ingest` (the primary/train input; omit for data-less types) |
+| `--test-data` | — | a second `verity ingest` handle — a task's second input (e.g. `fe-kaggle`'s real test set) |
 | `--goal` | `""` | the run goal (task instructions) |
 | `--model` | builder default (Anthropic) | the sandbox model. **With `--base-url`** it is a literal OpenAI-compatible name (Ollama `name:tag`); **without** it is a native `provider:model` string (`anthropic:claude-sonnet-4-6`). |
 | `--base-url` | — | OpenAI-compatible endpoint for a local/hosted model |
@@ -71,6 +73,22 @@ verity create --type fe --data <handle> \
 
 `--model`/`--base-url` (+ image/memory/runtime provisioning defaults) **are** the sandbox
 configuration. Task definitions are durable — a created task survives a daemon restart.
+
+### Multi-input / request-file tasks (e.g. `fe-kaggle`)
+
+Some task types take more than one input or per-verifier knobs that aren't plain flags. Provide a full
+`TaskRequest` as JSON via `--request-file` (it supersedes the request-shaping flags; only
+`--data`/`--test-data`/`--goal` still apply), and ingest each input separately:
+
+```bash
+verity ingest train.csv                          # -> {handle-A}
+verity ingest test.csv                           # -> {handle-B}   (fe-kaggle: the real test set)
+verity create --request-file task.json --data {handle-A} --test-data {handle-B}   # -> {task_id}
+```
+
+`fe-kaggle` (the real-leaderboard gate) needs exactly this: its `task.json` carries
+`verifier.knobs.competition` (the slug), and the daemon must have `KAGGLE_USERNAME`/`KAGGLE_KEY` in its
+env (setup.md → *Kaggle creds*). Read its live contract with `verity catalog --type fe-kaggle`.
 
 ## `run` — start a run (async) → a `run_id`
 
@@ -120,5 +138,6 @@ with **no shared exchange volume**, the HTTP surface adds an over-the-wire byte 
 uses), and `GET /artifacts/{run_id}/{object_path}` → the durable bytes. The Python `Client`
 (`verity.service.client`) exposes these as `ingest_bytes()` / `download()`.
 
-Authoritative source for the verbs/flags: `src/verity/service/cli.py`; the HTTP routes:
-`src/verity/service/http.py`.
+The always-current source of truth at runtime is `verity --help` / `verity <verb> --help` and
+`verity catalog`. (In the Verity repo, the verbs/flags are defined in `src/verity/service/cli.py` and
+the HTTP routes in `src/verity/service/http.py`.)

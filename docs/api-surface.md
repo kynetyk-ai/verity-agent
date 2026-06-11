@@ -828,6 +828,30 @@ no rebuild — is `tests/test_daemon_live.py`.
 > `compose.fe.yml` is unchanged); `compose.daemon.yml` overrides it to `verity serve`. A minor,
 > deliberate deviation from ADR 0004 sprint 3's literal "ENTRYPOINT → the daemon."
 
+#### The `fe-kaggle` task type — the real Kaggle leaderboard as the final-test gate
+
+`fe-kaggle` is the feature-engineering task with the **live competition leaderboard** as its
+authoritative gate (a two-tier ladder: a cheap local-hold-out proxy filters every cycle; the hard gate
+regenerates the submission on the full train + the real `test.csv`, submits to Kaggle, and accepts only
+what **beats our best prior public score**). The Kaggle submit happens on the **trusted control-plane
+side** — `KAGGLE_USERNAME`/`KAGGLE_KEY` are read by the in-process verifier and are **never** forwarded
+to a worker; the daily ~5-submission cap is read from the API and the gate **blocks** until budget
+frees. It needs **two** inputs (the labeled `train.csv` and the real unlabeled `test.csv`) and the
+competition slug, so it is created from a declarative request file:
+
+```bash
+verity ingest train.csv            # -> {handle-A}
+verity ingest test.csv             # -> {handle-B}
+verity create --request-file task.json --data {handle-A} --test-data {handle-B}   # -> {task_id}
+```
+
+`--request-file` reads a full `TaskRequest` JSON (the catalog's declarative form, e.g. a task package's
+`task.json`; it supersedes the request-shaping flags, only `--data`/`--test-data`/`--goal` still
+apply); `--test-data` ingests the second input (→ `data.test_ref`). The committed, runnable package —
+data, `task.json` (local-agent default), `run.sh`, and the full setup protocol (token, accepting the
+competition rules) — lives in [`feature-engineering-test/`](../feature-engineering-test/PROTOCOL.md).
+Read the live contract with `verity catalog --type fe-kaggle`.
+
 ### D. External HTTP/REST — the network control API (Phase 8.4, ADR 0004 (e))
 
 The *same* `build_app` the daemon serves over a Unix socket also binds to a **network TCP port**, so a

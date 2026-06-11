@@ -163,6 +163,7 @@ class DataRequest:
     """
 
     data_ref: str | None = None
+    test_ref: str | None = None
     target: str = "class"
     id_column: str = "id"
     per_class: int = 300
@@ -171,6 +172,7 @@ class DataRequest:
     def to_dict(self) -> dict[str, Any]:
         return {
             "data_ref": self.data_ref,
+            "test_ref": self.test_ref,
             "target": self.target,
             "id_column": self.id_column,
             "per_class": self.per_class,
@@ -200,8 +202,12 @@ class TaskRequest:
     tenant_id: str = "default"
 
     def with_data_ref(self, data_ref: str) -> TaskRequest:
-        """Return a copy whose data reference is stamped (used at ingest time)."""
+        """Return a copy whose (primary/train) data reference is stamped (used at ingest time)."""
         return replace(self, data=replace(self.data, data_ref=data_ref))
+
+    def with_test_ref(self, test_ref: str) -> TaskRequest:
+        """Return a copy whose secondary (real test set) data reference is stamped (fe-kaggle)."""
+        return replace(self, data=replace(self.data, test_ref=test_ref))
 
     def to_dict(self) -> dict[str, Any]:
         return {

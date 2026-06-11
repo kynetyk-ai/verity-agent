@@ -47,6 +47,24 @@ def _fe_workers() -> FeWorkers:
                      by_marker={b"good": _reserved()})
 
 
+def test_create_task_stamps_both_data_refs() -> None:
+    # The fe-kaggle task takes two inputs (train + the real test); create_task ingests both and
+    # stamps data_ref + test_ref on the persisted, durable request.
+    service = ControlService(
+        backend=FakeBackend(script=FeWorkers(steps=[], by_marker={})), root=None
+    )
+    request = TaskRequest(
+        type_name="fe-kaggle",
+        verifier=VerifierRequest(approach="kaggle", knobs={"competition": "playground-s6e6"}),
+    )
+    task_id = service.create_task(request, data=_RAW, test_data=b"id\n7\n8\n")
+    persisted = service.get_request(task_id)
+    assert persisted is not None
+    assert persisted.data.data_ref is not None
+    assert persisted.data.test_ref is not None
+    assert persisted.data.data_ref != persisted.data.test_ref
+
+
 def test_create_run_results() -> None:
     service = ControlService(backend=FakeBackend(script=_fe_workers()), root=None)
     task_id = service.create_task(_fe_request(), data=_RAW)
@@ -108,7 +126,7 @@ def test_catalog_dispatches_a_second_task_type() -> None:
     # Genericity on the service path: the same multiplexer instantiates an unrelated task type.
     service = ControlService(backend=FakeBackend(script=FeWorkers(steps=[], by_marker={})),
                              root=None)
-    assert set(service.catalog_types()) == {"fe", "code"}
+    assert set(service.catalog_types()) == {"fe", "fe-kaggle", "code"}
     code_task = service.create_task(TaskRequest(type_name="code"))
     resident = asyncio.run(service._resident_cp(code_task))
     assert resident.in_cp_task_id == "code"

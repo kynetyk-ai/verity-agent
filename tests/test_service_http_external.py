@@ -81,7 +81,7 @@ def test_bearer_auth_gates_every_route_but_health(tmp_path) -> None:
             assert wrong.status_code == 401
             ok = await c.get("/catalog", headers={"Authorization": f"Bearer {_TOKEN}"})
             assert ok.status_code == 200
-            assert {t["type_name"] for t in ok.json()["task_types"]} == {"fe", "code"}
+            assert {t["type_name"] for t in ok.json()["task_types"]} == {"fe", "fe-kaggle", "code"}
 
     asyncio.run(scenario())
 

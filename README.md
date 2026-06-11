@@ -80,7 +80,9 @@ needs neither.
 
 The §12 feature-engineering domain is the MVP validation target: an agent is given a dataset and asked
 to design 1–5 features that improve a model, judged by running its submitted script on a **reserved
-hold-out it never sees**. Three ways to exercise it, in increasing cost:
+hold-out it never sees** (a per-class, deterministic split of the training data; the agent gets the
+labelled remainder, the gate keeps the reserved labels). Several ways to exercise it, in increasing
+cost — and a variant (#6) whose gate is the **real Kaggle leaderboard**:
 
 **1. The twelve §13 acceptance criteria (offline — no key, no Docker).** The whole
 read → propose → gate → commit loop on a deterministic fake runner:
@@ -160,6 +162,19 @@ the local socket — `VERITY_API_TOKEN=<secret> verity serve --http 0.0.0.0:8080
 every route but `/health`, and over-the-wire object upload + artifact download (no shared volume).
 Reach it with the same CLI: `verity --url http://host:8080 --token <secret> catalog`. See the
 *External HTTP/REST* section of [docs/api-surface.md](docs/api-surface.md).
+
+**6. The `fe-kaggle` variant — the real Kaggle leaderboard as the final-test gate (needs Docker, a
+model, a Kaggle token).** Same FE domain, but a **two-tier gate**: a cheap local-hold-out proxy
+filters every cycle (so no Kaggle submission is wasted on a locally-worse attempt), then the hard gate
+regenerates the submission on the full train + the real `test.csv`, **submits to a live Kaggle
+competition**, and accepts only what beats our best **public-leaderboard** score (the ~5/day cap is
+read from the API; the gate blocks until budget frees). The submit happens on the trusted control
+plane — `KAGGLE_USERNAME`/`KAGGLE_KEY` never reach a worker. It's a new task type in the catalog
+(`verity catalog --type fe-kaggle`), created with two inputs via `verity create --request-file
+task.json --data <train> --test-data <test>`. The committed, runnable package — data slot, `task.json`
+(local-agent default), `run.sh`, and the full setup protocol (token, accepting the competition rules)
+— lives in [`feature-engineering-test/PROTOCOL.md`](feature-engineering-test/PROTOCOL.md). Validated
+live on `playground-series-s6e6` with a local model at **0.92253 balanced accuracy**.
 
 ## Repo layout
 
