@@ -1,6 +1,6 @@
 {
   "type_name": "fe-kaggle",
-  "goal": "Engineer features that climb the real Kaggle leaderboard for the stellar competition.",
+  "goal": "Climb the real Kaggle leaderboard for the stellar competition with a fast, self-contained pipeline.",
   "sandbox": {
     "model": "qwen3.6:27b-coding-mxfp8",
     "base_url": "http://host.docker.internal:11434/v1"

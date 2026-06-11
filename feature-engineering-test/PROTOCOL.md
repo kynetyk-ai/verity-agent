@@ -1,9 +1,10 @@
 # The stellar `fe-kaggle` task — setup & run protocol
 
 This folder is a **self-contained task package**: the data (gitignored), the task definition
-(`task.json`), and the driver (`run.sh`). It runs the §12 feature-engineering task with the **real
-Kaggle leaderboard as the final-test gate** — Verity engineers features, regenerates the submission on
-gold data, submits to the live competition, and accepts only what **beats our best public score**.
+(`task.json`), and the driver (`run.sh`). It runs the §12 model-building task with the **real
+Kaggle leaderboard as the final-test gate** — Verity writes a single self-contained script that
+predicts (by any means: engineered features, model choice, ensembling, calibration), regenerates it
+on gold data, submits to the live competition, and accepts only what **beats our best public score**.
 
 Competition: **`playground-series-s6e6`** (stellar classification, balanced accuracy). Local agent by
 default (Ollama). See `overview.md` for the dataset.
@@ -62,9 +63,9 @@ daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `
 
 ## What you get
 
-- An **accepted `Submission`** (+ its grounded `Feature`s) only if it improved the **real public
-  leaderboard** — provenance and the public scores are in `verity results <run_id>`.
-- The submitted script + features exported to `${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out/<run_id>/`.
+- An **accepted `Submission`** only if it improved the **real public leaderboard** — provenance and
+  the public scores are in `verity results <run_id>`.
+- The submitted script exported to `${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out/<run_id>/`.
 - Your submissions appear on the competition's public leaderboard under your Kaggle account.
 
 ## Knobs (`task.json`)
