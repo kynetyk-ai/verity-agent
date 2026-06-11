@@ -460,10 +460,11 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     config = TaskConfig(
         task_id="fe",
         instructions=(
-            "Engineer 1-3 features that improve balanced accuracy. Be FAST: train one small, "
-            "fixed model (no hyperparameter search, no cross-validation, no big ensembles); your "
-            "edge is the features, not the model. Run the script once to confirm it works, then "
-            "submit — do not keep retraining."
+            "Improve balanced accuracy by any means that fits in one script — engineered features, "
+            "model choice, a small ensemble, calibration, imbalance handling. If there's no "
+            "incumbent yet, explore the data with code first; if there is one (under "
+            "scratch/provided/), read it and target its weakness. Keep the pipeline fast enough to "
+            "finish the gate's time budget; run the script once to confirm it works, then submit."
         ),
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
