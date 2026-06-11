@@ -42,6 +42,31 @@ Any task where work products are **typed artifacts with provenance** and "worth 
 The thesis payoff (Phase 6): *good proposals from cheap models* — the disciplined record + gate let
 smaller/local models contribute, because trust comes from the verifier, not the proposer.
 
+## Acceptance modes — and how to set up each
+
+"What counts as done" isn't a fixed behaviour or a single flag — it falls out of **how a task's
+verifier composes its gates**, plus the run's **`--stop-on-accept`** policy and the task's
+**object-provisioning** mode. Two facts drive it: only a **hard** gate reaches `accepted` (cheap checks
+rest at `tentative`), and **supersession happens only when a gate's verdict names the incumbent it
+replaces**. A task type's live `verifier_approach` (`verity catalog --type <t>`) describes which mode it
+implements. The three shapes, and how to build each:
+
+- **Optimizer — supplant the incumbent with a better one** (one best answer survives).
+  *Verifier:* a hard **scoring** gate that accepts only when the new artifact beats the incumbent **and
+  emits a supersession** (names the artifact it replaces). *Provisioning:* `LAST_ACCEPTED`, so the agent
+  iterates on the current best. *Run:* leave `--stop-on-accept` off (keep improving). This is the
+  feature-engineering / `fe-kaggle` behaviour.
+- **Accumulate — keep every acceptable answer** (a collection, not a winner).
+  *Verifier:* a hard **validity** gate that accepts on soundness and **never supersedes** → all sound
+  artifacts coexist as `accepted`. *Provisioning:* `ALL_ACCEPTED`. *Run:* `--stop-on-accept` off.
+- **First-acceptable — take the first good one and stop** (no optimization once you have one).
+  *Verifier:* a validity gate (accept on soundness). *Run:* **`--stop-on-accept`** — the loop ends at
+  the first `accepted`. *Provisioning:* whatever you like (it won't iterate).
+
+Practically: the **mode lives in the verifier + composition** (an authoring choice when a task type is
+built), while **`--stop-on-accept` is the per-run CLI knob** you set at `create`/`run`. If you're only
+*running* installed task types, read each one's `verifier_approach` to know which mode you're getting.
+
 ## Pointers (in the Verity source repo — not bundled with this skill)
 
 These resolve only if you have the repo checked out; at runtime the live source of truth is

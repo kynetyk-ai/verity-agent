@@ -176,6 +176,28 @@ task.json --data <train> --test-data <test>`. The committed, runnable package �
 — lives in [`feature-engineering-test/PROTOCOL.md`](feature-engineering-test/PROTOCOL.md). Validated
 live on `playground-series-s6e6` with a local model at **0.92253 balanced accuracy**.
 
+## Acceptance modes
+
+"What counts as done" is not one fixed behaviour — it's a property of how a task's **verifier composes
+its gates**, combined with the run's **orchestration policy** and **object-provisioning** mode. Three
+shapes are supported (no separate "mode" flag — they fall out of those choices):
+
+- **Optimizer — supplant the incumbent with a better one.** The hard gate accepts only when the new
+  artifact *beats* the incumbent and **supersedes** it, so one best answer survives. This is the FE /
+  `fe-kaggle` behaviour (a scoring gate that emits a supersession). Pair with `LAST_ACCEPTED`
+  provisioning so the agent iterates on the current best.
+- **Accumulate — keep every acceptable answer.** The hard gate accepts on *validity* and never
+  supersedes, so all sound artifacts coexist as `accepted`. Pair with `ALL_ACCEPTED` provisioning.
+  Use it when you want a *collection* of good answers, not a single winner.
+- **First-acceptable — take the first good one and stop.** A validity gate plus `--stop-on-accept`
+  (`OrchestrationPolicy.stop_on_accept`) ends the run as soon as one artifact is accepted. Use it when
+  any sound answer is enough and there's no value in optimizing further.
+
+The load-bearing facts: only a **hard** gate reaches `accepted` (cheap checks rest at `tentative`), and
+**supersession is entirely verifier-driven** (the gate's verdict names what it replaces). So a task
+chooses its mode by how its verifier is built; `--stop-on-accept` is the per-run CLI knob. A task type's
+`verity catalog` entry describes its acceptance behaviour under `verifier_approach`.
+
 ## Repo layout
 
 ```

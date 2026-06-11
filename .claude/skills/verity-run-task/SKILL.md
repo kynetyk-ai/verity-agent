@@ -85,5 +85,5 @@ bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type fe --data train.csv --max-cy
 - **Stand it up / from a fresh clone (needs the repo)** → [references/setup.md](references/setup.md)
 - **Full CLI surface** (every verb, flags, JSON output, the catalog self-description, the network/auth
   mode, the byte data plane) → [references/cli-reference.md](references/cli-reference.md)
-- **What Verity is & where it generalizes** (the domain-agnostic kernel; spec/paper-grounded) →
-  [references/concepts.md](references/concepts.md)
+- **What Verity is & where it generalizes** + **acceptance modes** (optimizer / accumulate /
+  first-acceptable — what each is for and how to set it up) → [references/concepts.md](references/concepts.md)
