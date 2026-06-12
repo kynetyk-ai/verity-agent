@@ -8,12 +8,18 @@ is *git + a type system + a verifier-aware lifecycle for agent artifacts.*
 The name carries the point: **verity** = truth, and *verify*. The system exists to answer one
 question — *can you trust, and audit, what the system believes?*
 
-> **Status: MVP reached (spec v1).** Phases 0–4 are done: the control plane, the opaque verifier, the
-> real Deep Agents sandbox, and the feature-engineering domain (spec §12) all run end-to-end, and the
-> **twelve §13 acceptance criteria pass**. A live run drives real Claude proposals scored in a
-> container on a real dataset, improving across rounds. See [ROADMAP.md](ROADMAP.md) and *Run the
-> feature-engineering demo* below. Stack: Python, managed with [uv](https://docs.astral.sh/uv/) (see
-> *Coding habits* in [CLAUDE.md](CLAUDE.md)).
+> **Status: post-MVP; Phase 8 v1 complete.** Phases 0–5 are complete — the control plane, the opaque
+> verifier, the real Deep Agents sandbox, and the feature-engineering domain (spec §12) reached MVP with
+> the **twelve §13 acceptance criteria passing**, plus the Phase 5 reliability & observability hardening.
+> **Phase 6 (model breadth)** is code-complete and live-validated on a local open model (`good proposals
+> from cheap models` — the thesis; hosted-OpenAI live still pending a key). **Phase 7 (service split &
+> full containerization)** reached its done-line. **Phase 8 (the long-lived, configurable control-plane
+> service)** is **v1 complete**: one image serves a standing daemon over a local Unix socket **and** an
+> authenticated (bearer-token) network HTTP API, configured + run via the `verity` CLI with no image
+> rebuild and durable across restart. A **`fe-kaggle`** variant has been validated **live on the real
+> Kaggle leaderboard** (0.92253 with a local model). See [ROADMAP.md](ROADMAP.md) for the live plan and
+> *Run the feature-engineering demo* below. Stack: Python, managed with
+> [uv](https://docs.astral.sh/uv/) (see *Coding habits* in [CLAUDE.md](CLAUDE.md)).
 
 ## The specification (self-contained)
 
@@ -74,10 +80,14 @@ needs neither.
 ## Run the feature-engineering demo
 
 The §12 feature-engineering domain is the MVP validation target: an agent is given a dataset and asked
-to design 1–5 features that improve a model, judged by running its submitted script on a **reserved
-hold-out it never sees**. Three ways to exercise it, in increasing cost:
+to write a single self-contained script that predicts better than the incumbent — by any means that
+fits in one script (engineered features, model choice, ensembling, calibration), judged by running it
+on a **reserved hold-out it never sees** (a per-class, deterministic split of the training data; the
+agent gets the labelled remainder, the gate keeps the reserved labels). The submission is the unit and
+the gate is reject-only. Several ways to exercise it, in increasing cost — and a variant (#6) whose
+gate is the **real Kaggle leaderboard**:
 
-**1. The twelve §13 acceptance criteria (offline — no key, no Docker).** The whole
+**1. The §13 acceptance criteria (offline — no key, no Docker).** The whole
 read → propose → gate → commit loop on a deterministic fake runner:
 
 ```
@@ -113,6 +123,110 @@ Each cycle spins a fresh, isolated container; expect a few minutes per round. Th
 **only** through the control plane (task + domain instructions and the mounted data) — nothing
 task-specific is hardcoded in the sandbox.
 
+**4. The fully containerized run (the Phase 7 done-line — needs Docker; a key or a local model).** A
+task-agnostic control plane runs *in* a container and launches the sandbox + code-runner **worker
+containers** as siblings on the host daemon, configuring the §12 FE test through its own API:
+
+```
+just fe-containerized
+```
+
+This builds the sandbox + control-plane images and runs one FE task through `infra/compose.fe.yml`.
+Configuration is by environment (`VERITY_MODEL`, `VERITY_LOCAL_BASE_URL`, `VERITY_MAX_CYCLES`, …);
+point it at a local open model with `VERITY_LOCAL_BASE_URL`. The full env surface, the worked API
+example, and the topology are documented in [docs/api-surface.md](docs/api-surface.md) (*Worked
+example — the feature-engineering task*).
+
+**5. The standing daemon (Phase 8 — one container, many tasks, no rebuild).** Instead of a one-shot
+batch, run the control plane as a **long-lived service** you configure at runtime: define tasks,
+ingest data, run, and pull results — all without rebuilding an image (see
+[ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md)).
+
+```
+just cp-serve                                   # build images + start the verity-cp daemon
+just cp catalog                                 # list task types and their published contracts
+cp <dataset> "$VERITY_EXCHANGE_HOST/in/"        # default host exchange: /tmp/verity-exchange
+just cp ingest train.csv                        # -> a data handle
+just cp create --type fe --data <handle> --model … --max-cycles 4 --stop-on-accept   # -> a task id
+just cp run <task_id>                            # -> a run id (runs in the background)
+just cp results <run_id>                         # the RunReport + accepted-artifact ids
+just cp export  <run_id>                         # durable artifacts -> $VERITY_EXCHANGE_HOST/out/<run_id>/
+just cp-down                                     # stop the daemon (the store + exchange persist)
+```
+
+Files cross only through the **exchange** (in/ and out/); the exchange and the persistent **store**
+volume are mounted into the control-plane container alone and **never reach a worker**
+(`tests/test_daemon_volume_isolation.py`). Task definitions and provenance stores live under the
+store volume, so a created task survives a `docker restart`. The `verity` CLI is a thin client over a
+Unix socket inside the container — `just cp <subcommand>` is `docker exec verity-cp verity …`.
+
+For **remote / programmatic** use, the same image serves an **authenticated network API** instead of
+the local socket — `VERITY_API_TOKEN=<secret> verity serve --http 0.0.0.0:8080` — with bearer auth on
+every route but `/health`, and over-the-wire object upload + artifact download (no shared volume).
+Reach it with the same CLI: `verity --url http://host:8080 --token <secret> catalog`. See the
+*External HTTP/REST* section of [docs/api-surface.md](docs/api-surface.md).
+
+**6. The `fe-kaggle` variant — the real Kaggle leaderboard as the final-test gate (needs Docker, a
+model, a Kaggle token).** Same FE domain, but a **two-tier gate**: a cheap local-hold-out proxy
+filters every cycle (so no Kaggle submission is wasted on a locally-worse attempt), then the hard gate
+regenerates the submission on the full train + the real `test.csv`, **submits to a live Kaggle
+competition**, and accepts only what beats our best **public-leaderboard** score (the ~5/day cap is
+read from the API; the gate blocks until budget frees). The submit happens on the trusted control
+plane — `KAGGLE_USERNAME`/`KAGGLE_KEY` never reach a worker. It's a new task type in the catalog
+(`verity catalog --type fe-kaggle`), created with two inputs via `verity create --request-file
+task.json --data <train> --test-data <test>`. The committed, runnable package — data slot, `task.json`
+(local-agent default), `run.sh`, and the full setup protocol (token, accepting the competition rules)
+— lives in [`feature-engineering-test/PROTOCOL.md`](feature-engineering-test/PROTOCOL.md). Validated
+live on `playground-series-s6e6` with a local model at **0.92253 balanced accuracy**.
+
+## Acceptance modes
+
+"What counts as done" is not one fixed behaviour — it's a property of how a task's **verifier composes
+its gates**, combined with the run's **orchestration policy** and **object-provisioning** mode. Three
+shapes are supported (no separate "mode" flag — they fall out of those choices):
+
+- **Optimizer — supplant the incumbent with a better one.** The hard gate accepts only when the new
+  artifact *beats* the incumbent and **supersedes** it, so one best answer survives. This is the FE /
+  `fe-kaggle` behaviour (a scoring gate that emits a supersession). Pair with `LAST_ACCEPTED`
+  provisioning so the agent iterates on the current best.
+- **Accumulate — keep every acceptable answer.** The hard gate accepts on *validity* and never
+  supersedes, so all sound artifacts coexist as `accepted`. Pair with `ALL_ACCEPTED` provisioning.
+  Use it when you want a *collection* of good answers, not a single winner.
+- **First-acceptable — take the first good one and stop.** A validity gate plus `--stop-on-accept`
+  (`OrchestrationPolicy.stop_on_accept`) ends the run as soon as one artifact is accepted. Use it when
+  any sound answer is enough and there's no value in optimizing further.
+
+The load-bearing facts: only a **hard** gate reaches `accepted` (cheap checks rest at `tentative`), and
+**supersession is entirely verifier-driven** (the gate's verdict names what it replaces). So a task
+chooses its mode by how its verifier is built; `--stop-on-accept` is the per-run CLI knob. A task type's
+`verity catalog` entry describes its acceptance behaviour under `verifier_approach`.
+
+## Sandboxes and verifiers (what ships today)
+
+A task **selects a sandbox and a verifier**; the control plane stays generic. What's in the current
+build (read the live set + each one's published contract with `verity catalog`):
+
+**Sandboxes** — the agent runtime + the model it runs:
+- **Harness:** Deep Agents (a general-purpose coding agent in YOLO mode), with in-process and
+  container/worker drivers. The harness is **pluggable** (ADR 0002) — Deep Agents is the first one.
+- **Model arms** (selected per task with `--model`/`--base-url`, via the `ModelSpec` seam): frontier
+  **Anthropic** (`anthropic:claude-…`), any **local / self-hosted OpenAI-compatible** endpoint
+  (`local_spec` — Ollama / vLLM / llama.cpp, reached at `host.docker.internal`), and **hosted OpenAI**
+  (`openai_spec`). Non-propose executable tools can be bound into the agent (the `read_pdf` seam).
+
+**Verifiers** — the opaque gate package that judges a proposal (ADR 0001), built from a gate-primitive
+SDK (deterministic-check, numeric-scorer, LLM-judge, auto-code-runner, human-in-the-loop) staged
+cheap → `tentative`, hard → `accepted`. Task types shipping today:
+- **`fe`** — feature engineering: runs-clean + features-defined + a balanced-accuracy selection gate on
+  a reserved hold-out (optimizer mode).
+- **`fe-kaggle`** — the same, but the authoritative gate is the **real Kaggle leaderboard**.
+- **`code`** — a minimal code-execution task (parses + runs-clean).
+
+**Extensibility:** both are pluggable extension points — you can add a sandbox arm (or a whole harness)
+and a verifier approach without touching the kernel. **A how-to guide for adding sandboxes and verifiers
+is forthcoming** ([#66](https://github.com/kynetyk-ai/verity/issues/66)); until then, the FE / `code`
+composition builders (`src/verity/composition/`) are the worked references.
+
 ## Repo layout
 
 ```
@@ -122,16 +236,36 @@ ROADMAP.md    the living path (now: post-MVP backlog)
 .env.example  copy to .env for the live demo
 pyproject.toml / justfile   uv project + dev commands
 Dockerfile.sandbox          the image the container sandbox runs the agent in
+Dockerfile.verifier         the standing advisory-verifier service image (Phase 7.1)
+Dockerfile.controlplane     the task-agnostic control-plane image (launches worker containers)
+infra/            compose files for the containerized topology (compose.fe.yml one-shot; compose.daemon.yml standing)
+docs/             API reference, guides, and architecture decision records (see Docs below)
 src/verity/
   contracts/      the cross-service value model + service ports (no service depends on another)
   control_plane/  the sole mutator: store, commit lifecycle, registries, context assembly, loop
-  verifier/       the opaque verifier: gate-primitive SDK + the container code-runner
-  sandbox/        the real agent runtime (Deep Agents) — in-process + container drivers
+  verifier/       the opaque verifier: gate-primitive SDK + the container/worker code-runner
+  sandbox/        the real agent runtime (Deep Agents) — in-process + container/worker drivers
   domains/        per-domain wiring; feature_engineering.py is the §12 MVP domain
+  composition/    applies a task to a generic control plane (configure_fe_task) + the FE-run entrypoint
+  provisioning/   the WorkerBackend seam + DockerBackend + the label-reaper (ADR 0003)
+  eval/           the cross-model benchmark harness (quality / cost / latency)
+  transport/      networked port-RPC (loopback + HTTP) for the service split
+  logging.py / retry.py / telemetry.py   structured logging, bounded-backoff retries, metrics sink
 tools/harness/    non-product test doubles + the dataset-split helper
 tests/            test suite (offline by default; docker/live auto-skip)
 spec/             vendored specification + references (see above)
 ```
+
+## Docs
+
+Reference material lives in [`docs/`](docs/):
+
+- [`docs/api-surface.md`](docs/api-surface.md) — the **control-plane API reference**, with a worked
+  feature-engineering example (programmatic + fully containerized).
+- [`docs/local-models.md`](docs/local-models.md) — running against a local / open OpenAI-compatible model.
+- [`docs/glossary.md`](docs/glossary.md) — the run-control vocabulary (tenant / task / run / job).
+- [`docs/adr/`](docs/adr/) — architecture decision records (opaque verifier; Deep Agents sandbox;
+  control-plane + ephemeral-worker provisioning).
 
 ---
 

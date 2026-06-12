@@ -1,0 +1,32 @@
+# The Verity code-runner image. Build from the REPO ROOT:
+#
+#   docker build -f Dockerfile.coderunner -t verity-code-runner:latest .
+#
+# The verifier's code-runner (verity.provisioning BackendCodeRunner) runs an UNTRUSTED submission
+# per gate: `pip install -r requirements.txt` then `python /work/submission.py` (network on for the
+# install only), in a caps-dropped, tmpfs-backed container. It carries NO verity code — it only needs
+# a Python runtime plus the SYSTEM shared libraries that the common ML wheels link at runtime but pip
+# cannot supply: manylinux wheels assume these are present, and `python:3.12-slim` strips them out, so
+# a `pip install lightgbm` succeeds yet `import lightgbm` dies with `OSError: libgomp.so.1`.
+#
+#   - libgomp1       OpenMP runtime — LightGBM, XGBoost, scikit-learn HistGradientBoosting
+#   - libgl1         OpenGL — OpenCV (cv2) and other image/vision libraries
+#   - libglib2.0-0   glib — OpenCV and friends
+#   - libgfortran5   Fortran runtime — some scipy / statsmodels paths
+#
+# No build toolchain is installed (kept lean); the agent is steered toward wheel-available CPU
+# libraries (see the domain instructions). Extend this list if a needed wheel links another system .so.
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgomp1 \
+        libgl1 \
+        libglib2.0-0 \
+        libgfortran5 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# No ENTRYPOINT: the code-runner backend supplies the pip-install + `python /work/submission.py` cmd.

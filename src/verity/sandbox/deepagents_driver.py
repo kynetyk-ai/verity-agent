@@ -41,6 +41,7 @@ from verity.sandbox.descriptor import (
     ProposalDescriptor,
 )
 from verity.sandbox.errors import SandboxError
+from verity.sandbox.model_spec import coerce_model
 from verity.sandbox.tools import resolve_tools
 
 __all__ = [
@@ -264,7 +265,9 @@ class DeepAgentsInProcessDriver:
     ) -> None:
         backend = FilesystemBackend(root_dir=workspace.root, virtual_mode=False)
         agent = build_deepagents_agent(
-            model=self._model,
+            # Resolve a ModelSpec at the in-process edge (parity with the container path); a bare
+            # string or a fake chat model passes through untouched (Phase 6).
+            model=coerce_model(self._model),
             operations=operations,
             outbox=workspace.outbox(),
             system_prompt=system_prompt,

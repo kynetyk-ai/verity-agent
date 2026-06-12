@@ -23,6 +23,8 @@ from verity.contracts import (
     ArtifactStatus,
     GateDecision,
     GateVerdict,
+    RunContext,
+    SupportsRunContext,
     VerdictBundle,
     VerdictKind,
     VerifierRequest,
@@ -64,6 +66,15 @@ class SdkVerifier:
     pipelines: dict[str, tuple[GateStep, ...]]
     requests: list[VerifierRequest] = field(default_factory=list)
     provisioned: bool = False
+    # Resources this verifier provisions work on (e.g. a backend-backed code-runner) that want the
+    # control plane's run identity stamped onto their workers (7.4.h). A gate's runner registers
+    # here; a pure in-process gate registers nothing.
+    context_sinks: tuple[SupportsRunContext, ...] = ()
+
+    def bind_run_context(self, ctx: RunContext) -> None:
+        """Forward the control plane's run-identity cell to every resource that stamps it."""
+        for sink in self.context_sinks:
+            sink.bind_run_context(ctx)
 
     async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         self.requests.append(request)

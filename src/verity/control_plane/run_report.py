@@ -198,10 +198,12 @@ class RunReport:
     cycles: list[CycleReport]
     summary: RunSummary
     agent_telemetry: JsonDict | None  # run-total tokens / steps / tool-calls (5.3b), or None
+    tenant_id: str = "default"  # the tenant this run belongs to (Phase 7 multi-tenancy seam)
 
     def to_dict(self) -> JsonDict:
         return {
             "report_schema_version": self.report_schema_version, "task_id": self.task_id,
+            "tenant_id": self.tenant_id,
             "generated_at": self.generated_at, "policy": self.policy,
             "cycles": [c.to_dict() for c in self.cycles], "summary": self.summary.to_dict(),
             "agent_telemetry": self.agent_telemetry,
@@ -241,6 +243,7 @@ def build_run_report(
     policy: JsonDict,
     generated_at: str,
     rationale: Mapping[str, str],
+    tenant_id: str = "default",
 ) -> RunReport:
     """Project the recorded cycles + the store into a generic :class:`RunReport`.
 
@@ -271,6 +274,7 @@ def build_run_report(
         cycles=cycle_reports,
         summary=_summary(store, cycles),
         agent_telemetry=_run_telemetry(cycles),
+        tenant_id=tenant_id,
     )
 
 

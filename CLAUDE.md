@@ -65,15 +65,66 @@ Non-negotiable working norms for this repo:
   - **Structured logging from day one** — every service logs; no `print`-and-hope.
   - **Tests written alongside the code** — good coverage as we go, not bolted on at the end.
 - **Always work on a branch.** Never commit directly to `main`; branch, then open a PR.
+- **The unit of work for a sprint is a commit, not a PR.** Land each sprint as its own focused,
+  green commit on the working branch; a single PR then carries several related sprints. Prefer
+  **fewer, meaningful PRs** over one-PR-per-sprint churn. **Always align before issuing a PR** —
+  confirm the scope and timing with the user rather than opening one unprompted.
 - **Never open a PR on buggy or embarrassing code.** It runs, it's tested, and it's clean before it
   goes up for review. A PR is a finished thought, not a work-in-progress dump.
-- **Your sprint unit is a commit not a PR**, the user prefers larger substantive PRs vs a many small
-  and hard to follow PRs.  Plan a commit schedule, get the user's input on when something deserves a PR.
-- **We've run an error hardening audit** and we don't want to end up with the same mess.  Right good code 
-  with robust error handling during development - that means when possible error handingly with obvious error
-  typed, retry handling etc.  If you can't predict errors make let the code fail quickly.
+- **Keep the error-handling bar the hardening pass set (Phase 5.1).** These are now defaults, not
+  one-off work:
+  - **Typed errors wherever failure is predictable** — every service/IO boundary surfaces a
+    domain-specific error, never a raw `OSError`/`KeyError` escaping to abort a run. Distinguish
+    *recoverable* (degrade-don't-crash: record the failed cycle, feed it back, continue) from *misuse*
+    (fail fast and loud).
+  - **Retry transient external calls** with bounded backoff (the shared `retry_async` /
+    `RetryPolicy`), and classify what's transient vs. fatal explicitly.
+  - **"A failed step is recorded, not fatal"** stays an invariant — assert it with property tests, not
+    just examples. Mutations stay atomic (commit-path `transaction()`).
 
 ## Status
 
-Greenfield scaffold — no implementation code yet. **Stack: Python, managed with uv** (see
-*Coding habits*). Set further conventions here as the first service lands.
+**Post-MVP, deep into the Post-MVP roadmap.** Phases 0–5 are complete: the control plane, the verifier
+service + gate-primitive SDK, the sandbox service (in-process + container Deep Agents), and the
+feature-engineering domain (§12) that reached MVP against the twelve §13 acceptance criteria — plus the
+Phase 5 reliability & observability hardening (degrade-don't-crash on both boundaries, typed errors,
+retries, atomic commits, the store-derived `RunReport`).
+
+**Phase 6 — model breadth** (the thesis payoff) is code-complete and **live-validated on a local open
+model** (Ollama / Qwen on Apple Silicon, 2026-06-08); hosted-OpenAI live validation is pending a key.
+**Phase 7 — service split & full containerization** reached its done-line (7.5): a **task-agnostic
+control plane runs in a container** and launches ephemeral sandbox + code-runner **worker containers**
+as siblings on the host daemon (ADR 0003), running the §12 FE test by configuring the CP through its
+API (`composition.configure_fe_task` / `just fe-containerized`).
+
+**Phase 8 — the long-lived control-plane service (v1 complete)** (ADR 0004): the CP now runs as a
+**standing daemon** (`verity serve`) that multiplexes many tasks (per-task `ControlPlane` + durable
+`SqliteStore`) behind one process, with a `verity` **CLI** as a thin client. Two control surfaces: a
+local **Unix socket** (`docker exec verity-cp verity …` / `just cp …`, unauthenticated, local-only) and
+an authenticated **network HTTP API** (`verity serve --http HOST:PORT` + bearer `VERITY_API_TOKEN`),
+plus a **byte data plane** (raw `POST /objects`, `GET /artifacts/{run_id}/{path}`). Tasks are created,
+run (async — poll `status`, read `results`, `export` artifacts), and survive daemon restart; no rebuild
+to drive a new task. A **task catalog** self-describes each installed type's output-shape contract,
+`verifier_approach`, and `sandbox_notes`. Added the **`fe-kaggle`** task variant: a two-tier gate
+(cheap local hold-out proxy + a hard real **Kaggle-leaderboard** gate, trusted-submitter so creds never
+reach a worker), **live-validated** at 0.92253 balanced accuracy on `playground-series-s6e6` with local
+Qwen. The three **acceptance modes** (optimizer / accumulate / first-acceptable) are documented as
+emergent from verifier gate composition × `--stop-on-accept` × object-provisioning mode (README + the
+`verity-run-task` skill).
+
+**Remaining / open tracks:** hosted-model live validation; the multi-tenancy engine (real queue +
+tenant isolation, issue #3); a `K8sBackend`; and three research-driven docs/feature tracks — making the
+domain concept optional (#64), per-task harness-agnostic agent skills via the CLI (#65), and extender
+docs for adding sandboxes & verifiers (#66). See [ROADMAP.md](ROADMAP.md) for the live plan and
+[docs/api-surface.md](docs/api-surface.md) for the control-plane API reference.
+
+**Stack: Python, managed with uv** (see *Coding habits*).
+
+## Parked branches
+
+- **`feat/containerized-services-gvisor`** — parked, **architecturally superseded** by the ADR 0003
+  worker-provisioning pivot (it predates it: networked HTTP **standing** sandbox/verifier services +
+  gVisor (`runsc`) sandboxing, ~4 ahead / far behind `develop`). Not on the path to merge. Kept as a
+  **reference** for two still-live tracks: the gVisor/`runsc` enablement work (now seamed as
+  `WorkerSpec.runtime`, ADR i) and the standing-service networked data-plane (issue #3, the
+  multi-tenancy & run-control track). Mine it for those when they activate; don't try to rebase it.

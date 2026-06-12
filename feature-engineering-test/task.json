@@ -1,0 +1,24 @@
+{
+  "type_name": "fe-kaggle",
+  "goal": "Climb the real Kaggle leaderboard for the stellar competition with a fast, self-contained pipeline.",
+  "sandbox": {
+    "model": "qwen3.6:27b-coding-mxfp8",
+    "base_url": "http://host.docker.internal:11434/v1"
+  },
+  "verifier": {
+    "approach": "kaggle",
+    "knobs": {
+      "competition": "playground-series-s6e6"
+    }
+  },
+  "policy": {
+    "max_cycles": 4,
+    "stop_on_accept": false
+  },
+  "data": {
+    "target": "class",
+    "id_column": "id",
+    "per_class": 300,
+    "reserved_fraction": 0.5
+  }
+}

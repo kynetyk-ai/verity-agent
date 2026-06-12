@@ -7,10 +7,26 @@ what's next?"* — `README.md` and `CLAUDE.md` point here.
 acceptance criteria pass** — the MVP finish line (Phase 4). The arc then continues into the
 **Post-MVP roadmap** (Phases 5–7) below.
 
-> **Status: MVP reached ✅** — Phases 0–4 are done. All twelve §13 criteria pass as runnable checks
-> (`tests/test_feature_engineering_acceptance.py`); a `@live` run drives real Claude proposals scored
-> in a container on the stellar dataset. Next: the Post-MVP roadmap (reliability & observability →
-> open models → service split) at the end of this file.
+> **Status: post-MVP, deep into the Post-MVP roadmap.** Phases 0–4 reached MVP (all twelve §13 criteria
+> pass as runnable checks in `tests/test_feature_engineering_acceptance.py`; a `@live` run drives real
+> Claude proposals scored in a container on the stellar dataset). Beyond MVP: **Phase 5 ✅**
+> (reliability & observability hardening); **Phase 6 🚧** (model breadth — code-complete, local open
+> model live-validated 2026-06-08, hosted-OpenAI live pending a key); **Phase 7 🚧** (service split &
+> full containerization — the seams are live, and the full-containerization **done-line is reached:
+> a generic control plane runs in a container and launches ephemeral worker containers, running FE via
+> its API — 7.5 ✅**). **Phase 8 🚧** (the long-lived, configurable control-plane service — a standing
+> daemon configured + run via a CLI/HTTP, no image rebuild), settled by
+> [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**: the
+> transport-agnostic **`ControlService` core (8.1 ✅)**, the **standing daemon + `verity` CLI over a
+> Unix socket (8.2 ✅)**, the **container wiring + isolation proof (8.3 ✅)**, and the
+> **external HTTP/REST control API (8.4 ✅)** have all landed — so **Phase 8 v1 is complete**: one
+> image serves a local Unix-socket daemon *and* an authenticated (bearer-token) network API with an
+> over-the-wire byte data plane, configured + run with no rebuild, durable across restart, with the
+> exchange + store volumes provably off every worker. Remaining beyond v1 (deferred engine tracks):
+> hosted-model live validation, the multi-tenancy/concurrency engine (#58), crash recovery (#57), the
+> full #3 networked data plane, and a `K8sBackend`.
+> The **control-plane API reference** (with a worked FE example) is
+> [`docs/api-surface.md`](docs/api-surface.md).
 
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
 every invariant — and prove it works against *bespoke, throwaway* agent/workspace and verifier
@@ -272,6 +288,17 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   on the actual stellar dataset, improving on the provisioned incumbent — auto-skips without a key /
   Docker / the dataset.
 - **Exit ✅:** **all twelve §13 acceptance criteria pass → MVP reached.**
+- **Enhancement — `fe-kaggle`: the real Kaggle leaderboard as the final-test gate ✅.** An additive
+  task type (`domains/feature_engineering_kaggle.py` + `composition/fe_kaggle.py`, registered in the
+  catalog) that keeps the FE domain but swaps the verifier for a **two-tier ladder**: a cheap
+  local-hold-out proxy filters every cycle, then a hard gate regenerates the submission on the full
+  train + the real `test.csv`, **submits to a live Kaggle competition** (`KaggleScorer` seam +
+  `RealKaggleScorer`, the `kaggle` extra), and accepts only what beats our best **public-leaderboard**
+  score. Trusted-submitter (creds never reach a worker); the ~5/day cap is read from the API and the
+  gate blocks until budget frees; degrade-don't-crash on API failure. New `verity create
+  --request-file` + `--test-data` (two inputs); the committed, runnable task package
+  (`feature-engineering-test/{PROTOCOL.md,task.json,run.sh}`, local-agent default). Offline-tested on a
+  `FakeKaggleScorer`; a `@kaggle @live` test submits for real (auto-skips without creds).
 
 ---
 
@@ -324,38 +351,269 @@ Harden the loop and make it measurable before scaling models or splitting servic
   adapter binds *how*; names — not callables — cross the container boundary). First concrete tool:
   **`read_pdf`**, so the agent can read PDFs in its read-only roles.
 
-### Phase 6 — Model breadth: open, local & cheaper hosted ⬜ *(the thesis payoff)*
+### Phase 6 — Model breadth: open, local & cheaper hosted 🚧 *(the thesis payoff)*
 
 "Good proposals from cheap models" is the point of the whole approach — make it real across local /
-open weights *and* cheaper hosted APIs.
+open weights *and* cheaper hosted APIs. **Code landed and offline-green; live validation is the
+remaining paired step** (stand up a local server / supply an OpenAI key — see below).
 
-- **6.1 Local model via vllm-mlx** — stand up **vllm-mlx** (OpenAI-compatible server, Apple-Silicon
-  Metal backend) and a `deepagents-local` sandbox config; solve container→host networking
-  (`host.docker.internal`). Keep the seam **OpenAI-compatible** so Ollama / other backends swap in —
-  vLLM on Apple Silicon is younger than Ollama, so don't couple to it. Leans on 5.2 compaction (small
-  local context windows make it a hard dependency, not a nicety).
-- **6.2 Cheaper hosted providers** — wire **OpenAI** and other hosted APIs (cheaper-but-capable tiers)
-  behind the **same OpenAI-compatible model seam**: a per-provider model-construction path, a
-  registered `deepagents-<provider>` sandbox config, and the provider key passed through into the
-  container. The seam is already provider-agnostic (the driver takes a `model`), so this is mostly
-  config — its value is comparison fodder for 6.3 and a cheaper non-frontier baseline.
-- **6.3 Eval / benchmarking harness** — compare **proposal quality + cost + latency** across models
-  (local, cheaper-hosted, and frontier) on the same task, using the 5.3 RunReport metrics. The
-  instrument that tells us whether the thesis actually holds.
+The seam is a typed, provider-agnostic **`ModelSpec`** (`provider`, `model`, `base_url`,
+`api_key_env`, `extra`) + a lazy **`resolve_model`**: no `base_url` → the bare `provider:model` string
+(Anthropic unchanged); a `base_url` → a `ChatOpenAI` pointed at any OpenAI-compatible endpoint. It
+crosses the container boundary as env vars (Anthropic byte-identical to before), the driver forwards
+the spec's key by name and adds `--add-host=host.docker.internal:host-gateway` only for host-local
+endpoints, and both drivers resolve a spec at their own edge.
 
-### Phase 7 — Service split & full containerization ⬜
+- **6.1 Local / self-hosted model ✅ (code + live-validated)** — `local_spec(...)` + a
+  `deepagents-local` config over a **generic OpenAI-compatible endpoint** reached via
+  `host.docker.internal`; **not** coupled to any one server (vLLM / vLLM-mlx, Ollama, llama.cpp
+  interchangeable — see `docs/local-models.md`). Leans on 5.2 compaction for small local context
+  windows. **Live-validated 2026-06-08** (Ollama, see below).
+- **6.2 Cheaper hosted providers ✅ (code), live deferred** — `openai_spec(...)` + a `deepagents-openai`
+  config behind the same seam; `OPENAI_API_KEY` forwarded automatically, no host gateway. The `@live`
+  smoke is written and **auto-skips until a key exists** (no live OpenAI call was made — deferred per
+  the no-key constraint). Other hosted providers swap in by config.
+- **6.3 Eval / benchmarking harness ✅** — `src/verity/eval/` runs the **same task across model arms**
+  and projects **quality + cost + latency** from the 5.3 `RunReport`: a nullable `cost_usd` + a small
+  overridable pricing table (cost lives in the eval module, the control plane stays dollar-free), and a
+  `Comparison` (outcomes, accepted-count, tokens, cost, best-score, latencies). `tools/benchmark_models.py`
+  is the live cross-model entrypoint. The instrument that tells us whether the thesis holds.
 
-The biggest, most deferrable: make each service independently deployable.
+*Live validation:* **(1) local — done (2026-06-08).** `qwen3.6:27b-coding-mxfp8` (Ollama on an M3
+Ultra) drove the full read→propose→gate→commit loop to an accepted commit. Two benchmarks
+(`tools/benchmark_models.py`, local vs frontier sonnet on identical data):
+> - **Trivial code task:** parity — both accepted, local **$0.00** vs **$0.23**, ~1.5× latency.
+> - **Scored FE domain (§12), 3 refine cycles:** the gap is real — frontier reached **0.910** balanced
+>   accuracy (2 accepted), the local model landed **0 accepted** (all 3 cycles stuck at the
+>   `features-defined` *refine* gate; scripts ran clean but never cleared the bar), at ~3× latency and
+>   more tokens. So *good proposals from cheap models* held for easy work and **not** for this hard
+>   task/model. *Observation (parked, not now):* the local arm got **stuck on one gate's refine loop**,
+>   not failing randomly — likely the **prompt + the `refine`/`revise` feedback being too terse for a
+>   limited-reasoning model** to act on, rather than a hard ceiling. A prompt/feedback-tuning question,
+>   not a blocker.
 
-- **7.1 Service entrypoints + images** — `__main__` / server entrypoints + Dockerfiles for the
-  **control plane** and **verifier** (today only the sandbox is imaged), so each builds into its own
-  image even before the wire exists.
-- **7.2 Networked transport** — a wire serialization + transport adapter so the async ports cross a
-  network instead of an in-process call (they were built for exactly this): the standing
-  control-plane data plane (**#3**) and the networked verifier (**#10**). The four-service split
-  (workspace promoted out of the sandbox) lands here.
-- **7.3 Live telemetry + panel** — OpenTelemetry / Prometheus emission from each service and a metrics
-  dashboard over the 5.3 RunReport signals.
+**(2) hosted OpenAI — pending a key.** Both paths are manual (Docker + image + a real model), outside
+the CI gate.
+
+> **Revisit for hardening — Docker Model Runner (DMR).** We first tried DMR's `vllm-metal` backend as
+> the *cleaner, Docker-managed* way to host the local model, but it **failed `EngineCore`
+> initialization on Qwen3.6** (architecture too new for that backend build) and we fell back to
+> Ollama. The seam already supports DMR (any `*.docker.internal` gateway). Worth revisiting once DMR's
+> `vllm-metal` tracks newer model architectures — it is the tidier host-model story on macOS. Tracked
+> as **#40** under the woven model-server hardening track.
+
+### Phase 7 — Service split & full containerization 🚧
+
+The biggest, most deferrable: make each service independently deployable. The **seams are done and
+live-validated** (7.1–7.3 + the multi-tenancy seams): the verifier runs as a standing HTTP service the
+control plane drives over the wire, with **no `ControlPlane` change** (the async ports paid off); the
+transport seam is CI-provable via an in-process loopback and proven against the built image.
+
+**The full-containerization architecture is now settled by
+[ADR 0003](docs/adr/0003-control-plane-and-ephemeral-worker-provisioning.md):** a long-lived control
+plane that runs sandbox/verifier work as **ephemeral, per-cycle, isolated workers** behind a
+backend-agnostic provisioning seam (local Docker now, k8s later). Two decisions matter for the
+roadmap: the per-cycle path is **batch-job workers** (`launch(input) → wait → harvest → destroy`), not
+standing servers — which **supersedes the deferred "sandbox-as-server"** (we will not build it); and
+the **control plane stays agnostic** — provisioning lives in a neutral `provisioning/` package behind
+the ports, never on the CP's surface. **7.4 is the live edge** and ends at the full-containerization
+done-line: the FE run driven entirely by control-plane configuration, no ad-hoc wiring.
+
+- **7.1 Service entrypoints + images ✅ (verifier)** — `verifier/__main__.py` serves the
+  advisory verifier over HTTP (uvicorn); `Dockerfile.verifier` builds it (core + `service` extra, no
+  deepagents). The built image serves `/health` + `/provision` live. *Re-homed:* the **control-plane**
+  entrypoint/image is absorbed into **7.4** (the worker-driven CP); the outward data-plane API (**#3**)
+  is the Multi-tenancy & run-control track. *Superseded by ADR 0003:* the sandbox-as-server (the
+  per-cycle path is batch-job workers — 7.4).
+- **7.2 Networked transport ✅ (verifier path)** — a JSON **wire codec** for every boundary type
+  (`contracts/wire.py`, object bytes inline-base64, rationale segregation structural) + a **transport
+  seam** (`transport/`): `Transport` + an error-classifying envelope (boundary errors cross as
+  themselves; `GateUnavailable`/`SandboxError` recoverable), `Remote*` clients / `*Server` hosts, a
+  **loopback** transport (CI) and an **HTTP/FastAPI** transport. The **networked verifier (#10)** is
+  live; degrade-don't-crash survives the hop (a killed verifier mid-run → recorded gate failure, run
+  continues). *Reused:* the transport + `wire.py` are the seam for a **future launched-verifier-worker**
+  (ADR g — not the FE batch path). *Re-homed:* the standing control-plane data plane (**#3**) →
+  Multi-tenancy & run-control track. *Deferred (designed-for):* the **four-service split** (workspace
+  out of the sandbox, §16).
+- **7.3 Live telemetry + panel ✅ (emission)** — `telemetry.py`: a `MetricsSink` + `export_run_report`
+  (outcome / gate-decision counters, per-cycle latency histograms, run-total gauges) over the 5.3
+  RunReport, with a `Null` default (opt-in) and a lazy **Prometheus** sink (`telemetry` extra) + a
+  structlog→metrics processor. *Deferred (ADR k — the telemetry push sink):* the Grafana dashboard +
+  OpenTelemetry sink + wiring a scrape; under the worker model, workers ship labelled structured logs
+  (`{tenant, run, cycle, role}`) and a fleet sink aggregates them.
+- **Multi-tenancy & run-control seams ✅** — `JobQueue` port + in-process default, a `RunRecord` store
+  keyed by `(tenant_id, run_id)` over the RunReport, and `tenant_id` threaded through `TaskConfig` /
+  the report (single default tenant). Seams-first; the engine (real queue + workers, store upgrade,
+  tenant isolation, **#27**/**#9**) is the deferred adapter swap.
+
+- **7.4 Worker provisioning → full containerization, FE via config (ADR 0003) ✅** — the live edge.
+  Realize ADR 0003: sandbox/verifier per-cycle work runs as **ephemeral, isolated, batch-job workers**
+  behind a neutral `WorkerBackend` seam, ending at the **done-line: the FE run driven entirely by
+  control-plane configuration, no ad-hoc wiring** (today it is hand-wired in
+  `tools/benchmark_models.py:_build_fe_task`). Built fresh off `develop`. **Genericity invariant (held
+  throughout):** the control plane stays agnostic — it talks only to `SandboxPort`/`VerifierPort` via
+  the registry; provisioning lives in a **neutral `provisioning/` package** the CP never imports, and
+  is **registration/deployment config, never `TaskConfig`**; FE-specifics are confined to a
+  domain-layer registration builder. Each sprint a green, focused commit (suite green at every step):
+  - **a. Provisioning contract ✅** — `provisioning/backend.py`: the `WorkerBackend` Protocol
+    (`launch/status/wait/logs/stop/destroy/list/reap` + optional `recover` + `run_to_completion` = the
+    batch path) + `WorkerSpec` (labels `{harness,tenant,job,run,cycle,role,config}`, image, command,
+    env, mounts, `input_files`, limits, `runtime="runc"`, network, timeout). Imports nothing
+    service/domain. Unit-tested; unconsumed.
+  - **b. `DockerBackend` ✅** (riskiest — security argv) — `provisioning/docker.py`: ONE parameterized
+    hostile-posture `docker run` builder driven by `WorkerSpec`, replacing the two duplicated builders;
+    `--label` per key; `list`/`reap` by label; structured launch/destroy audit logs; subprocess (no
+    docker SDK); `runtime` knob default `runc` (gVisor `runsc` opt-in, ADR i). **Byte-level argv-pin
+    tests for both postures** (sandbox network-on / code-runner `--network=none`) before deleting the
+    old builders; a `@docker` smoke.
+  - **c. Backend-backed sandbox driver ✅** — `BackendSandboxDriver` (in `sandbox/`) over the existing
+    `CycleInput` + `container_entry` (reused unchanged); `DeepAgentsContainerDriver` becomes a thin
+    wrapper.
+  - **d. Backend-backed code-runner ✅** (the untrusted-code-isolation resolution) — `BackendCodeRunner`
+    (in `verifier/`): untrusted submitted code runs in a backend-launched, **labelled, isolated
+    worker**, never an in-process subprocess. The FE verifier's gate **logic stays trusted + held
+    across the run** (its in-memory incumbent ledger forbids per-cycle disposal); `reserved_labels`
+    (the answer key) never enters any worker.
+  - *(Test substrate: stubs-or-integration, no in-process middle.)* Offline tests use **`FakeBackend`**
+    (a proper stub — scripts the worker boundary, runs nothing, real gate logic in-process);
+    integration uses **`DockerBackend`** (`@docker`/`@live`). An "`InProcessBackend`" was considered and
+    **dropped** — a half-real backend is neither a deterministic stub nor a faithful substrate, and it
+    would drag sandbox/verifier knowledge into the neutral `provisioning/` layer. Backends are
+    *substrates* (Docker now, k8s later); it is addable later behind the same port if Docker-free
+    real-logic execution is ever needed.
+  - **f. Declarative wiring at the registration layer ✅** (kills the ad-hoc wiring) — the
+    `verity.composition` root: a `ProvisioningConfig` (backend + per-role substrate shape) + an
+    FE composition builder `build_fe_control_plane` that replaces `_build_fe_task`. `TaskConfig` and
+    `ControlPlane` unchanged; provisioning stays off `TaskConfig`. (The old
+    `DeepAgentsContainerDriver`/`ContainerCodeRunner` classes remain for the `code` benchmark domain;
+    full retirement is deferred to a cleanup pass.)
+  - **g. FE-via-config acceptance ✅** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
+    built purely from declarative config + a backend selection; asserts an accepted `Submission`, the
+    no-cross-cycle-bleed property (§3.5), untrusted code in a `{role:code-runner}`-labelled worker, and
+    `reserved_labels` absent from every worker. Green on `FakeBackend` (offline — config-driven flow +
+    real gate logic, scripted execution) and `DockerBackend` (`@live` for the real model; a recording
+    backend wrapper runs the same isolation assertions on the live path).
+  - **h. Placed seams ✅** — a neutral `RunContext` (`tenant_id`/`run_id`/`cycle`) the control plane
+    binds to any service advertising `SupportsRunContext`; the backend-backed sandbox driver +
+    code-runner stamp it onto every worker's `{harness,tenant,run,cycle,role,config}` labels (the
+    verifier forwards the bind to its runner). A `RunRecord` is emitted at run end (keyed by
+    `(tenant_id, run_id)`, pointing into the store). A label-reaper + the `verity-reaper` console
+    entrypoint reap orphaned workers by selector (ADR e), out of band — the control plane never
+    touches a backend.
+  - *Deferred (placed seams, per ADR 0003 — see the tracks below):* the reconciliation-loop + per-tenant
+    concurrency engine (ADR c/h) = the Multi-tenancy engine + "parallel agents against one task"; the
+    `K8sBackend` (a second impl of the same port); the **launched-verifier-worker** for FE (precondition:
+    move the incumbent ledger into the store + re-read incumbents inside the commit `transaction()`,
+    ADR j); rootless + `docker-socket-proxy` posture and a Ryuk-style GC death-switch (deployment config,
+    ADR f); gVisor/microVM (`WorkerSpec.runtime`, ADR i).
+
+- **7.5 Fully containerized control plane — generic CP + FE via config (proven live) ✅** — the real
+  done-line: a **task-agnostic** control plane runs *in a container* and launches the sandbox +
+  code-runner **worker containers** as siblings on the host daemon (controlled `/var/run/docker.sock`,
+  ADR 0003 §f — not docker-in-docker), running the §12 FE test by **configuring the CP via its API**,
+  no ad-hoc wiring. Sub-parts:
+  - **Decouple the CP from FE.** `build_fe_control_plane` (which built a `ControlPlane` *inside* an
+    FE-specific function) is deleted. The CP is constructed generic; a task is applied through the CP's
+    API (`register_sandbox`/`register_verifier` + `configure`) by `composition.fe.configure_fe_task` /
+    `configure_code_task`. Enforced **mechanically**: an AST guard asserts `verity.control_plane`
+    imports nothing from `verity.domains`, and one generic CP runs both the FE and `code` tasks.
+  - **Sibling-mount fix.** `DockerBackend(staging_root=…)` / `VERITY_WORKER_STAGING` — staging dirs go
+    under a host↔CP-container shared path so worker bind mounts resolve on the host daemon.
+  - **CP image + entrypoint.** `Dockerfile.controlplane` (verity core + the docker CLI, no sandbox
+    extra) + `python -m verity.composition.fe_run` (generic CP, FE applied via its API). The
+    stratified-split helper moved into the package (`verity.composition.dataset`).
+  - **Wiring + live proof.** `infra/compose.fe.yml` + `just fe-containerized`. Live on the local model:
+    the CP container launched both worker roles and reached an **accepted Submission** (cycle 1
+    shape-error → corrected → cycle 2 accepted, 5 Features grounded), with the 7.4.h worker labels and
+    no stragglers.
+
+### Phase 8 — The long-lived, configurable control-plane service (ADR 0004) ✅ *(v1)*
+
+The batch control-plane container (7.5) becomes a **standing daemon** an operator (or Claude Code)
+delegates to: configure a task, select sandbox + verifier configs from a **catalog**, provide data,
+run, and pull results + durable artifacts — **without rebuilding any image**. "Wrap, don't rebuild":
+an additive control/data plane over the *unchanged* kernel and the ADR 0003 worker model. **Activates
+issue #3**; settled by [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md). Each sprint
+a green, focused commit.
+
+**Guardrails (held throughout):** genericity (`verity.control_plane` imports no domain); the sandbox
+**byte-provenance** isolation invariant (the answer key / wrong-role bytes never reach a worker);
+**per-task store isolation** (a store per task instance — no same-typed `INCUMBENTS`/manifest bleed,
+#58); verifier **opacity** (no task/verifier locking — self-description + graceful run-time failure);
+and `composition/fe_run.py` + the library API stay valid.
+
+- **8.1 `ControlService` core + task catalog + per-task durable stores ✅** — a transport-agnostic
+  async facade over a **per-task `ControlPlane` + `SqliteStore` multiplexer** (a store per task
+  instance — no cross-task bleed, no kernel change; it mirrors `fe_run`'s one-CP-per-run shape); a
+  `TaskCatalog` + a JSON `TaskRequest`; refactor `configure_fe_task` / `configure_code_task`
+  (`composition/`) into catalog entries consuming a `TaskRequest` (old signatures preserved);
+  **persist the `TaskRequest`** so tasks are durable, rehydratable runnable entities; wire the
+  `JobQueue` + daemon-level `RunRecord` seams (`contracts/jobqueue.py`, `control_plane/run_record.py`).
+  **Carve-out (the riskiest new logic):** the split + answer-key (`reserved_labels`) derivation moves
+  into the builder against client-supplied data — split-correctness tests + a positive
+  **byte-provenance** test (and that two same-typed task instances never see each other's
+  `INCUMBENTS`). Offline on `FakeBackend`. **Landed:** the new `verity.service` package
+  (`ControlService` + `TaskIndex`) over `verity.composition`'s `TaskCatalog` / `TaskRequest`
+  (`build_fe_task` / `build_code_task` consume a request; the old `configure_*_task` signatures are
+  preserved); run identity is unified by injecting the daemon `RunRecordStore` + a per-run id cell
+  into each per-task CP (kernel untouched, the AST genericity guard stays green). Tests:
+  `test_dataset_split_carveout`, `test_fe_builder_byte_provenance` (answer key absent from every
+  worker), `test_per_task_store_isolation` (no `INCUMBENTS` bleed), `test_control_service`
+  (create → run → results + restart-then-run rehydration + catalog dispatch of the `code` type).
+- **8.2 The daemon + internal IPC + the `verity` CLI ✅** — `verity serve` (the multiplexer +
+  `DockerBackend`; a **background-task executor** + a global run lock; `status`/`results` served
+  concurrently with an in-flight run) over a **Unix-domain socket**; the `verity` console-script
+  **client** over that socket (`catalog` / `ingest` / `task create` / `run` / `status` / `results` /
+  `export`); registry **self-description** (each sandbox/verifier publishes its contract) rendered by
+  `verity catalog`; an incompatible task/verifier pairing **fails gracefully + informatively** via the
+  existing degrade-don't-crash path (tested). **Landed:** background execution lives in the
+  `ControlService` core (`submit_run`/`await_run` + an `asyncio.Lock`; `run()` stays a blocking
+  wrapper, 8.1 tests unchanged); the control surface is **HTTP/FastAPI served over the Unix socket**
+  (uvicorn `uds=` + an httpx `uds=` client — *no bespoke protocol*; the socket is the no-auth-yet v1
+  trust boundary, and the *same* `build_app` is what 8.4 rebinds to a TCP port + auth). Self-description
+  is `TaskTypeDescription` (built from the same domain schema that renders the system prompt) on the
+  catalog (`describe`/`describe_all`). New `verity.service` modules: `http.py` (`build_app`),
+  `daemon.py` (`verity serve`), `client.py`, `cli.py`; the `verity` console script. Tests:
+  `test_control_service_concurrency` (background + concurrent reads + graceful abort-with-reason),
+  `test_catalog_describe`, `test_service_http` (full ingest→create→run→results→export over ASGI +
+  a real-`uds` round-trip; fastapi/httpx `importorskip`, so the lean gate skips cleanly).
+- **8.3 Container wiring + live proof (the done-line) ✅** — the control-plane image now also serves
+  the standing daemon, with the **exchange** + **persistent-store** volumes wired and proven isolated.
+  **Landed:** `Dockerfile.controlplane` carries the `service` extra (fastapi/uvicorn/httpx) so it can
+  run `verity serve`; a new **`infra/compose.daemon.yml`** brings up a long-lived `verity-cp` container
+  (entrypoint `verity serve`) mounting the docker socket, the shared staging dir, the **exchange**
+  (`VERITY_EXCHANGE`, client↔CP only) and a **persistent store** (`VERITY_STORE_ROOT`, durable
+  stores + task definitions); `just cp-serve` / `cp` / `cp-down` drive its lifecycle. The
+  **neither-reaches-a-worker** guarantee is `tests/test_daemon_volume_isolation.py` (offline, on a
+  real on-disk `ControlService`): a `WorkerSpec` has no host-bind-mount field at all, and the test
+  further asserts neither host path leaks (env / passthrough / command / input keys) and the answer
+  key never appears. The **live proof** is `tests/test_daemon_live.py` (`@docker @live`, auto-skip):
+  one running container lists **both `fe` and `code` task types**, runs an `fe` task
+  (ingest→create→run→results→export to the exchange) and a `code` task with **no rebuild between
+  them**, then **survives a restart** and re-runs the pre-restart task (durable definitions).
+  *Deviation from ADR 0004 sprint 3:* per the chosen layout, `compose.fe.yml` is left **unchanged**
+  (the one-shot `fe_run` batch path), so the image's default `ENTRYPOINT` stays `fe_run` and the
+  **daemon compose overrides it** to `verity serve` — the daemon is fully reachable, just selected by
+  `compose.daemon.yml` rather than baked as the image default.
+- **8.4 External HTTP/REST control API ✅** — the *same* FastAPI `build_app` (8.2), now bindable to a
+  **network TCP port** with **bearer-token auth**, completing Phase 8 v1. **Landed:** `verity serve
+  --http HOST:PORT` (or `$VERITY_HTTP`; `python -m verity.service` mirrors `verifier/__main__.py`)
+  serves the app over TCP and **refuses to start without `VERITY_API_TOKEN`**; the auth dependency
+  gates every route but `GET /health` (401 otherwise) and stashes the principal on the request (the
+  identity hook) — the UDS binding stays auth-free (the local trust boundary). Endpoint-parity with the
+  CLI is unchanged; the `Client`/CLI gained a TCP target (`--url`/`--token`, `$VERITY_URL`). The
+  minimal **over-the-wire byte data plane** was pulled forward so a client with no shared volume is
+  usable: raw-bytes `POST /objects` (capped, 413 over) + `GET /artifacts/{run_id}/{path}`. Tests
+  (`tests/test_service_http_external.py`, offline + a real-TCP round trip): `/health` open, 401
+  without/with-wrong token, 200 with it, the refuse-without-token guard, and a byte upload → create →
+  run → artifact-download round trip. **Resolves ADR 0004 open Q3 → bearer token** (mTLS/OAuth and the
+  full #3 data plane — removing the exchange volume, streaming — stay deferred).
+- *Deferred (placed seams, per ADR 0004):* crash recovery for in-flight runs (**#57**; Temporal a
+  hardening candidate); the **multi-tenancy engine** — *cross-tenant* store isolation, the
+  single-writer→Postgres store-engine upgrade, object GC, and parallel live runs (the residual beyond
+  v1's per-task stores — **#58** / **#27** / **#9**); the **over-the-wire file API** (removes the
+  shared exchange volume — #3 proper); the **plugin loader** for runtime domain-code registration; and
+  **auth/authz** on the external HTTP surface.
 
 ### Woven through Phases 6–7
 
@@ -363,6 +621,17 @@ The biggest, most deferrable: make each service independently deployable.
   resource + output caps, mount layout, deps strategy), an offline / pinned-wheels install option to
   reclaim reproducibility, and a cleaner validity-rung vs scoring-rung split. Revisits the accepted
   network-on tradeoff.
+- **Configuration guide + a Claude Agent Skill for setting up the system** — now that the configuration
+  surface has stabilized through Phase 6, make standing up a new task / domain / model low-friction.
+  (a) A **configuration guide** in `docs/` covering the whole surface: building a domain (schema +
+  gate pipeline + shape validator + harvester), registering a sandbox via `ModelSpec` /
+  `local_spec` / `openai_spec`, registering a verifier + code runner, assembling a `TaskConfig`, the
+  `OrchestrationPolicy` (cycles / refine cap / stop-on-accept), and mounting data via
+  `static_contents` vs `data_sources` (the §13.12 isolation note). (b) A **Claude Agent Skill** that
+  scaffolds that configuration interactively — gathers the task/domain/model intent and emits a
+  working registration + `TaskConfig` (and a benchmark arm), so a user (or Claude) can wire a new
+  domain or model arm without reverse-engineering the test setups. The live-validation work
+  (`docs/local-models.md`, `tools/benchmark_models.py`) is the seed material.
 
 ### Multi-tenancy & run-control (a track spanning Phases 5 → 7)
 
@@ -383,7 +652,16 @@ added adapter, not a reshape.
   **object retention / GC** of bytes referenced only by terminal artifacts (**#9**, §5.5); **tenant
   isolation** (namespaced stores; no cross-tenant reads in retrieval / slices / object-provisioning) —
   the actual hard part; and the async **submit → job_id → poll/fetch** API a standing, networked
-  control plane wants. Naturally siblings with the service split (7.1–7.2).
+  control plane wants (the re-homed **#3** data plane). Naturally siblings with the service split
+  (7.1–7.4). **This is the home for ADR 0003's deferred concurrency engine:** the level-triggered
+  reconciliation loop + per-tenant concurrency slots/fairness (ADR c/h), and the commit-under-concurrency
+  correctness (re-read incumbents inside the commit `transaction()`, ADR j). The `WorkerBackend` (7.4)
+  is the seam it drives; a **`K8sBackend`** is the second impl of that port for a cluster deployment.
+- **Phase 8 takes the first engine increment.** The long-lived control-plane service (ADR 0004) wires
+  the `JobQueue`/`RunRecord` seams into a *standing daemon* (serial, single default tenant) and
+  activates the #3 control half. It already isolates **per task** (a store per task instance, 8.1);
+  the residual **cross-tenant** isolation (namespaced / Postgres stores, no cross-tenant reads) +
+  concurrency stay this deferred engine (#58).
 - **Not here:** authentication / authorization (still *further out*); parallel agents against one task
   (a related but separate concurrency concern, below).
 
@@ -391,28 +669,46 @@ added adapter, not a reshape.
 
 Where each tracked issue folds in (so the backlog and the plan stay linked):
 
+Currently-open issues (kept in sync with GitHub):
+
 | Issue | Folds into |
 | --- | --- |
-| **#3** standing control-plane data plane | 7.2 networked transport + the multi-tenancy engine |
-| **#5** spec sync: collapse §8.2 tool registry | *Further out* — doc housekeeping (already true in code) |
-| **#6** harness-bound executable tools | 5.4 sandbox tools & extensibility (the PDF-read tool) |
+| **#3** standing control-plane data plane | **Phase 8** (ADR 0004) + the multi-tenancy engine; the over-the-wire file API (removes the exchange volume) |
+| **#5** spec sync: collapse §8.2 tool registry | *Further out* — spec housekeeping (already true in code) |
 | **#9** object retention / GC | multi-tenancy engine (with the store-engine upgrade) |
-| **#10** networked verifier transport | 7.2 networked transport |
-| **#11** LLM-judge reproducibility (§5.8) | 5.1 reliability hardening |
-| **#12** stamp workspace-contract version | 5.1 reliability hardening |
-| **#13** JSON-object proposal payloads | 5.2 agent-harness hardening |
+| **#10** networked verifier transport | 7.2 — transport is live; residual: capability advertisement |
+| **#11** LLM-judge reproducibility (§5.8) | 5.1 — when a judge enters a live gate stack |
 | **#27** multi-tenancy epic | the Multi-tenancy & run-control track |
+| **#32** durable failure-provenance (record failed cycles in the store) | 5.1 reliability (split-out) |
+| **#40** revisit Docker Model Runner (vllm-metal) as the managed local-model host | Phase 6 (woven model-server hardening) |
+| **#42** extensible stop/continuation predicate (accumulate-to-K / optimize-until-plateau) | acceptance-modes extensibility on `OrchestrationPolicy` |
+| **#51** provision the in-flight *revised* submission on refine | object-provisioning (largely covered by `LAST_REVISED_OR_ACCEPTED`; confirm/close) |
+| **#55** re-audit `docs/context-and-data-flow.md` to the current build | docs housekeeping |
+| **#57** crash recovery for in-flight runs | Phase 8 deferred (durable run-status; Temporal at hardening) |
+| **#58** store-isolation tiers | per-task in **Phase 8.1 ✅**; cross-tenant in the multi-tenancy engine |
+| **#64** make the domain concept optional | architecture — a generic default domain + verifier-criteria in the prompt (§8 / §3.4) |
+| **#65** per-task agent skills in the sandbox (harness-agnostic) | 5.4 sandbox extensibility (successor to the `read_pdf` tool seam) |
+| **#66** extender docs for sandboxes & verifiers | the woven "configuration guide" item (docs slice) |
 
-**Already done (closed):** **#2** (CI on every push/PR — now gates `main`/`develop` with branch
-protection) and **#8** (supersede-on-beat — the selection verdict names the incumbent it replaces,
-shipped in 4.2 and exercised live).
+**Already done (closed):** **#2** (CI gates `main`/`develop`), **#8** (supersede-on-beat, 4.2),
+**#6** (harness-bound executable tools — the `read_pdf` seam, 5.4), **#12** (workspace-contract/orientation
+version stamp, 5.1), **#13** (JSON-object proposal payloads, 5.1), and the early correctness fixes
+**#16/#17/#18/#20/#21** (naming, `refine_cap` enforcement, the dead manifest path, provisioned-object
+naming + manifest, and sandbox-cycle-failure-skips-not-aborts).
 
 ### Further out / seamed (spec §16)
 
 Designed-for, not yet scheduled; each becomes an issue/epic when its time comes:
 
 - Authentication / authorization on the control plane (pairs with the multi-tenancy track above).
-- Parallel agents against one task (diversity / race — N sandboxes → 1 control plane).
+- Parallel agents against one task (diversity / race — N sandboxes → 1 control plane). The 7.4
+  worker model + labels (`run`, `cycle`) are the placed seam (ADR 0003); building it = the concurrency
+  engine in the Multi-tenancy track above.
+- Runtime registration of new **domain code** — a plugin loader / `verity.task_types` entry-point group
+  (ADR 0004 (i)); Phase 8 v1 requires an image build for a brand-new domain (only *config* is
+  rebuild-free).
+- Over-the-wire **file ingestion/egress API** — removes Phase 8's shared exchange volume (ADR 0004 (f)
+  seam / the #3 networked data plane).
 - Spec sync: collapse the §8.2 tool registry into operation signatures (**#5**) — already true in code.
 - Secrets / egress policy once local + networked services land.
 - True schema migration / regime transition (spec §15).
