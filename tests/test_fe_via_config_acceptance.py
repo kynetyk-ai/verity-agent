@@ -233,7 +233,7 @@ def test_fe_accepts_via_config_live() -> None:
     asyncio.run(
         configure_fe_task(cp, backend=backend, split=real, provisioning=ProvisioningConfig())
     )
-    asyncio.run(cp.run("fe", goal="Improve balanced accuracy via feature engineering."))
+    asyncio.run(cp.run("fe", goal="Improve balanced accuracy on a held-out set."))
 
     accepted = store.query_artifacts(type=SUBMISSION, status=ArtifactStatus.ACCEPTED)
     assert accepted, "no accepted Submission across the live, containerized run"

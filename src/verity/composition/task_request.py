@@ -48,7 +48,7 @@ class SandboxRequest:
     api_key_env: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     sandbox_image: str = "verity-sandbox:latest"
-    code_image: str = "python:3.12-slim"
+    code_image: str = "verity-code-runner:latest"
     runtime: str | None = None
     sandbox_memory: str = "4g"
     code_memory: str = "2g"

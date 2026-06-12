@@ -1,6 +1,6 @@
 """Apply the FE-Kaggle task to a generic control plane (the `fe-kaggle` task type).
 
-Reuses the §12 feature-engineering domain (schema / shape / instructions / harvester) and the
+Reuses the §12 feature-engineering domain (schema / shape / instructions) and the
 worker-provisioning wiring of :mod:`verity.composition.fe`; the only swap is the **verifier**, whose
 authoritative gate is the real Kaggle leaderboard (`build_feature_engineering_kaggle_verifier`).
 
@@ -54,16 +54,20 @@ __all__ = [
 ]
 
 FE_KAGGLE_TASK_ID = "fe-kaggle"
-FE_KAGGLE_GOAL = "Engineer features that climb the real Kaggle leaderboard for this competition."
+FE_KAGGLE_GOAL = (
+    "Climb the real Kaggle leaderboard for this competition with a fast, self-contained pipeline."
+)
 
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 
 _FE_KAGGLE_INSTRUCTIONS = (
-    "Engineer 1-3 features that improve balanced accuracy, then submit. Be FAST: one small fixed "
-    "model (no hyperparameter search / CV / big ensembles) — your edge is the features. Predict "
-    "EVERY row of test.csv: your predictions are scored first on a hidden hold-out, then submitted "
-    "to the REAL Kaggle leaderboard, which decides acceptance. A feature that leaks the target "
-    "inflates your own number but fails on the held-out and real data."
+    "Improve balanced accuracy by any means that fits in one script — features, model choice, a "
+    "small ensemble, calibration, imbalance handling — then submit. If there's no incumbent yet, "
+    "explore the data with code first; if there is one (under scratch/provided/), read it and "
+    "target its weakness. Predict EVERY row of test.csv: your predictions are scored first on a "
+    "hidden hold-out, then submitted to the REAL Kaggle leaderboard, which decides acceptance. "
+    "Anything that leaks the target inflates your own number but fails on the held-out and real "
+    "data. Keep it fast enough to finish the time budget."
 )
 
 _FE_KAGGLE_VERIFIER_APPROACH = (
@@ -155,7 +159,6 @@ async def configure_fe_kaggle_task(
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
         sandbox_key=FE_KAGGLE_TASK_ID, verifier_key=FE_KAGGLE_TASK_ID,
-        harvester=domain.harvester,
         object_provisioning=ObjectProvisioningPolicy(
             mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
         ),

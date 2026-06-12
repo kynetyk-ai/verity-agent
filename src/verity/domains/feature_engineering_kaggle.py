@@ -1,8 +1,8 @@
 """The FE-Kaggle verifier — the feature-engineering gate with the **real Kaggle leaderboard** as the
 authoritative final test (the `fe-kaggle` task type).
 
-Reuses the §12 feature-engineering domain wholesale (schema / shape / instructions / harvester and
-the shared scoring helpers) and only swaps the verifier's gate stack. The ladder becomes two-tier:
+Reuses the §12 feature-engineering domain wholesale (schema / shape / instructions and the shared
+scoring helpers) and only swaps the verifier's gate stack. The ladder becomes two-tier:
 
 * **cheap, per-cycle, unlimited (local proxy):** the gate re-runs the agent's *script* on a labeled
   hold-out carved from ``train.csv`` (never the agent's CSV — trusted regeneration) and scores
@@ -38,16 +38,13 @@ from verity.contracts import (
 from verity.domains.feature_engineering import (
     _RUN_ENV,
     ENTRYPOINT,
-    FEATURE,
     PREDICTIONS_OUTPUT,
     REQUIREMENTS,
     SUBMISSION,
     TEST_INPUT,
     TRAIN_INPUT,
-    _declared_feature_count,
-    _features_defined,
-    _grounds_feature,
     _parse_predictions,
+    _stderr_tail,
     balanced_accuracy,
 )
 from verity.verifier import (
@@ -56,7 +53,6 @@ from verity.verifier import (
     RunRequest,
     RunResult,
     SdkVerifier,
-    deterministic_check,
 )
 from verity.verifier.kaggle import KaggleScorer
 
@@ -87,7 +83,6 @@ class _KaggleGates:
     reserved_labels: Mapping[str, str]
     full_train_csv: bytes
     real_test_csv: bytes
-    complexity_penalty: float = 0.01
     timeout_s: float = 900.0
     wait_deadline_s: float = 86_400.0
     poll_interval_s: float = 60.0
@@ -147,8 +142,10 @@ class _KaggleGates:
         if result.timed_out:
             return GateVerdict(VerdictKind.REJECT, "submission timed out before completing")
         if result.exit_code != 0:
-            tail = (result.stderr.strip().splitlines() or ["no stderr"])[-1]
-            return GateVerdict(VerdictKind.REJECT, f"submission exited {result.exit_code}: {tail}")
+            return GateVerdict(
+                VerdictKind.REJECT,
+                f"submission exited {result.exit_code}: {_stderr_tail(result.stderr)}",
+            )
         preds = _parse_predictions(result.output)
         if preds is None:
             return GateVerdict(VerdictKind.REJECT, f"no well-formed {PREDICTIONS_OUTPUT} produced")
@@ -167,8 +164,7 @@ class _KaggleGates:
         preds = _parse_predictions(result.output) if result is not None else None
         if preds is None:
             return GateVerdict(VerdictKind.REJECT, "no scorable hold-out predictions")
-        raw = balanced_accuracy(self.reserved_labels, preds)
-        net = raw - self.complexity_penalty * _declared_feature_count(request.proposal)
+        net = balanced_accuracy(self.reserved_labels, preds)
         self._proxy_scores[request.proposal.id] = net
         _, best = self._best(self._proxy_scores, request.store_slice)
         detail = f"local proxy balanced-accuracy {net:.4f} vs best accepted {best:.4f}"
@@ -232,7 +228,6 @@ def build_feature_engineering_kaggle_verifier(
     reserved_labels: Mapping[str, str],
     full_train_csv: bytes,
     real_test_csv: bytes,
-    complexity_penalty: float = 0.01,
     timeout_s: float = 900.0,
     wait_deadline_s: float = 86_400.0,
     poll_interval_s: float = 60.0,
@@ -244,7 +239,7 @@ def build_feature_engineering_kaggle_verifier(
         agent_train_csv=agent_train_csv, reserved_test_csv=reserved_test_csv,
         reserved_labels=dict(reserved_labels),
         full_train_csv=full_train_csv, real_test_csv=real_test_csv,
-        complexity_penalty=complexity_penalty, timeout_s=timeout_s,
+        timeout_s=timeout_s,
         wait_deadline_s=wait_deadline_s, poll_interval_s=poll_interval_s,
         submit_message=submit_message,
     )
@@ -255,10 +250,8 @@ def build_feature_engineering_kaggle_verifier(
         pipelines={
             SUBMISSION: (
                 GateStep("runs-clean", gates.runnable, is_hard=False),
-                GateStep("features-defined", deterministic_check(_features_defined), is_hard=False),
                 GateStep("proxy-improves", gates.proxy_improves, is_hard=False),
                 GateStep("kaggle", gates.kaggle, is_hard=True),
             ),
-            FEATURE: (GateStep("grounding", deterministic_check(_grounds_feature), is_hard=False),),
         },
     )

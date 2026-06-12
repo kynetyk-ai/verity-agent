@@ -57,10 +57,11 @@ _FE_VERIFIER_APPROACH = (
     "Two gates over one cached run of the submitted script (train on the agent's data, predict the "
     "reserved hold-out the agent never sees). The cheap 'runs-clean' gate (rung 2, free) earns "
     "'tentative' on a clean exit with a well-formed prediction for every reserved row. The hard "
-    "'selection' gate (rung 1) scores balanced accuracy net of a per-feature complexity penalty, "
-    "deflated by the rejected-log trial count, and accepts only when it beats the incumbent — so "
-    "acceptance means a measured improvement on held-out data, not just that the code ran. Each "
-    "accepted submission's declared features are then harvested and grounded individually."
+    "'selection' gate (rung 1) scores balanced accuracy, deflated by the rejected-log trial "
+    "count, and accepts only when it beats the incumbent — so acceptance means a measured "
+    "improvement on held-out data, not just that the code ran. The submission is the unit; the "
+    "gate is reject-only (no refine) and does not care how the gain was achieved (features, model, "
+    "ensemble, ...)."
 )
 _FE_SANDBOX_NOTES = (
     "A general-purpose coding agent that writes and runs Python in an isolated worker; needs the "
@@ -70,11 +71,13 @@ _FE_SANDBOX_NOTES = (
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 
 FE_TASK_ID = "fe"
-FE_GOAL = "Improve balanced accuracy via feature engineering; keep training fast and simple."
+FE_GOAL = "Improve balanced accuracy on a held-out set; keep the pipeline fast and self-contained."
 _FE_INSTRUCTIONS = (
-    "Engineer 1-3 features that improve balanced accuracy. Be FAST: train one small, fixed model "
-    "(no hyperparameter search, no cross-validation, no big ensembles); your edge is the features, "
-    "not the model. Run the script once to confirm it works, then submit — do not keep retraining."
+    "Improve balanced accuracy by any means that fits in one script — engineered features, model "
+    "choice, a small ensemble, calibration, imbalance handling. If there's no incumbent yet, "
+    "explore the data with code first; if there is one (under scratch/provided/), read it and "
+    "target its weakness. Keep the pipeline fast enough to finish the gate's time budget; run the "
+    "script once to confirm it works, then submit."
 )
 
 
@@ -87,7 +90,7 @@ class ProvisioningConfig:
     """
 
     sandbox_image: str = "verity-sandbox:latest"
-    code_image: str = "python:3.12-slim"
+    code_image: str = "verity-code-runner:latest"
     model_spec: ModelSpec | None = None
     runtime: str | None = None
     sandbox_memory: str = "4g"
@@ -155,7 +158,6 @@ async def configure_fe_task(
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator, sandbox_key=FE_TASK_ID, verifier_key=FE_TASK_ID,
-        harvester=domain.harvester,
         object_provisioning=ObjectProvisioningPolicy(
             mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
         ),

@@ -1,11 +1,11 @@
 """The two §12 Submission gates + the deps-aware runner (Phase 4.2) — offline, no Docker, no model.
 
 Drives the real ``SdkVerifier`` built by ``build_feature_engineering_verifier`` over a
-``FakeCodeRunner`` whose output we script, so accept / refine / reject are *earned* by balanced
-accuracy net of complexity, deflated by the trial count, against the incumbent — without training a
-real model. Plus the end-to-end §13.2 (rejected + retained), §13.3 (superseded with lineage), and
-§13.4 (why-accepted from provenance) through the control plane, and the runner command construction
-for the live deps/network path.
+``FakeCodeRunner`` whose output we script, so accept / reject are *earned* by balanced accuracy,
+deflated by the trial count, against the incumbent — without training a real model. (The broadened
+domain is reject-only: no refine, no per-feature penalty.) Plus the end-to-end §13.2 (rejected +
+retained), §13.3 (superseded with lineage), and §13.4 (why-accepted from provenance) through the
+control plane, and the runner command construction for the live deps/network path.
 """
 
 from __future__ import annotations
@@ -74,8 +74,8 @@ def _feature_names(n: int) -> list[str]:
 
 
 def _entrypoint(marker: bytes, names: list[str]) -> bytes:
-    """Script bytes: a marker the fake runner keys on + the declared feature names, so the static
-    ``features-defined`` gate finds them (a described-but-absent feature would refine)."""
+    """Script bytes: a marker the fake runner keys predictions on; ``names`` ride along as a comment
+    for readability only (the broadened domain no longer gates on declared features)."""
     return marker + b"\n# defines: " + " ".join(names).encode()
 
 
@@ -100,10 +100,9 @@ def _request(
     with_code: bool = True,
 ) -> VerifierRequest:
     names = _feature_names(n_features)
-    features = [{"name": n, "definition": "d", "rationale": "r"} for n in names]
     proposal = Artifact(
         proposal_id, SUBMISSION,
-        {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS, "features": features},
+        {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS},
         ArtifactStatus.PROPOSED, "agent", "t1",
     )
     objects = (
@@ -137,6 +136,25 @@ def test_balanced_accuracy_weights_classes_equally() -> None:
     assert balanced_accuracy(RESERVED, PERFECT) == pytest.approx(1.0)
     assert balanced_accuracy(RESERVED, TWO_THIRDS) == pytest.approx(2 / 3)
     assert balanced_accuracy(RESERVED, ONE_THIRD) == pytest.approx(1 / 3)
+
+
+def test_stderr_tail_surfaces_the_real_error_over_pip_noise() -> None:
+    from verity.domains.feature_engineering import _stderr_tail
+
+    # the real failure (a missing system lib) followed by pip's own notice — the notice must NOT win
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "submission.py", line 3, in <module>\n'
+        "    import lightgbm\n"
+        "OSError: libgomp.so.1: cannot open shared object file: No such file or directory\n"
+        "[notice] A new release of pip is available: 24.0 -> 25.1\n"
+        "[notice] To update, run: pip install --upgrade pip\n"
+    )
+    assert _stderr_tail(stderr) == (
+        "OSError: libgomp.so.1: cannot open shared object file: No such file or directory"
+    )
+    assert _stderr_tail("[notice] To update, run: pip install --upgrade pip") == "no stderr"
+    assert _stderr_tail("") == "no stderr"
 
 
 # --------------------------------------------------------------------------- runnable (cheap) gate
@@ -184,7 +202,7 @@ def test_selection_accepts_an_improving_submission() -> None:
     assert bundle.status is ArtifactStatus.ACCEPTED
     selection = bundle.decisions[-1]
     assert selection.gate == "selection" and selection.kind is VerdictKind.ACCEPT
-    assert selection.score == pytest.approx(1.0 - 0.01)  # net of the default 1-feature penalty
+    assert selection.score == pytest.approx(1.0)  # raw balanced accuracy; no complexity penalty
 
 
 def test_selection_rejects_when_it_cannot_beat_the_incumbent() -> None:
@@ -200,27 +218,16 @@ def test_selection_rejects_when_it_cannot_beat_the_incumbent() -> None:
     assert "does not improve" in bundle.decisions[-1].rationale
 
 
-def test_complexity_penalty_can_flip_accept_to_reject() -> None:
-    # same predictions, but a 5-feature submission is penalised below a 1-feature incumbent.
-    verifier = _verifier(_runner({b"lean": PERFECT, b"bloated": PERFECT}), complexity_penalty=0.02)
-    _dispatch(verifier, _request(b"lean", proposal_id="lean", n_features=1))  # net 0.98 accepted
-    bundle = _dispatch(
-        verifier,
-        _request(b"bloated", proposal_id="bloat", n_features=5, store_slice=(_accepted("lean"),)),
-    )
-    assert bundle.status is ArtifactStatus.REJECTED  # net 0.90 < incumbent 0.98
-
-
 def test_trial_count_deflation_raises_the_bar() -> None:
     request = lambda slice_: _request(b"ok", store_slice=slice_)  # noqa: E731
-    # net for TWO_THIRDS is 0.657; with no prior trials and no incumbent it clears the 0 bar.
+    # TWO_THIRDS scores 0.667; with no prior trials and no incumbent it clears the 0 bar.
     assert _dispatch(_verifier(_runner({b"ok": TWO_THIRDS})), request(())).status is (
         ArtifactStatus.ACCEPTED
     )
-    # two prior rejected submissions deflate the bar to 0.4 -> 0.657 still clears; raise deflation.
+    # two prior rejected submissions with deflation 0.4 raise the bar to 0.8 > 0.667 -> rejected.
     deflated = _verifier(_runner({b"ok": TWO_THIRDS}), trial_deflation=0.4)
     bundle = _dispatch(deflated, request((_rejected("r1"), _rejected("r2"))))
-    assert bundle.status is ArtifactStatus.REJECTED  # bar 0.8 > net 0.657
+    assert bundle.status is ArtifactStatus.REJECTED  # bar 0.8 > score 0.667
 
 
 # --------------------------------------------------------------------------- runner deps/network
@@ -269,8 +276,7 @@ class _FeDriver:
         out = workspace.outbox()  # type: ignore[attr-defined]
         (out / ENTRYPOINT).write_bytes(_entrypoint(code, names))
         (out / REQUIREMENTS).write_bytes(b"pandas==2.2.2")
-        features = [{"name": n, "definition": "d", "rationale": "r"} for n in names]
-        payload = {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS, "features": features}
+        payload = {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS}
         (out / RESERVED_PROPOSAL_NAME).write_bytes(
             ProposalDescriptor("submit", ("ds",), payload, metadata="reasoned").to_json()
         )
@@ -337,7 +343,7 @@ def test_supersession_rejection_and_provenance_end_to_end(tmp_path: Path) -> Non
     accept = [
         d for d in prov.decisions if d.verdict is VerdictKind.ACCEPT and d.gate == "selection"
     ]
-    assert accept and accept[0].score == pytest.approx(0.99)
+    assert accept and accept[0].score == pytest.approx(1.0)
 
     # §13.1 — append-only: the superseded incumbent's payload was never overwritten
     assert sub1.payload["entrypoint"] == ENTRYPOINT
@@ -396,8 +402,7 @@ def test_real_script_installs_pandas_runs_and_is_accepted() -> None:
     )
     proposal = Artifact(
         "real", SUBMISSION,
-        {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS,
-         "features": [{"name": "redshift_rule", "definition": "thresholds", "rationale": "z"}]},
+        {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS},
         ArtifactStatus.PROPOSED, "agent", "t1",
     )
     request = VerifierRequest(
@@ -407,4 +412,4 @@ def test_real_script_installs_pandas_runs_and_is_accepted() -> None:
     bundle = asyncio.run(verifier.dispatch(request))
     # the rule separates the classes perfectly -> balanced accuracy 1.0 -> accepted
     assert bundle.status is ArtifactStatus.ACCEPTED
-    assert bundle.decisions[-1].score == pytest.approx(0.99)
+    assert bundle.decisions[-1].score == pytest.approx(1.0)

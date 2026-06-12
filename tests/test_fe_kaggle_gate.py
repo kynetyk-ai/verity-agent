@@ -28,13 +28,22 @@ Step = tuple[str, tuple[str, ...], bytes, list[str]]
 
 
 def _drive(
-    *, steps: list[Step], scorer: FakeKaggleScorer, max_cycles: int, poll_interval_s: float = 0.0
+    *, steps: list[Step], scorer: FakeKaggleScorer, max_cycles: int, poll_interval_s: float = 0.0,
+    proxy: list[str] | None = None,
 ):
-    """Configure + run the fe-kaggle task offline; the fake runner predicts the reserved labels
-    exactly (proxy accuracy 1.0), so a cycle's proxy score is set purely by its feature count."""
+    """Configure + run the fe-kaggle task offline. ``proxy`` sets each cycle's local proxy accuracy
+    via the fake runner's predictions (``"perfect"`` -> 1.0, ``"half"`` -> 0.5 by predicting one
+    class), since the broadened domain no longer derives proxy score from a feature count. Defaults
+    to all-perfect when omitted."""
     sub = subsample(_RAW, per_class=100, target="class")
     split = stratified_split(sub, target="class", id_column="id", reserved_fraction=0.5)
-    by_marker = {marker: dict(split.reserved_labels) for (_, _, marker, _) in steps}
+    reserved = dict(split.reserved_labels)
+    one_class = sorted(set(reserved.values()))[0]
+    quality = proxy or ["perfect"] * len(steps)
+    by_marker = {
+        marker: (reserved if q == "perfect" else dict.fromkeys(reserved, one_class))
+        for (_, _, marker, _), q in zip(steps, quality, strict=True)
+    }
     backend = FakeBackend(script=FeWorkers(steps=steps, by_marker=by_marker))
     store = SqliteStore()
     cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=max_cycles))
@@ -54,12 +63,12 @@ def _accepted(store: SqliteStore) -> list:
 
 
 def test_accept_and_supersede_on_the_real_leaderboard() -> None:
-    # cycle1: 2 features (proxy net 0.98), Kaggle 0.80 -> accepted. cycle2: 1 feature (proxy 0.99 >
-    # 0.98 -> passes the filter), Kaggle 0.85 > 0.80 -> accepted and SUPERSEDES cycle1 on the score.
+    # cycle1: proxy 0.5, Kaggle 0.80 -> accepted. cycle2: proxy 1.0 > 0.5 -> passes the filter,
+    # Kaggle 0.85 > 0.80 -> accepted and SUPERSEDES cycle1 on the real score.
     scorer = FakeKaggleScorer(scores=[0.80, 0.85], budget=5)
     store = _drive(
-        steps=[("submit", ("ds",), b"a", ["f0", "f1"]), ("submit", ("ds",), b"b", ["f0"])],
-        scorer=scorer, max_cycles=2,
+        steps=[("submit", ("ds",), b"a", ["f0"]), ("submit", ("ds",), b"b", ["f0"])],
+        proxy=["half", "perfect"], scorer=scorer, max_cycles=2,
     )
     assert len(_accepted(store)) == 1  # cycle2 is the live incumbent
     assert len(store.query_artifacts(type=SUBMISSION, status=ArtifactStatus.SUPERSEDED)) == 1
@@ -67,11 +76,11 @@ def test_accept_and_supersede_on_the_real_leaderboard() -> None:
 
 
 def test_loses_on_the_real_score_is_rejected() -> None:
-    # cycle2 clears the proxy (0.99 > 0.98) so it DOES submit, but its real score loses -> rejected.
+    # cycle2 clears the proxy (1.0 > 0.5) so it DOES submit, but its real score loses -> rejected.
     scorer = FakeKaggleScorer(scores=[0.80, 0.70], budget=5)
     store = _drive(
-        steps=[("submit", ("ds",), b"a", ["f0", "f1"]), ("submit", ("ds",), b"b", ["f0"])],
-        scorer=scorer, max_cycles=2,
+        steps=[("submit", ("ds",), b"a", ["f0"]), ("submit", ("ds",), b"b", ["f0"])],
+        proxy=["half", "perfect"], scorer=scorer, max_cycles=2,
     )
     assert len(_accepted(store)) == 1  # only cycle1; cycle2 lost on the leaderboard
     assert len(store.query_artifacts(type=SUBMISSION, status=ArtifactStatus.REJECTED)) >= 1
@@ -79,12 +88,12 @@ def test_loses_on_the_real_score_is_rejected() -> None:
 
 
 def test_proxy_worse_is_a_cheap_reject_without_a_kaggle_call() -> None:
-    # cycle1: 1 feature (proxy 0.99), accepted. cycle2: 3 features (proxy 0.97 <= 0.99) -> cheap
-    # reject; the budget-saving filter means NO Kaggle submission is spent on it.
+    # cycle1: proxy 1.0, accepted. cycle2: proxy 0.5 <= 1.0 -> cheap reject; the budget-saving
+    # filter means NO Kaggle submission is spent on it.
     scorer = FakeKaggleScorer(scores=[0.80, 0.99], budget=5)
     store = _drive(
-        steps=[("submit", ("ds",), b"a", ["f0"]), ("submit", ("ds",), b"b", ["f0", "f1", "f2"])],
-        scorer=scorer, max_cycles=2,
+        steps=[("submit", ("ds",), b"a", ["f0"]), ("submit", ("ds",), b"b", ["f0"])],
+        proxy=["perfect", "half"], scorer=scorer, max_cycles=2,
     )
     assert len(_accepted(store)) == 1
     assert len(scorer.submitted) == 1  # only cycle1 reached Kaggle

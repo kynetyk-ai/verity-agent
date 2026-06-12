@@ -24,8 +24,8 @@ def preds_csv(preds: dict[str, str]) -> bytes:
 
 
 def entrypoint_bytes(marker: bytes, names: list[str]) -> bytes:
-    """A submission script carrying a marker (the fake runner keys predictions off it) and the
-    declared feature names (so the static features-defined gate is satisfied)."""
+    """A submission script carrying a marker (the fake runner keys predictions off it). ``names``
+    embed as a comment for readability only — the domain no longer gates on declared features."""
     return marker + b"\n# defines: " + " ".join(names).encode()
 
 
@@ -55,8 +55,7 @@ class FeWorkers:
             return CompletedWorker(exit_code=0, stdout="", stderr="")
         op_name, parents, marker, names = self.steps[self.cursor]
         self.cursor += 1
-        features = [{"name": n, "definition": "d", "rationale": "r"} for n in names]
-        payload = {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS, "features": features}
+        payload = {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS}
         descriptor = ProposalDescriptor(op_name, parents, payload, metadata="i reasoned thus")
         return CompletedWorker(
             exit_code=0, stdout="", stderr="",
