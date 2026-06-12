@@ -90,7 +90,7 @@ class ProvisioningConfig:
     """
 
     sandbox_image: str = "verity-sandbox:latest"
-    code_image: str = "python:3.12-slim"
+    code_image: str = "verity-code-runner:latest"
     model_spec: ModelSpec | None = None
     runtime: str | None = None
     sandbox_memory: str = "4g"

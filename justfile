@@ -30,6 +30,7 @@ check: lint typecheck test
 # containers on the host daemon. Builds the images, then runs one FE task end to end.
 fe-containerized:
     docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
+    docker build -f Dockerfile.coderunner -t verity-code-runner:latest .
     docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
     mkdir -p /tmp/verity-staging
     docker compose -f infra/compose.fe.yml run --rm controlplane
@@ -39,6 +40,7 @@ fe-containerized:
 # Files cross via the exchange: drop inputs into the exchange's in/ dir, find exports under out/.
 cp-serve:
     docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
+    docker build -f Dockerfile.coderunner -t verity-code-runner:latest .
     docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
     mkdir -p /tmp/verity-staging "${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/in" \
         "${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out" "${VERITY_STORE_HOST:-/tmp/verity-store}"

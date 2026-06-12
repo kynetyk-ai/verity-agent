@@ -265,8 +265,10 @@ class _SubmissionGates:
         if result.timed_out:
             return GateVerdict(VerdictKind.REJECT, "submission timed out before completing")
         if result.exit_code != 0:
-            tail = (result.stderr.strip().splitlines() or ["no stderr"])[-1]
-            return GateVerdict(VerdictKind.REJECT, f"submission exited {result.exit_code}: {tail}")
+            return GateVerdict(
+                VerdictKind.REJECT,
+                f"submission exited {result.exit_code}: {_stderr_tail(result.stderr)}",
+            )
         preds = _parse_predictions(result.output)
         if preds is None:
             return GateVerdict(VerdictKind.REJECT, f"no well-formed {PREDICTIONS_OUTPUT} produced")
@@ -313,6 +315,21 @@ class _SubmissionGates:
         return max(scored, key=lambda pair: pair[1])
 
 
+def _stderr_tail(stderr: str) -> str:
+    """The most informative stderr line for a failed run — the Python exception if present, else
+    the last real line. Skips pip's own noise (``[notice] …`` / ``WARNING: …``) so a pip-upgrade
+    notice never masks the actual error (e.g. ``OSError: libgomp.so.1`` from a missing system
+    library), which is what the agent needs in its reject feedback to fix the next submission."""
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    meaningful = [ln for ln in lines if not ln.startswith(("[notice]", "WARNING:"))]
+    if not meaningful:
+        return "no stderr"
+    for ln in reversed(meaningful):
+        if "Error" in ln or "Exception" in ln or "error:" in ln:
+            return ln
+    return meaningful[-1]
+
+
 def _parse_predictions(output: bytes | None) -> dict[str, str] | None:
     """Parse a predictions CSV (``id,class``) into ``{id: class}``; ``None`` if not well-formed."""
     if not output:
@@ -357,6 +374,13 @@ The script contract (the gate runs your script; honour it exactly):
   row of `{TEST_INPUT}`.
 - Write predictions to `<VERITY_OUT>/{PREDICTIONS_OUTPUT}` with exactly two columns: `id,class`.
 - The script must be deterministic (fix every random seed) and self-contained.
+
+The runner (where the gate executes your script): a CPU-only Linux container, Python 3.12, with your
+pinned `{REQUIREMENTS}` pip-installed (network on for the install). The common system libraries for
+the CPU ML stack are present, so scikit-learn, LightGBM, XGBoost, pandas, and numpy all work.
+Budget: a few minutes, ~2 GB RAM, ~1 GB scratch. So: prefer fast, wheel-installable CPU libraries
+and a bounded model; do NOT use deep-learning frameworks (torch / tensorflow will not fit or
+finish), and avoid libraries with no prebuilt wheel (there is no compiler in the runner).
 
 Orient before you propose:
 - If there is NO incumbent yet, EXPLORE THE DATA WITH CODE first — do not try to read the raw files,

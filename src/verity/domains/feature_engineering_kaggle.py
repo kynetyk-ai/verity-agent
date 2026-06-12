@@ -44,6 +44,7 @@ from verity.domains.feature_engineering import (
     TEST_INPUT,
     TRAIN_INPUT,
     _parse_predictions,
+    _stderr_tail,
     balanced_accuracy,
 )
 from verity.verifier import (
@@ -141,8 +142,10 @@ class _KaggleGates:
         if result.timed_out:
             return GateVerdict(VerdictKind.REJECT, "submission timed out before completing")
         if result.exit_code != 0:
-            tail = (result.stderr.strip().splitlines() or ["no stderr"])[-1]
-            return GateVerdict(VerdictKind.REJECT, f"submission exited {result.exit_code}: {tail}")
+            return GateVerdict(
+                VerdictKind.REJECT,
+                f"submission exited {result.exit_code}: {_stderr_tail(result.stderr)}",
+            )
         preds = _parse_predictions(result.output)
         if preds is None:
             return GateVerdict(VerdictKind.REJECT, f"no well-formed {PREDICTIONS_OUTPUT} produced")

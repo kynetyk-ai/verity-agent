@@ -138,6 +138,25 @@ def test_balanced_accuracy_weights_classes_equally() -> None:
     assert balanced_accuracy(RESERVED, ONE_THIRD) == pytest.approx(1 / 3)
 
 
+def test_stderr_tail_surfaces_the_real_error_over_pip_noise() -> None:
+    from verity.domains.feature_engineering import _stderr_tail
+
+    # the real failure (a missing system lib) followed by pip's own notice — the notice must NOT win
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "submission.py", line 3, in <module>\n'
+        "    import lightgbm\n"
+        "OSError: libgomp.so.1: cannot open shared object file: No such file or directory\n"
+        "[notice] A new release of pip is available: 24.0 -> 25.1\n"
+        "[notice] To update, run: pip install --upgrade pip\n"
+    )
+    assert _stderr_tail(stderr) == (
+        "OSError: libgomp.so.1: cannot open shared object file: No such file or directory"
+    )
+    assert _stderr_tail("[notice] To update, run: pip install --upgrade pip") == "no stderr"
+    assert _stderr_tail("") == "no stderr"
+
+
 # --------------------------------------------------------------------------- runnable (cheap) gate
 
 

@@ -22,6 +22,7 @@ on the host Docker daemon. This is the deployment the `verity` CLI talks to.
 
 ```bash
 docker build -f Dockerfile.sandbox      -t verity-sandbox:latest .   # the agent worker
+docker build -f Dockerfile.coderunner   -t verity-code-runner:latest .  # the gate's code-runner (system libs for the CPU ML stack)
 docker build -f Dockerfile.controlplane -t verity-controlplane:latest .  # the daemon (carries the docker CLI + service extra)
 ```
 
