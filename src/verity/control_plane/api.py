@@ -332,9 +332,21 @@ class ControlPlane:
             log.info("intake_shape_error", task_id=task_id, artifact_id=envelope.artifact.id)
             return IntakeResult(entered_protocol=False, shape_error=shape_error)
 
-        # Harvest the outbox objects BEFORE the sandbox is regenerated, content-addressing each
+        # Harvest only the objects the proposal DECLARES — context discipline: an undeclared file
+        # the agent left in the outbox must never enter durable state or be provisioned next cycle.
+        # The domain declares its object names (§3.4); extras are dropped (recorded, non-fatal).
+        declared = task.config.object_namer(envelope.artifact)
+        dropped = sorted(name for name in envelope.objects if name not in declared)
+        if dropped:
+            log.warning(
+                "undeclared_outbox_objects_dropped",
+                task_id=task_id, artifact_id=envelope.artifact.id, dropped=dropped,
+            )
+        objects = {name: data for name, data in envelope.objects.items() if name in declared}
+
+        # Harvest the declared objects BEFORE the sandbox is regenerated, content-addressing each
         # into the object store (§3.4). Harvest-before-teardown is the hard ordering constraint.
-        harvested = {name: self._store.put_object(data) for name, data in envelope.objects.items()}
+        harvested = {name: self._store.put_object(data) for name, data in objects.items()}
 
         # Record the object refs as a control-plane-owned **sidecar** on the artifact (§4.1, ADR
         # 0001) — the domain payload is stored verbatim; the control plane never reaches into it.
@@ -356,7 +368,7 @@ class ControlPlane:
         refines = self._count_lineage_refines(envelope.operation)
         refine_exhausted = refines >= self._policy.refine_cap
         result = await self._run_commit(
-            task, artifact.id, envelope.objects, refine_exhausted=refine_exhausted
+            task, artifact.id, objects, refine_exhausted=refine_exhausted
         )
         # On acceptance, harvest the domain's child artifacts (e.g. one Feature per declared
         # feature, §12): each is an inspectable node, committed through its own declared gate.

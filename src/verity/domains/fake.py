@@ -40,6 +40,7 @@ __all__ = [
     "FakeDomain",
     "build_fake_domain",
     "build_fake_verifier",
+    "declared_objects",
 ]
 
 SOURCE = "Source"
@@ -106,6 +107,21 @@ def _validate_shape(artifact: Artifact) -> ShapeError | None:
     if not isinstance(payload, dict) or "text" not in payload:
         return ShapeError("a Note payload must be an object with a 'text' field")
     return None
+
+
+def declared_objects(artifact: Artifact) -> frozenset[str]:
+    """A proposal's declared object names — read from an optional payload ``objects`` list.
+
+    The generic test-double analogue of a real domain's declaration: the control plane harvests only
+    these from the outbox. A proposal with no ``objects`` list declares none.
+    """
+    payload = artifact.payload
+    if not isinstance(payload, dict):
+        return frozenset()
+    names = payload.get("objects")
+    if not isinstance(names, list):
+        return frozenset()
+    return frozenset(name for name in names if isinstance(name, str))
 
 
 def _markers(request: VerifierRequest) -> dict[str, JSONValue]:

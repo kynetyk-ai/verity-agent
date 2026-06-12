@@ -29,7 +29,7 @@ from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import DefaultRetrievalPolicy, OperationSignature
 from verity.control_plane.store import SqliteStore
 from verity.control_plane.workspace import DefaultLayout
-from verity.domains.code import DATASET, build_code_domain
+from verity.domains.code import DATASET, build_code_domain, declared_objects
 from verity.sandbox.container_driver import DeepAgentsContainerDriver
 from verity.sandbox.container_io import CycleInput
 from verity.sandbox.errors import SandboxError
@@ -212,6 +212,7 @@ def _assert_container_commits_submission(sandbox: object) -> None:
         gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=declared_objects,
         sandbox_key="container",
         verifier_key="real",
     )

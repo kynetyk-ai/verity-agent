@@ -20,7 +20,7 @@ from verity.contracts import Artifact, ArtifactStatus, Operation, OperationStatu
 from verity.control_plane.api import ControlPlane
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import DefaultRetrievalPolicy
-from verity.domains.code import DATASET, build_code_domain
+from verity.domains.code import DATASET, build_code_domain, declared_objects
 from verity.provisioning.backend import WorkerBackend
 from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
@@ -89,7 +89,7 @@ async def configure_code_task(
         task_id=CODE_TASK_ID, instructions=_CODE_INSTRUCTIONS,
         domain_instructions=_CODE_DOMAIN_INSTRUCTIONS,
         schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator,
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
         sandbox_key=CODE_TASK_ID, verifier_key=CODE_TASK_ID,
     )
     await cp.configure(config)

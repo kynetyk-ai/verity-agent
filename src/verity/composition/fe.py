@@ -36,6 +36,7 @@ from verity.domains.feature_engineering import (
     SUBMISSION,
     build_feature_engineering_domain,
     build_feature_engineering_verifier,
+    declared_objects,
 )
 from verity.provisioning.backend import WorkerBackend
 from verity.sandbox.backend_driver import BackendSandboxDriver
@@ -157,7 +158,8 @@ async def configure_fe_task(
         task_id=FE_TASK_ID, instructions=_FE_INSTRUCTIONS,
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key=FE_TASK_ID, verifier_key=FE_TASK_ID,
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
+        sandbox_key=FE_TASK_ID, verifier_key=FE_TASK_ID,
         object_provisioning=ObjectProvisioningPolicy(
             mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
         ),

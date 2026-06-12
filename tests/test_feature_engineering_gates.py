@@ -40,6 +40,7 @@ from verity.domains.feature_engineering import (
     balanced_accuracy,
     build_feature_engineering_domain,
     build_feature_engineering_verifier,
+    declared_objects,
 )
 from verity.sandbox import AgentSandbox, ProposalDescriptor
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
@@ -309,7 +310,8 @@ def _e2e(tmp_path: Path) -> tuple[ControlPlane, SqliteStore]:
         task_id="fe", instructions="improve the model",
         domain_instructions=domain.domain_instructions,
         schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key="fe", verifier_key="fe",
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
+        sandbox_key="fe", verifier_key="fe",
     )
     asyncio.run(cp.configure(config))
     return cp, store

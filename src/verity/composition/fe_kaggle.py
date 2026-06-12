@@ -37,6 +37,7 @@ from verity.domains.feature_engineering import (
     DATASET_VERSION,
     SUBMISSION,
     build_feature_engineering_domain,
+    declared_objects,
 )
 from verity.domains.feature_engineering_kaggle import build_feature_engineering_kaggle_verifier
 from verity.provisioning.backend import WorkerBackend
@@ -157,7 +158,7 @@ async def configure_fe_kaggle_task(
         task_id=FE_KAGGLE_TASK_ID, instructions=_FE_KAGGLE_INSTRUCTIONS,
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator,
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
         sandbox_key=FE_KAGGLE_TASK_ID, verifier_key=FE_KAGGLE_TASK_ID,
         object_provisioning=ObjectProvisioningPolicy(
             mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION

@@ -132,6 +132,7 @@ async def _build_arm(note_id: str, telemetry: dict[str, object]) -> ConfiguredTa
         gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=lambda _a: frozenset(),
         sandbox_key="stub",
         verifier_key="stub",
     )

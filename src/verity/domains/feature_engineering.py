@@ -75,6 +75,7 @@ __all__ = [
     "FeatureEngineeringDomain",
     "build_feature_engineering_domain",
     "build_feature_engineering_verifier",
+    "declared_objects",
     "balanced_accuracy",
 ]
 
@@ -158,6 +159,19 @@ def _validate_shape(artifact: Artifact) -> ShapeError | None:
             "a Submission payload must declare a string 'requirements' (the package-list file name)"
         )
     return None
+
+
+def declared_objects(artifact: Artifact) -> frozenset[str]:
+    """The object names a Submission declares — its ``entrypoint`` script + ``requirements`` file.
+
+    The control plane harvests only these from the outbox (an undeclared file is dropped), so the
+    set is read straight from the payload the agent submits. Shape validation has already ensured
+    they are non-empty strings; anything else (or a non-Submission) declares no objects.
+    """
+    if artifact.type != SUBMISSION or not isinstance(artifact.payload, dict):
+        return frozenset()
+    candidates = (artifact.payload.get("entrypoint"), artifact.payload.get("requirements"))
+    return frozenset(name for name in candidates if isinstance(name, str) and name)
 
 
 # ----------------------------------------------------- the verifier package: two Submission gates
