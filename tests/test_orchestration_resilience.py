@@ -103,7 +103,8 @@ def _build(
     config = TaskConfig(
         task_id="t1", instructions="make notes", domain_instructions="a Note has text",
         schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key="scripted", verifier_key="real",
+        shape_validator=domain.shape_validator, object_namer=lambda _a: frozenset(),
+        sandbox_key="scripted", verifier_key="real",
     )
     asyncio.run(cp.configure(config))
     return cp, sandbox, store

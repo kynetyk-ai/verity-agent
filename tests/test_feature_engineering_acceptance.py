@@ -50,6 +50,7 @@ from verity.domains.feature_engineering import (
     SUBMISSION,
     build_feature_engineering_domain,
     build_feature_engineering_verifier,
+    declared_objects,
 )
 from verity.sandbox import AgentSandbox, ProposalDescriptor
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
@@ -145,7 +146,8 @@ def _build(
         task_id="fe", instructions="design features that improve the model",
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key="fe", verifier_key="fe",
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
+        sandbox_key="fe", verifier_key="fe",
         object_provisioning=ObjectProvisioningPolicy(
             mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
         ),
@@ -441,7 +443,8 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
         ),
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key="fe", verifier_key="fe",
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
+        sandbox_key="fe", verifier_key="fe",
         object_provisioning=ObjectProvisioningPolicy(
             mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
         ),

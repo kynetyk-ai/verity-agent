@@ -39,6 +39,7 @@ __all__ = [
     "CODE_VERIFIER_IDENTITY",
     "CodeDomain",
     "build_code_domain",
+    "declared_objects",
 ]
 
 DATASET = "Dataset"
@@ -102,6 +103,14 @@ def _validate_shape(artifact: Artifact) -> ShapeError | None:
     if not isinstance(payload, dict) or not isinstance(payload.get("entrypoint"), str):
         return ShapeError("a Submission payload must be an object with a string 'entrypoint'")
     return None
+
+
+def declared_objects(artifact: Artifact) -> frozenset[str]:
+    """The object a Submission declares — its ``entrypoint`` script (the only file harvested)."""
+    if artifact.type != SUBMISSION or not isinstance(artifact.payload, dict):
+        return frozenset()
+    entrypoint = artifact.payload.get("entrypoint")
+    return frozenset({entrypoint}) if isinstance(entrypoint, str) and entrypoint else frozenset()
 
 
 def _parses(request: VerifierRequest) -> CheckOutcome:

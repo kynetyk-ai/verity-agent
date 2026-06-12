@@ -39,6 +39,7 @@ __all__ = [
     "TaskConfig",
     "HarvestedChild",
     "Harvester",
+    "ObjectNamer",
     "render_workspace_layout",
     "compose_system_prompt",
     "orientation_digest",
@@ -63,6 +64,11 @@ class HarvestedChild:
 # A domain hook: derive the child artifacts to harvest from a (just-accepted) parent artifact (§12).
 Harvester = Callable[[Artifact], list[HarvestedChild]]
 
+# A domain hook: the object names a proposal of this artifact declares (the only files harvested
+# from its outbox; everything else is dropped). Empty set = the proposal carries no objects.
+# Required on every task — context discipline: an undeclared output never enters the store (§3.4).
+ObjectNamer = Callable[[Artifact], frozenset[str]]
+
 
 @dataclass(frozen=True, slots=True)
 class TaskConfig:
@@ -84,6 +90,7 @@ class TaskConfig:
     gated_types: GatedTypeRegistry
     retrieval: RetrievalPolicy
     shape_validator: ShapeValidator
+    object_namer: ObjectNamer
     sandbox_key: str
     verifier_key: str
     # The tenant this task runs under (Phase 7 multi-tenancy seam). A single ``"default"`` tenant
@@ -115,6 +122,8 @@ Your workspace has a fixed layout (read-only inputs; writable-ephemeral working 
 
 Write your proposal and any object attachments (a script, a data file) to outbox/. The harness
 harvests the outbox; do not rely on any other path. The output schema lives under spec/.
+Put ONLY your proposal's declared objects in outbox/ — nothing else; the harness keeps exactly
+those and discards any other file you leave there.
 
 Two corrections may come back:
 - A shape-error means the proposal is malformed (wrong parts/types). Fix the formatting and

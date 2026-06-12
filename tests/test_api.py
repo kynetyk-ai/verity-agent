@@ -30,7 +30,7 @@ from verity.control_plane.config import TaskConfig, orientation_digest
 from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import SqliteStore
 from verity.control_plane.workspace import WORKSPACE_CONTRACT
-from verity.domains.fake import NOTE, SOURCE, build_fake_domain
+from verity.domains.fake import NOTE, SOURCE, build_fake_domain, declared_objects
 
 _ACCEPT = bundle(ArtifactStatus.ACCEPTED, decision("well-formed"), decision("worth-keeping"))
 
@@ -94,13 +94,19 @@ def _config(domain, *, retrieval=None) -> TaskConfig:
         gated_types=domain.gated_types,
         retrieval=retrieval if retrieval is not None else DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=declared_objects,
         sandbox_key="stub",
         verifier_key="stub",
     )
 
 
 def _note(note_id: str, *, text: str = "hi", metadata: str = "", objects=None) -> ProposalEnvelope:
-    artifact = Artifact(note_id, NOTE, {"text": text}, ArtifactStatus.PROPOSED, "agent", "")
+    # Declare the attached object names in the payload so the harvest keeps them (a well-formed
+    # proposal declares its objects); the fake domain's namer reads this 'objects' list.
+    payload: dict = {"text": text}
+    if objects:
+        payload["objects"] = sorted(objects)
+    artifact = Artifact(note_id, NOTE, payload, ArtifactStatus.PROPOSED, "agent", "")
     op = Operation(f"op-{note_id}", "author", ("src",), note_id, OperationStatus.SUCCESS, "")
     return ProposalEnvelope(
         artifact=artifact, operation=op, metadata=metadata, objects=objects or {}
@@ -223,7 +229,7 @@ def test_an_operation_can_require_payload_keys_at_intake() -> None:  # #13 per-o
     asyncio.run(cp.configure(TaskConfig(
         task_id="t1", instructions="x", domain_instructions="x", schema=schema, gated_types=gated,
         retrieval=DefaultRetrievalPolicy(), shape_validator=lambda _a: None,
-        sandbox_key="stub", verifier_key="stub",
+        object_namer=lambda _a: frozenset(), sandbox_key="stub", verifier_key="stub",
     )))
 
     # payload missing the declared 'priority' key -> refused at intake, records nothing
@@ -267,7 +273,31 @@ def test_harvested_objects_are_linked_as_an_artifact_sidecar() -> None:
     assert art is not None
     objects = dict(art.objects)
     assert store.get_object(objects["submission.py"].content_hash) == code
-    assert art.payload == {"text": "hi"}  # payload untouched
+    assert art.payload == {"text": "hi", "objects": ["submission.py"]}  # payload untouched
+
+
+def test_undeclared_outbox_objects_are_dropped_and_warned() -> None:
+    # Context discipline (§3.4): the harvest keeps ONLY the objects the proposal declares. An extra
+    # file the agent left in the outbox is dropped — never content-addressed, never on the sidecar,
+    # never provisioned next cycle — and the drop is logged. (Declared via the payload 'objects'.)
+    import structlog
+
+    cp, _sandbox, _verifier, store = _setup()
+    env = ProposalEnvelope(
+        artifact=Artifact(
+            "n1", NOTE, {"text": "hi", "objects": ["keep.py"]}, ArtifactStatus.PROPOSED, "agent", ""
+        ),
+        operation=Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, ""),
+        objects={"keep.py": b"keep", "drop.py": b"junk"},  # drop.py is undeclared
+    )
+    with structlog.testing.capture_logs() as logs:
+        result = asyncio.run(cp.submit_proposal("t1", env))
+
+    assert "keep.py" in result.harvested and "drop.py" not in result.harvested
+    art = store.get_artifact("n1")
+    assert art is not None and dict(art.objects).keys() == {"keep.py"}  # sidecar excludes it too
+    dropped = [e for e in logs if e["event"] == "undeclared_outbox_objects_dropped"]
+    assert dropped and dropped[0]["dropped"] == ["drop.py"]
 
 
 def test_objectless_proposal_has_an_empty_sidecar_and_untouched_payload() -> None:

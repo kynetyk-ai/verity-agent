@@ -51,6 +51,7 @@ def test_task_config_system_prompt_uses_its_layers() -> None:
         gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=lambda _a: frozenset(),
         sandbox_key="stub",
         verifier_key="stub",
     )

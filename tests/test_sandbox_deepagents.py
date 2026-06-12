@@ -176,6 +176,7 @@ def _configure(tmp_path: Path, model: Any) -> tuple[ControlPlane, SqliteStore]:
         gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=lambda _a: frozenset(),
         sandbox_key="deepagents-claude",
         verifier_key="fake",
     )

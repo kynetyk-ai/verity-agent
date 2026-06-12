@@ -42,6 +42,7 @@ from verity.domains.feature_engineering import (
     REQUIREMENTS,
     SUBMISSION,
     build_feature_engineering_domain,
+    declared_objects,
 )
 from verity.sandbox import AgentSandbox, ProposalDescriptor
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
@@ -94,6 +95,14 @@ def test_shape_rejects_malformed_submissions(mutate: object) -> None:
     payload = _submission_payload()
     mutate(payload)  # type: ignore[operator]
     assert isinstance(domain.shape_validator(_artifact(payload)), ShapeError)
+
+
+def test_declared_objects_names_the_submission_attachments() -> None:
+    # the harvest keeps only what a Submission declares: its entrypoint + requirements files
+    declared = declared_objects(_artifact(_submission_payload()))
+    assert declared == frozenset({ENTRYPOINT, REQUIREMENTS})
+    # a non-Submission (or a payload without the keys) declares no objects
+    assert declared_objects(_artifact({}, type_=DATASET_VERSION)) == frozenset()
 
 
 # --------------------------------------------------------------------------- the split helper
@@ -316,6 +325,7 @@ def _build_cp(
         gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=declared_objects,
         sandbox_key="fe",
         verifier_key="stub",
         object_provisioning=policy,

@@ -36,8 +36,24 @@ from verity.control_plane.registries import (
 )
 from verity.control_plane.store import Artifact, SqliteStore
 from verity.control_plane.workspace import DefaultLayout, ProvisionedWorkspace
-from verity.domains.code import DATASET, ENTRYPOINT, SUBMISSION, build_code_domain
-from verity.domains.fake import NOTE, SOURCE, build_fake_domain, build_fake_verifier
+from verity.domains.code import (
+    DATASET,
+    ENTRYPOINT,
+    SUBMISSION,
+    build_code_domain,
+)
+from verity.domains.code import (
+    declared_objects as code_declared_objects,
+)
+from verity.domains.fake import (
+    NOTE,
+    SOURCE,
+    build_fake_domain,
+    build_fake_verifier,
+)
+from verity.domains.fake import (
+    declared_objects as fake_declared_objects,
+)
 from verity.sandbox import AgentSandbox, ProposalDescriptor, SandboxError
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, RESERVED_TELEMETRY_NAME
 from verity.verifier import FakeCodeRunner, RunResult
@@ -247,6 +263,7 @@ def _drive(
     domain_schema: SchemaRegistry,
     gated_types: object,
     shape_validator: object,
+    object_namer: object,
     verifier: VerifierPort,
     driver: FakeDriver,
     id_source: object,
@@ -278,6 +295,7 @@ def _drive(
         gated_types=gated_types,  # type: ignore[arg-type]
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=shape_validator,  # type: ignore[arg-type]
+        object_namer=object_namer,  # type: ignore[arg-type]
         sandbox_key="deepagents",
         verifier_key="real",
     )
@@ -293,6 +311,7 @@ def test_fake_domain_full_cycle_accepts(tmp_path: Path) -> None:
         domain_schema=domain.schema,
         gated_types=domain.gated_types,
         shape_validator=domain.shape_validator,
+        object_namer=fake_declared_objects,
         verifier=build_fake_verifier(),
         driver=driver,
         id_source=lambda: "note-1",
@@ -317,6 +336,7 @@ def test_code_domain_full_cycle_accepts(tmp_path: Path) -> None:
         domain_schema=domain.schema,
         gated_types=domain.gated_types,
         shape_validator=domain.shape_validator,
+        object_namer=code_declared_objects,
         verifier=domain.verifier,
         driver=driver,
         id_source=lambda: "sub-1",
