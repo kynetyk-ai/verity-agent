@@ -17,7 +17,9 @@ for ``verity catalog``.
 
 from __future__ import annotations
 
+import os
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ from verity.composition.description import OperationDescription, TaskTypeDescrip
 from verity.composition.fe import ProvisioningConfig, provisioning_config_from
 from verity.composition.task_request import TaskRequest
 from verity.contracts import Artifact, ArtifactStatus, Operation, OperationStatus
+from verity.contracts.ports import VerifierPort, VerifierSetup
 from verity.control_plane.api import ControlPlane
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import (
@@ -39,16 +42,14 @@ from verity.domains.feature_engineering import (
     build_feature_engineering_domain,
     declared_objects,
 )
-from verity.domains.feature_engineering_kaggle import build_feature_engineering_kaggle_verifier
 from verity.provisioning.backend import WorkerBackend
 from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
-from verity.verifier import BackendCodeRunner
-from verity.verifier.kaggle import KaggleScorer
 
 __all__ = [
     "FE_KAGGLE_TASK_ID",
     "FE_KAGGLE_GOAL",
+    "VerifierFactory",
     "configure_fe_kaggle_task",
     "build_fe_kaggle_task",
     "describe_fe_kaggle_task",
@@ -60,6 +61,25 @@ FE_KAGGLE_GOAL = (
 )
 
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
+_DEFAULT_VERIFIER_URL = "http://verifier:8001"
+
+# How the control plane obtains the verifier for a task: it builds the per-task `VerifierSetup` and
+# hands it to a factory that returns a (typically remote) `VerifierPort`. The default ships the
+# setup to a sibling verifier service over HTTP (§9.1); offline tests inject a loopback factory.
+VerifierFactory = Callable[[VerifierSetup], Awaitable[VerifierPort]]
+
+
+async def _http_verifier(setup: VerifierSetup) -> VerifierPort:
+    """Default production seam: a `RemoteVerifier` over HTTP at ``$VERITY_VERIFIER_URL``.
+
+    The HTTP transport import is **lazy** so this module pulls neither the ``service`` extra nor —
+    load-bearing for §9.1 — any gate/``kaggle`` code at import time: the gates live in the verifier
+    image, reached only over the wire. The per-task data + knobs ride in the setup payload.
+    """
+    from verity.transport.http import build_remote_verifier
+
+    url = os.environ.get("VERITY_VERIFIER_URL", _DEFAULT_VERIFIER_URL)
+    return build_remote_verifier(url, setup_payload=setup)
 
 _FE_KAGGLE_INSTRUCTIONS = (
     "Improve balanced accuracy by any means that fits in one script — features, model choice, a "
@@ -93,21 +113,27 @@ async def configure_fe_kaggle_task(
     cp: ControlPlane,
     *,
     backend: WorkerBackend,
-    scorer: KaggleScorer,
     split: Any,
     full_train_csv: bytes,
     real_test_csv: bytes,
+    make_verifier: VerifierFactory | None = None,
+    competition: str = "",
+    daily_submission_limit: int | None = None,
     provisioning: ProvisioningConfig | None = None,
     wait_deadline_s: float = 86_400.0,
     poll_interval_s: float = 60.0,
-    submit_message: str = "verity",
+    score_poll_interval_s: float = 20.0,
+    submit_message: str = "verity fe-kaggle",
 ) -> str:
     """Configure the `fe-kaggle` task onto a generic ``cp`` via its API. Returns the task id.
 
-    ``split`` is the labeled hold-out split of the subsample (``agent_train_csv`` /
-    ``reserved_test_csv`` / ``reserved_labels``, the cheap proxy); ``full_train_csv`` is the full
-    labeled subsample and ``real_test_csv`` the competition's real (unlabeled) test set (for the
-    Kaggle run). ``scorer`` is the `KaggleScorer` the hard gate submits through.
+    The verifier runs as a **sibling service** (§9.1 / #73): this assembles the per-task
+    :class:`VerifierSetup` — the split CSVs the gates run on plus the gate knobs — and hands it to
+    ``make_verifier`` (default :func:`_http_verifier`, a `RemoteVerifier` over HTTP). The gates,
+    the `kaggle` extra, and the Kaggle creds all live in the verifier image; **no** gate code is
+    imported here. ``split`` is the labeled hold-out split (the cheap proxy: ``agent_train_csv`` /
+    ``reserved_test_csv`` / ``reserved_labels``); ``full_train_csv`` is the full labeled subsample
+    and ``real_test_csv`` the competition's real (unlabeled) test set (the Kaggle run).
     """
     provisioning = provisioning or ProvisioningConfig()
     spec = provisioning.model_spec
@@ -134,24 +160,32 @@ async def configure_fe_kaggle_task(
         # rows removed, so it can never see the hold-out labels (nor the real test's labels).
         static_contents={"data": {"train.csv": split.agent_train_csv, "test.csv": real_test_csv}},
     )
-    runner = BackendCodeRunner(
-        backend=backend, image=provisioning.code_image, memory=provisioning.code_memory,
-        tmpfs_size=provisioning.code_tmpfs_size, runtime=provisioning.runtime,
-        config=FE_KAGGLE_TASK_ID,
+
+    # The opaque per-task inputs the (remote) verifier builds its gate stack from. The control plane
+    # treats these as routed blobs + knobs — it does not interpret them (verifier opacity, §3.6).
+    setup = VerifierSetup(
+        objects={
+            "agent_train": split.agent_train_csv,
+            "reserved_test": split.reserved_test_csv,
+            "full_train": full_train_csv,
+            "real_test": real_test_csv,
+        },
+        params={
+            "competition": competition,
+            "reserved_labels": dict(split.reserved_labels),
+            "timeout_s": provisioning.code_timeout_s,
+            "wait_deadline_s": wait_deadline_s,
+            "poll_interval_s": poll_interval_s,
+            "score_poll_interval_s": score_poll_interval_s,
+            "submit_message": submit_message,
+            **(
+                {"daily_submission_limit": daily_submission_limit}
+                if daily_submission_limit is not None
+                else {}
+            ),
+        },
     )
-    verifier = build_feature_engineering_kaggle_verifier(
-        runner,
-        scorer=scorer,
-        agent_train_csv=split.agent_train_csv,
-        reserved_test_csv=split.reserved_test_csv,
-        reserved_labels=split.reserved_labels,
-        full_train_csv=full_train_csv,
-        real_test_csv=real_test_csv,
-        timeout_s=provisioning.code_timeout_s,
-        wait_deadline_s=wait_deadline_s,
-        poll_interval_s=poll_interval_s,
-        submit_message=submit_message,
-    )
+    verifier = await (make_verifier or _http_verifier)(setup)
 
     cp.register_sandbox(FE_KAGGLE_TASK_ID, lambda: sandbox)
     cp.register_verifier(FE_KAGGLE_TASK_ID, lambda: verifier)
@@ -199,22 +233,18 @@ async def build_fe_kaggle_task(
         reserved_fraction=request.data.reserved_fraction,
     )
 
-    from verity.verifier import (
-        RealKaggleScorer,  # lazy: only the live path needs the `kaggle` extra
-    )
-
+    # The Kaggle scorer + the gates are constructed on the verifier side (#73): we route the
+    # competition slug + knobs in the setup payload; no `kaggle` import lives in the control plane.
     limit_knob = knobs.get("daily_submission_limit")
-    scorer = RealKaggleScorer(
-        competition=str(competition),
-        poll_interval_s=float(knobs.get("score_poll_interval_s", 20.0)),
-        daily_limit_override=int(limit_knob) if limit_knob is not None else None,
-    )
     return await configure_fe_kaggle_task(
-        cp, backend=backend, scorer=scorer, split=split,
+        cp, backend=backend, split=split,
         full_train_csv=sub, real_test_csv=real_test,
+        competition=str(competition),
+        daily_submission_limit=int(limit_knob) if limit_knob is not None else None,
         provisioning=provisioning_config_from(request.sandbox),
         wait_deadline_s=float(knobs.get("wait_deadline_s", 86_400.0)),
         poll_interval_s=float(knobs.get("budget_poll_interval_s", 60.0)),
+        score_poll_interval_s=float(knobs.get("score_poll_interval_s", 20.0)),
         submit_message=str(knobs.get("submit_message", "verity fe-kaggle")),
     )
 

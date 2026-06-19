@@ -17,6 +17,7 @@ import asyncio
 import pathlib
 
 import verity.control_plane
+from tests._fe_offline import loopback_fe_kaggle_factory
 from verity.composition import configure_code_task
 from verity.composition.dataset import stratified_split, subsample
 from verity.composition.fe_kaggle import configure_fe_kaggle_task
@@ -56,11 +57,13 @@ def test_one_generic_control_plane_runs_two_different_tasks() -> None:
     assert asyncio.run(configure_code_task(code_cp, backend=FakeBackend())) == "code"
 
     kaggle_cp = ControlPlane(SqliteStore())
+    backend = FakeBackend()
     sub = subsample(_RAW, per_class=100, target="class")
     split = stratified_split(sub, target="class", id_column="id", reserved_fraction=0.5)
     task_id = asyncio.run(
         configure_fe_kaggle_task(
-            kaggle_cp, backend=FakeBackend(), scorer=FakeKaggleScorer(),
+            kaggle_cp, backend=backend,
+            make_verifier=loopback_fe_kaggle_factory(backend, FakeKaggleScorer()),
             split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
         )
     )
