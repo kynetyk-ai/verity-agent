@@ -35,7 +35,9 @@ Three cooperating services (spec §3.3–§3.6):
 - **Sandbox** — the agent runtime + workspace where the loop runs and tools execute; ephemeral
   (regenerated each cycle); proposes but never writes; writes objects to the **outbox** for harvest.
 - **Verifier** — advisory; hosts the gate plugins; takes a shaped proposal + a declared store-slice
-  (+ object attachments) and returns a verdict; never writes.
+  (+ object attachments) and returns a verdict; never writes. *(Per the spec, a separate service; in
+  the current deployment it runs **in-process** in the control plane and ships in its image — **Phase 9
+  / #73** extracts it to a sibling container.)*
 
 The loop is **read → propose → gate → commit**. Load-bearing rules: **no implicit accept** (a type
 with no declared gate cannot be committed), the proposer is never its own gate, status is richer than
@@ -94,8 +96,8 @@ retries, atomic commits, the store-derived `RunReport`).
 model** (Ollama / Qwen on Apple Silicon, 2026-06-08); hosted-OpenAI live validation is pending a key.
 **Phase 7 — service split & full containerization** reached its done-line (7.5): a **task-agnostic
 control plane runs in a container** and launches ephemeral sandbox + code-runner **worker containers**
-as siblings on the host daemon (ADR 0003), running the §12 FE test by configuring the CP through its
-API (`composition.configure_fe_task` / `just fe-containerized`).
+as siblings on the host daemon (ADR 0003), running the FE task by configuring the CP through its
+API (the task catalog + per-task builders in `composition/`).
 
 **Phase 8 — the long-lived control-plane service (v1 complete)** (ADR 0004): the CP now runs as a
 **standing daemon** (`verity serve`) that multiplexes many tasks (per-task `ControlPlane` + durable
@@ -105,12 +107,26 @@ an authenticated **network HTTP API** (`verity serve --http HOST:PORT` + bearer 
 plus a **byte data plane** (raw `POST /objects`, `GET /artifacts/{run_id}/{path}`). Tasks are created,
 run (async — poll `status`, read `results`, `export` artifacts), and survive daemon restart; no rebuild
 to drive a new task. A **task catalog** self-describes each installed type's output-shape contract,
-`verifier_approach`, and `sandbox_notes`. Added the **`fe-kaggle`** task variant: a two-tier gate
-(cheap local hold-out proxy + a hard real **Kaggle-leaderboard** gate, trusted-submitter so creds never
-reach a worker), **live-validated** at 0.92253 balanced accuracy on `playground-series-s6e6` with local
-Qwen. The three **acceptance modes** (optimizer / accumulate / first-acceptable) are documented as
+`verifier_approach`, and `sandbox_notes`. The feature-engineering task is **`fe-kaggle`**: a two-tier
+gate (cheap local hold-out proxy + a hard real **Kaggle-leaderboard** gate, trusted-submitter so creds
+never reach a worker), **live-validated** at 0.92253 balanced accuracy on `playground-series-s6e6` with
+local Qwen. (The earlier single-tier basic-`fe` task type was removed; its §12 domain — schema, shape,
+scoring, and the standalone verifier exercised by `tests/test_feature_engineering_*.py` — is reused by
+`fe-kaggle`. The installed catalog is `{code, fe-kaggle}`.) The three **acceptance modes** (optimizer / accumulate / first-acceptable) are documented as
 emergent from verifier gate composition × `--stop-on-accept` × object-provisioning mode (README + the
 `verity-run-task` skill).
+
+**Phase 9 — the dumb control plane (next priority)** (epic #27): the service split left domain code
+**compiled into the control-plane image** and run **in the CP process**, so adding a verifier or a task
+type forces a **CP rebuild** — at odds with the founding concept (§3.3–§3.6) that the CP *dumbly*
+provisions containers and makes mechanical context updates. The *kernel* is already generic (an AST
+guard proves `verity.control_plane` imports no domain); Phase 9 makes the *image/process* match.
+Two filed issues + the enabler: **#73** extricate the verifier into **sibling containers** (wire the
+already-built `RemoteVerifier`/`Dockerfile.verifier` seam; drop `--extra kaggle` + gate code from the CP
+image); **#74** remove **task-specific data-prep** from the CP (today `build_fe_kaggle_task` splits the
+dataset in-process — the CP should only route files: "agent gets X, verifier gets Y"); and the
+**plugin loader** (ADR 0004 (i)) so types are discovered, not compiled in. Litmus test: a new verifier
+or task type ships a container + a catalog entry, **no CP rebuild**.
 
 **Remaining / open tracks:** hosted-model live validation; the multi-tenancy engine (real queue +
 tenant isolation, issue #3); a `K8sBackend`; and three research-driven docs/feature tracks — making the
@@ -119,12 +135,3 @@ docs for adding sandboxes & verifiers (#66). See [ROADMAP.md](ROADMAP.md) for th
 [docs/api-surface.md](docs/api-surface.md) for the control-plane API reference.
 
 **Stack: Python, managed with uv** (see *Coding habits*).
-
-## Parked branches
-
-- **`feat/containerized-services-gvisor`** — parked, **architecturally superseded** by the ADR 0003
-  worker-provisioning pivot (it predates it: networked HTTP **standing** sandbox/verifier services +
-  gVisor (`runsc`) sandboxing, ~4 ahead / far behind `develop`). Not on the path to merge. Kept as a
-  **reference** for two still-live tracks: the gVisor/`runsc` enablement work (now seamed as
-  `WorkerSpec.runtime`, ADR i) and the standing-service networked data-plane (issue #3, the
-  multi-tenancy & run-control track). Mine it for those when they activate; don't try to rebase it.
