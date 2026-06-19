@@ -84,8 +84,8 @@ to write a single self-contained script that predicts better than the incumbent 
 fits in one script (engineered features, model choice, ensembling, calibration), judged by running it
 on a **reserved hold-out it never sees** (a per-class, deterministic split of the training data; the
 agent gets the labelled remainder, the gate keeps the reserved labels). The submission is the unit and
-the gate is reject-only. Several ways to exercise it, in increasing cost — and a variant (#6) whose
-gate is the **real Kaggle leaderboard**:
+the gate is reject-only. Several ways to exercise it, in increasing cost — and the task you actually
+run (#5), whose gate is the **real Kaggle leaderboard**:
 
 **1. The §13 acceptance criteria (offline — no key, no Docker).** The whole
 read → propose → gate → commit loop on a deterministic fake runner:
@@ -123,31 +123,18 @@ Each cycle spins a fresh, isolated container; expect a few minutes per round. Th
 **only** through the control plane (task + domain instructions and the mounted data) — nothing
 task-specific is hardcoded in the sandbox.
 
-**4. The fully containerized run (the Phase 7 done-line — needs Docker; a key or a local model).** A
-task-agnostic control plane runs *in* a container and launches the sandbox + code-runner **worker
-containers** as siblings on the host daemon, configuring the §12 FE test through its own API:
-
-```
-just fe-containerized
-```
-
-This builds the sandbox + control-plane images and runs one FE task through `infra/compose.fe.yml`.
-Configuration is by environment (`VERITY_MODEL`, `VERITY_LOCAL_BASE_URL`, `VERITY_MAX_CYCLES`, …);
-point it at a local open model with `VERITY_LOCAL_BASE_URL`. The full env surface, the worked API
-example, and the topology are documented in [docs/api-surface.md](docs/api-surface.md) (*Worked
-example — the feature-engineering task*).
-
-**5. The standing daemon (Phase 8 — one container, many tasks, no rebuild).** Instead of a one-shot
-batch, run the control plane as a **long-lived service** you configure at runtime: define tasks,
-ingest data, run, and pull results — all without rebuilding an image (see
+**4. The standing daemon (Phase 8 — one container, many tasks, no rebuild).** Run the control plane
+as a **long-lived service** you configure at runtime: a task-agnostic control plane runs *in* a
+container and launches the sandbox + code-runner **worker containers** as siblings on the host daemon;
+you define tasks, ingest data, run, and pull results — all without rebuilding an image (see
 [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md)).
 
 ```
 just cp-serve                                   # build images + start the verity-cp daemon
 just cp catalog                                 # list task types and their published contracts
-cp <dataset> "$VERITY_EXCHANGE_HOST/in/"        # default host exchange: /tmp/verity-exchange
-just cp ingest train.csv                        # -> a data handle
-just cp create --type fe --data <handle> --model … --max-cycles 4 --stop-on-accept   # -> a task id
+cp <inputs> "$VERITY_EXCHANGE_HOST/in/"         # default host exchange: /tmp/verity-exchange
+just cp ingest train.csv                        # -> a data handle (ingest each input separately)
+just cp create --request-file task.json --data <handle> …   # define a task (e.g. fe-kaggle, see #5) -> a task id
 just cp run <task_id>                            # -> a run id (runs in the background)
 just cp results <run_id>                         # the RunReport + accepted-artifact ids
 just cp export  <run_id>                         # durable artifacts -> $VERITY_EXCHANGE_HOST/out/<run_id>/
@@ -166,12 +153,12 @@ every route but `/health`, and over-the-wire object upload + artifact download (
 Reach it with the same CLI: `verity --url http://host:8080 --token <secret> catalog`. See the
 *External HTTP/REST* section of [docs/api-surface.md](docs/api-surface.md).
 
-**6. The `fe-kaggle` variant — the real Kaggle leaderboard as the final-test gate (needs Docker, a
-model, a Kaggle token).** Same FE domain, but a **two-tier gate**: a cheap local-hold-out proxy
+**5. The `fe-kaggle` task — the real Kaggle leaderboard as the final-test gate (needs Docker, a
+model, a Kaggle token).** The §12 FE domain with a **two-tier gate**: a cheap local-hold-out proxy
 filters every cycle (so no Kaggle submission is wasted on a locally-worse attempt), then the hard gate
 regenerates the submission on the full train + the real `test.csv`, **submits to a live Kaggle
-competition**, and accepts only what beats our best **public-leaderboard** score (the ~5/day cap is
-read from the API; the gate blocks until budget frees). The submit happens on the trusted control
+competition**, and accepts only what beats our best **public-leaderboard** score (the competition's
+daily submission cap is read from its Kaggle metadata — default 5; the gate blocks until budget frees). The submit happens on the trusted control
 plane — `KAGGLE_USERNAME`/`KAGGLE_KEY` never reach a worker. It's a new task type in the catalog
 (`verity catalog --type fe-kaggle`), created with two inputs via `verity create --request-file
 task.json --data <train> --test-data <test>`. The committed, runnable package — data slot, `task.json`
@@ -238,7 +225,7 @@ pyproject.toml / justfile   uv project + dev commands
 Dockerfile.sandbox          the image the container sandbox runs the agent in
 Dockerfile.verifier         the standing advisory-verifier service image (Phase 7.1)
 Dockerfile.controlplane     the task-agnostic control-plane image (launches worker containers)
-infra/            compose files for the containerized topology (compose.fe.yml one-shot; compose.daemon.yml standing)
+infra/            compose files for the containerized topology (compose.daemon.yml — the standing daemon)
 docs/             API reference, guides, and architecture decision records (see Docs below)
 src/verity/
   contracts/      the cross-service value model + service ports (no service depends on another)
@@ -246,7 +233,7 @@ src/verity/
   verifier/       the opaque verifier: gate-primitive SDK + the container/worker code-runner
   sandbox/        the real agent runtime (Deep Agents) — in-process + container/worker drivers
   domains/        per-domain wiring; feature_engineering.py is the §12 MVP domain
-  composition/    applies a task to a generic control plane (configure_fe_task) + the FE-run entrypoint
+  composition/    applies a task to a generic control plane (the task catalog + per-task builders)
   provisioning/   the WorkerBackend seam + DockerBackend + the label-reaper (ADR 0003)
   eval/           the cross-model benchmark harness (quality / cost / latency)
   transport/      networked port-RPC (loopback + HTTP) for the service split
@@ -261,7 +248,7 @@ spec/             vendored specification + references (see above)
 Reference material lives in [`docs/`](docs/):
 
 - [`docs/api-surface.md`](docs/api-surface.md) — the **control-plane API reference**, with a worked
-  feature-engineering example (programmatic + fully containerized).
+  example of applying a task to a generic control plane and the daemon CLI flow.
 - [`docs/local-models.md`](docs/local-models.md) — running against a local / open OpenAI-compatible model.
 - [`docs/glossary.md`](docs/glossary.md) — the run-control vocabulary (tenant / task / run / job).
 - [`docs/adr/`](docs/adr/) — architecture decision records (opaque verifier; Deep Agents sandbox;

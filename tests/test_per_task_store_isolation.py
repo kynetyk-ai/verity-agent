@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._fe_offline import FeWorkers
+from tests._fe_offline import FeWorkers, offline_catalog
 from verity.composition.dataset import stratified_split, subsample
 from verity.composition.task_request import DataRequest, PolicyRequest, TaskRequest
 from verity.domains.feature_engineering import SUBMISSION
@@ -20,11 +20,12 @@ from verity.provisioning import FakeBackend
 from verity.service import ControlService
 
 _RAW = b"id,a,class\n0,0,X\n1,2,X\n2,4,X\n3,6,Y\n4,8,Y\n5,10,Y\n"
+_REAL_TEST = b"id\n100\n101\n102\n103\n"
 
 
 def _fe_request() -> TaskRequest:
     return TaskRequest(
-        type_name="fe",
+        type_name="fe-kaggle",
         policy=PolicyRequest(stop_on_accept=True),
         data=DataRequest(per_class=100, reserved_fraction=0.5),
     )
@@ -41,10 +42,12 @@ def test_two_fe_instances_do_not_share_incumbents() -> None:
         steps=[("submit", ("ds",), b"good", ["feat0"])],
         by_marker={b"good": dict(reserved)},
     )
-    service = ControlService(backend=FakeBackend(script=workers), root=None)
+    service = ControlService(
+        backend=FakeBackend(script=workers), root=None, catalog=offline_catalog()
+    )
 
-    task_a = service.create_task(_fe_request(), data=_RAW)
-    task_b = service.create_task(_fe_request(), data=_RAW)
+    task_a = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
+    task_b = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
     assert task_a != task_b
 
     asyncio.run(service.run(task_a))

@@ -125,7 +125,11 @@ The **task-registration surface** that keeps the control plane task-agnostic. `s
 durable provenance store so a task builder can seed its **root inputs** (e.g. a dataset version) at
 setup; the loop's own mutations still go only through the commit path. `register_sandbox`/
 `register_verifier` add a task's providers under the keys its `TaskConfig` names (`sandbox_key` /
-`verifier_key`). A task is *applied to* a generic control plane through these, never compiled into it.
+`verifier_key`). A task is *applied to* a generic control plane through these, never compiled into the
+**kernel** (`verity.control_plane` imports no domain — an AST guard enforces it). Caveat to the current
+deployment: the domain/verifier code and the per-task builder still ship in the control-plane **image**
+and the verifier runs **in-process**; extracting them so the image carries no domain code (verifier →
+sibling container, data-prep out of the CP) is **Phase 9** (#73 / #74).
 
 ### `OrchestrationPolicy`
 
@@ -406,8 +410,8 @@ with an `InMemoryRunRecordStore` default; the standing job server swaps the adap
 into the provenance store (the system of record) — it never copies artifacts.
 
 ```python
-results = await cp.run("fe", goal=FE_GOAL)
-record = cp.run_records().list("default", task_id="fe")[-1]
+results = await cp.run("code", goal="write a submission script that runs cleanly")
+record = cp.run_records().list("default", task_id="code")[-1]
 assert record.status == "complete"
 assert record.accepted_artifact_ids            # ids you can resolve via cp.provenance(...)
 ```
@@ -693,61 +697,49 @@ rejected | superseded | revised -> {}   (terminal, retained)
 
 ---
 
-## Worked example — the feature-engineering task
+## Worked example — applying a task to a generic control plane
 
-The §12 feature-engineering domain is the MVP validation target and the canonical end-to-end use of
-the API. It shows the **genericity contract** in action: a `ControlPlane` is built knowing no task, and
-the FE task is *applied to it* through `configure_fe_task` — the one composition-layer function allowed
-to know both FE and the control plane (`src/verity/composition/fe.py`).
+The MVP validation target is the §12 feature-engineering domain, exercised through the **`fe-kaggle`**
+task. The example below shows the **genericity contract** in action: a `ControlPlane` is built knowing
+no task, and a task is *applied to it* through a composition-layer builder — the one layer allowed to
+know both a domain and the control plane (`src/verity/composition/`).
 
-### A. Programmatic — apply FE to a generic control plane, then run it
+### A. Programmatic — apply a task to a generic control plane, then run it
 
-`configure_fe_task` (`composition/fe.py:76`) registers the FE sandbox + verifier providers via the
-CP's API, seeds the dataset root into `cp.store`, and calls `cp.configure(...)`. The sandbox runs as a
-**worker** (`BackendSandboxDriver`); the FE verifier's gate logic stays **trusted and in-process** and
-executes the untrusted submission as a `BackendCodeRunner` worker — so the answer key
-(`reserved_labels`) never enters any worker. The worker substrate (Docker now) is chosen by the
-`WorkerBackend` you pass; `ProvisioningConfig` carries the substrate shape, kept **off** `TaskConfig`.
+A composition builder registers the task's sandbox + verifier providers via the CP's API, seeds any
+input data into `cp.store`, and calls `cp.configure(...)`. The sandbox runs as a **worker**
+(`BackendSandboxDriver`); a domain that executes code (feature-engineering) keeps its gate logic
+**trusted and in-process** and runs the untrusted submission as a `BackendCodeRunner` worker — so an
+answer key never enters any worker. The worker substrate (Docker now) is chosen by the `WorkerBackend`
+you pass; `ProvisioningConfig` carries the substrate shape, kept **off** `TaskConfig`. The trivial
+`code` task is the smallest illustration (no data, no creds):
 
 ```python
 import asyncio
-from pathlib import Path
 
-from verity.composition import FE_GOAL, FE_TASK_ID, ProvisioningConfig, configure_fe_task
-from verity.composition.dataset import stratified_split, subsample
+from verity.composition import configure_code_task
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.store import SqliteStore
-from verity.domains.feature_engineering import SUBMISSION
+from verity.domains.code import SUBMISSION
 from verity.provisioning import DockerBackend
-from verity.sandbox.model_spec import ModelSpec
 
 
 async def main() -> None:
-    # 1. Split a labelled CSV into the agent's training data and a reserved hold-out it never sees.
-    raw = subsample(Path("feature-engineering-test/train.csv").read_bytes(), per_class=300)
-    split = stratified_split(raw, target="class", id_column="id", reserved_fraction=0.5)
-
-    # 2. A GENERIC control plane — it knows no task at construction.
+    # 1. A GENERIC control plane — it knows no task at construction.
     cp = ControlPlane(SqliteStore(), policy=OrchestrationPolicy(max_cycles=4))
 
-    # 3. Apply FE through the CP's API (register providers + seed dataset + configure). The
-    #    DockerBackend launches sandbox + code-runner worker containers per cycle.
-    await configure_fe_task(
-        cp,
-        backend=DockerBackend(),
-        split=split,
-        provisioning=ProvisioningConfig(
-            model_spec=ModelSpec.from_provider_string("anthropic:claude-sonnet-4-6"),
-            sandbox_image="verity-sandbox:latest",
-        ),
-    )
+    # 2. Apply a task through the CP's API (register providers + seed data + configure). The
+    #    DockerBackend launches sandbox + code-runner worker containers per cycle. The FE-Kaggle
+    #    task is applied the same way via `configure_fe_kaggle_task` (it additionally needs the
+    #    train/test split + a `KaggleScorer`); the `code` task needs no inputs.
+    await configure_code_task(cp, backend=DockerBackend())
 
-    # 4. Drive read → propose → gate → commit until the policy stops.
-    await cp.run(FE_TASK_ID, goal=FE_GOAL)
+    # 3. Drive read → propose → gate → commit until the policy stops.
+    await cp.run("code", goal="write a submission script that runs cleanly")
 
-    # 5. Extract: the accepted submissions, the audit report, and the run record.
+    # 4. Extract: the accepted submissions, the audit report, and the run record.
     accepted = cp.accepted_artifacts(type=SUBMISSION)
-    report = cp.run_report(FE_TASK_ID)
+    report = cp.run_report("code")
     print("accepted:", [a.id for a in accepted])
     print("cycles:", report.summary.cycles_run, "outcomes:", report.summary.outcomes)
 
@@ -755,46 +747,12 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-This is the exact shape the containerized entrypoint uses (`composition/fe_run.py`) and that
-`tests/test_fe_composition.py` asserts against a `FakeBackend` (offline — config-driven flow + real
-gate logic, scripted execution). A frontier model reliably reaches an accepted `Submission`; a small
-local model may stall at the `features-defined` refine gate (a known prompt/feedback-tuning gap, see
-ROADMAP Phase 6 — *system* correctness is the deliverable, model score is separate).
+For the real feature-engineering workload, apply `fe-kaggle` instead — programmatically via
+`configure_fe_kaggle_task`, or (the usual path) through the standing daemon's catalog from a
+declarative request file (section B). The genericity is the same: the control plane never learns what
+the task is.
 
-### B. Containerized — one command, the generic CP in a container
-
-The same code runs **fully containerized**: a task-agnostic control plane runs *in* a container
-(`Dockerfile.controlplane`) and launches the sandbox + code-runner **sibling** worker containers on the
-host daemon via a mounted `/var/run/docker.sock` (controlled socket, ADR 0003 §f — not
-docker-in-docker). The entrypoint is `python -m verity.composition.fe_run` (`composition/fe_run.py`),
-configured by environment:
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `VERITY_FE_DATASET` | `/data/train.csv` | Path to the labelled CSV inside the container. |
-| `VERITY_MODEL` | `anthropic:claude-sonnet-4-6` | Provider string for the sandbox model. |
-| `VERITY_LOCAL_BASE_URL` | *(unset)* | If set, `VERITY_MODEL` is a local model served at this OpenAI-compatible URL (e.g. `http://host.docker.internal:11434/v1`). |
-| `VERITY_MAX_CYCLES` | `4` | Refine cycles. |
-| `VERITY_PER_CLASS` | `300` | Rows per class to subsample for speed. |
-| `VERITY_RESERVED_FRACTION` | `0.5` | Held-out share of the split. |
-| `VERITY_SANDBOX_IMAGE` | `verity-sandbox:latest` | The agent worker image. |
-| `VERITY_WORKER_STAGING` | *(unset)* | Shared host↔container staging dir, at an **identical path** on both, so worker bind-mounts resolve on the host daemon (the sibling-mount fix). |
-
-Run it with one command (builds the sandbox + control-plane images, creates the staging dir, runs one
-FE task through `infra/compose.fe.yml`):
-
-```sh
-just fe-containerized
-```
-
-The compose file (`infra/compose.fe.yml`) mounts the docker socket, bind-mounts
-`/tmp/verity-staging` at a matching path, mounts the dataset read-only at `/data/train.csv`, and passes
-the `VERITY_*` env through. For a local model instead of Anthropic, set `VERITY_MODEL` +
-`VERITY_LOCAL_BASE_URL` (see `docs/local-models.md`). The run prints the `RunReport` JSON and the
-accepted submission ids, and `verity-reaper` (the `verity.provisioning.reaper:main` console script)
-clears any orphaned workers by label.
-
-### C. The standing daemon — one container, many tasks, no rebuild (Phase 8, ADR 0004)
+### B. The standing daemon — one container, many tasks, no rebuild (Phase 8, ADR 0004)
 
 The same image also runs a **long-lived control-plane daemon** (`verity serve`) you configure at
 runtime — define tasks, ingest data, run, and pull results without rebuilding (ADR 0004). The daemon
@@ -815,18 +773,17 @@ Lifecycle: `just cp-serve` (build images + `docker compose -f infra/compose.daem
 | `VERITY_SOCKET` | `/run/verity.sock` | The daemon's IPC socket; the v1 trust boundary (local / `docker exec`-only, no auth). |
 | `VERITY_EXCHANGE` | `/exchange` | The client↔CP file channel (`in/` for ingest, `out/` for export). **CP-only — never a worker.** Host dir via `VERITY_EXCHANGE_HOST` (default `/tmp/verity-exchange`). |
 | `VERITY_STORE_ROOT` | `/var/lib/verity` | Persistent per-task stores + task definitions (durable across restart). **CP-only.** Host dir via `VERITY_STORE_HOST` (default `/tmp/verity-store`). |
+| `VERITY_WORKER_STAGING` | *(unset)* | Shared host↔container staging dir, at an **identical path** on both, so worker bind-mounts resolve on the host daemon (the sibling-mount fix). |
+| `VERITY_SANDBOX_IMAGE` | `verity-sandbox:latest` | The agent worker image. |
+| `VERITY_MODEL` | `anthropic:claude-sonnet-4-6` | Default provider string for the sandbox model (overridable per task at `create`). |
+| `VERITY_LOCAL_BASE_URL` | *(unset)* | If set, `VERITY_MODEL` is a local model served at this OpenAI-compatible URL (e.g. `http://host.docker.internal:11434/v1`). |
 
-`VERITY_WORKER_STAGING`, `VERITY_SANDBOX_IMAGE`, `VERITY_MODEL`, `VERITY_LOCAL_BASE_URL`, and the
-model key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, forwarded to the agent worker via sandbox
-env-passthrough) carry over from section B. The exchange + store volumes reach the control-plane
+The model key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) is forwarded to the agent worker via sandbox
+env-passthrough. The exchange + store volumes reach the control-plane
 container alone — workers receive bytes **only** through the CP provisioning path, asserted by
 `tests/test_daemon_volume_isolation.py` (a `WorkerSpec` has no host-bind-mount field; neither host
 path nor the answer key reaches a worker). The end-to-end live proof — two task types and a restart,
 no rebuild — is `tests/test_daemon_live.py`.
-
-> **Entrypoint note.** The image's default `ENTRYPOINT` stays the one-shot `fe_run` (so
-> `compose.fe.yml` is unchanged); `compose.daemon.yml` overrides it to `verity serve`. A minor,
-> deliberate deviation from ADR 0004 sprint 3's literal "ENTRYPOINT → the daemon."
 
 #### The `fe-kaggle` task type — the real Kaggle leaderboard as the final-test gate
 
@@ -835,8 +792,8 @@ authoritative gate (a two-tier ladder: a cheap local-hold-out proxy filters ever
 regenerates the submission on the full train + the real `test.csv`, submits to Kaggle, and accepts only
 what **beats our best prior public score**). The Kaggle submit happens on the **trusted control-plane
 side** — `KAGGLE_USERNAME`/`KAGGLE_KEY` are read by the in-process verifier and are **never** forwarded
-to a worker; the daily ~5-submission cap is read from the API and the gate **blocks** until budget
-frees. It needs **two** inputs (the labeled `train.csv` and the real unlabeled `test.csv`) and the
+to a worker; the competition's daily submission cap is read from its Kaggle metadata (default 5,
+overridable via the `daily_submission_limit` knob) and the gate **blocks** until budget frees. It needs **two** inputs (the labeled `train.csv` and the real unlabeled `test.csv`) and the
 competition slug, so it is created from a declarative request file:
 
 ```bash

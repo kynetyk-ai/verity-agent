@@ -25,6 +25,9 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > exchange + store volumes provably off every worker. Remaining beyond v1 (deferred engine tracks):
 > hosted-model live validation, the multi-tenancy/concurrency engine (#58), crash recovery (#57), the
 > full #3 networked data plane, and a `K8sBackend`.
+> **Phase 9 ⬜ is the next priority:** extract the last domain code out of the control-plane image — the
+> in-process verifier (#73) and the in-CP data-prep / dataset-splitting (#74) — so adding a verifier or
+> task type needs **no CP rebuild** (the kernel is already generic; the image/process must match).
 > The **control-plane API reference** (with a worked FE example) is
 > [`docs/api-surface.md`](docs/api-surface.md).
 
@@ -62,9 +65,10 @@ These hold in every phase (see `CLAUDE.md` → *Coding habits*):
 - **uv** for everything; **structured logging from day one**; **tests alongside the code**.
 - **Branch + PR** for all changes; **never a PR on buggy or embarrassing code.**
 - **Container-per-service readiness** — the architecture keeps each service independently imageable
-  (async ports, no shared mutable state). Today the **sandbox** ships its own image; the control
-  plane and verifier run in-process and are imaged when the service split lands (Post-MVP Phase 7,
-  issues #3 / #10).
+  (async ports, no shared mutable state). Today the **sandbox** ships its own image and the **control
+  plane** runs as a container; the **verifier still runs in-process** in the CP and moves to its own
+  sibling image in **Phase 9** (#73), alongside extracting the in-CP data-prep (#74) — so the CP image
+  carries no domain code.
 - **Spec-traceability** — implementation decisions cite the spec section (`§N`) they realize; the
   vendored `spec/` tree is authoritative.
 - **Invariants are property tests**, not prose aspirations (spec §5).
@@ -294,8 +298,9 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   local-hold-out proxy filters every cycle, then a hard gate regenerates the submission on the full
   train + the real `test.csv`, **submits to a live Kaggle competition** (`KaggleScorer` seam +
   `RealKaggleScorer`, the `kaggle` extra), and accepts only what beats our best **public-leaderboard**
-  score. Trusted-submitter (creds never reach a worker); the ~5/day cap is read from the API and the
-  gate blocks until budget frees; degrade-don't-crash on API failure. New `verity create
+  score. Trusted-submitter (creds never reach a worker); the competition's daily submission cap is
+  read from its Kaggle metadata (default 5, overridable) and the gate blocks until budget frees;
+  degrade-don't-crash on API failure. New `verity create
   --request-file` + `--test-data` (two inputs); the committed, runnable task package
   (`feature-engineering-test/{PROTOCOL.md,task.json,run.sh}`, local-agent default). Offline-tested on a
   `FakeKaggleScorer`; a `@kaggle @live` test submits for real (auto-skips without creds).
@@ -540,7 +545,9 @@ a green, focused commit.
 **byte-provenance** isolation invariant (the answer key / wrong-role bytes never reach a worker);
 **per-task store isolation** (a store per task instance — no same-typed `INCUMBENTS`/manifest bleed,
 #58); verifier **opacity** (no task/verifier locking — self-description + graceful run-time failure);
-and `composition/fe_run.py` + the library API stay valid.
+and the library API stays valid. *(Post-Phase-8 update: the one-shot `composition/fe_run.py` batch
+entrypoint + `infra/compose.fe.yml` were removed with the basic-`fe` task (#68); the image's default
+`ENTRYPOINT` is now `verity serve` and the daemon is the single path.)*
 
 - **8.1 `ControlService` core + task catalog + per-task durable stores ✅** — a transport-agnostic
   async facade over a **per-task `ControlPlane` + `SqliteStore` multiplexer** (a store per task
@@ -588,13 +595,13 @@ and `composition/fe_run.py` + the library API stay valid.
   real on-disk `ControlService`): a `WorkerSpec` has no host-bind-mount field at all, and the test
   further asserts neither host path leaks (env / passthrough / command / input keys) and the answer
   key never appears. The **live proof** is `tests/test_daemon_live.py` (`@docker @live`, auto-skip):
-  one running container lists **both `fe` and `code` task types**, runs an `fe` task
-  (ingest→create→run→results→export to the exchange) and a `code` task with **no rebuild between
-  them**, then **survives a restart** and re-runs the pre-restart task (durable definitions).
-  *Deviation from ADR 0004 sprint 3:* per the chosen layout, `compose.fe.yml` is left **unchanged**
-  (the one-shot `fe_run` batch path), so the image's default `ENTRYPOINT` stays `fe_run` and the
-  **daemon compose overrides it** to `verity serve` — the daemon is fully reachable, just selected by
-  `compose.daemon.yml` rather than baked as the image default.
+  one running container lists **both `fe-kaggle` and `code` task types**, runs an `fe-kaggle` task
+  (ingest train+test→create→run→results→export to the exchange) and a `code` task with **no rebuild
+  between them**, then **survives a restart** and re-runs the pre-restart task (durable definitions).
+  *(At the time, the image's default `ENTRYPOINT` stayed the one-shot `fe_run` and `compose.daemon.yml`
+  overrode it to `verity serve`. Post-Phase-8, when the basic-`fe` task was retired (#68), `fe_run` +
+  `compose.fe.yml` were removed and the image's default `ENTRYPOINT` became `verity serve` — the daemon
+  is now the image default, not an override.)*
 - **8.4 External HTTP/REST control API ✅** — the *same* FastAPI `build_app` (8.2), now bindable to a
   **network TCP port** with **bearer-token auth**, completing Phase 8 v1. **Landed:** `verity serve
   --http HOST:PORT` (or `$VERITY_HTTP`; `python -m verity.service` mirrors `verifier/__main__.py`)
@@ -612,8 +619,50 @@ and `composition/fe_run.py` + the library API stay valid.
   hardening candidate); the **multi-tenancy engine** — *cross-tenant* store isolation, the
   single-writer→Postgres store-engine upgrade, object GC, and parallel live runs (the residual beyond
   v1's per-task stores — **#58** / **#27** / **#9**); the **over-the-wire file API** (removes the
-  shared exchange volume — #3 proper); the **plugin loader** for runtime domain-code registration; and
-  **auth/authz** on the external HTTP surface.
+  shared exchange volume — #3 proper); the **plugin loader** for runtime domain-code registration (now
+  scheduled — Phase 9.3); and **auth/authz** on the external HTTP surface.
+
+### Phase 9 — The dumb control plane: domain code out of the CP image ⬜ *(next priority)*
+
+The architectural debt the service split left standing: domain logic still **compiled into the
+control-plane image** and run **in the CP process**, so adding a verifier or a task type forces a
+**control-plane rebuild** — contradicting the founding concept (spec §3.3–§3.6) that the control plane
+**dumbly** provisions containers and makes mechanical, content-free context updates. The *kernel* is
+already generic (the AST import-guard proves `verity.control_plane` imports no domain); this phase
+makes the **image/process** match by extracting the last two pieces of domain code out of the CP. The
+litmus test for the whole phase: **adding a new verifier or task type ships a container + a catalog
+entry, with no CP rebuild.** Part of epic **#27** (service split). Each sprint a green, focused commit;
+the genericity guard and the sandbox byte-provenance isolation invariant hold throughout.
+
+- **9.1 Verifier → sibling containers (#73) ⬜** — wire the *already-built but unwired* transport seam
+  (`RemoteVerifier` / `VerifierServer` / `HttpTransport`, `Dockerfile.verifier`): composition builders
+  register a `RemoteVerifier` instead of constructing the in-process `SdkVerifier`; the verifier runs as
+  a **sibling worker** (parallel to `BackendCodeRunner`) — or standing — in its **own image** carrying
+  the domain gates + extras (e.g. `kaggle`), and itself spawns the code-runner sibling (or the
+  code-runner becomes its child). The trusted creds (Kaggle) live on the verifier side, never the CP or
+  the agent worker — the in-process placement was never required by the trusted-submitter property.
+  **Done:** `Dockerfile.controlplane` drops `--extra kaggle` and all gate code; a new verifier needs no
+  CP rebuild; fe-kaggle passes end-to-end over the remote path (the §13/acceptance + `test_service_e2e`
+  coverage runs against it). Folds in the residual of **#10** (capability advertisement).
+- **9.2 Task-prep out of the control plane (#74) ⬜** — the CP must hold **no** task-specific
+  data-preparation. Today `build_fe_kaggle_task` splits the dataset (`subsample` + `stratified_split`,
+  deriving the answer key) **in the CP** (ADR 0004 itself calls this "the riskiest new logic"). Move the
+  prep to the **task/verifier side** (or a task-package build step) so the CP only routes opaque blobs
+  to roles — "agent gets {file: ref}, verifier gets {file: ref}." The answer-key isolation invariant is
+  then preserved **by construction at the prep boundary**, not by CP-side carving. **Done:** no
+  CP-image-resident code interprets dataset/domain semantics (no split, no `target`/`id_column`); a new
+  task type supplies its own prep and the CP routes the result unchanged. **Open (spec-question):** the
+  exact prep boundary — verifier container vs. a dedicated task-package build step — overlaps **#3**
+  (data plane) and **#64** (domain optional); a short written decision precedes code.
+- **9.3 Plugin loader — register task/verifier types without a rebuild ⬜** — the completing piece that
+  makes 9.1/9.2 fully real: the `catalog.py` entry-point plugin-loader seam (ADR 0004 (i), today
+  *placed but unbuilt*), so task and verifier builders are **discovered**, not compiled into the CP
+  image. Without it, even an extracted verifier/prep still needs the CP rebuilt to add the catalog
+  entry. Closes the "Further out — runtime registration of new domain code" item.
+- **Exit ⬜:** the control-plane image carries the kernel + provisioning + transport only — **zero**
+  domain / verifier / data-prep code — and a new verifier *or* task type is added by deploying a
+  container and registering a catalog entry, **with no control-plane rebuild**. Unblocks the clean
+  multi-tenancy engine (a tenant's task/verifier set becomes deploy-time config, not an image).
 
 ### Woven through Phases 6–7
 
@@ -689,6 +738,8 @@ Currently-open issues (kept in sync with GitHub):
 | **#64** make the domain concept optional | architecture — a generic default domain + verifier-criteria in the prompt (§8 / §3.4) |
 | **#65** per-task agent skills in the sandbox (harness-agnostic) | 5.4 sandbox extensibility (successor to the `read_pdf` tool seam) |
 | **#66** extender docs for sandboxes & verifiers | the woven "configuration guide" item (docs slice) |
+| **#73** extricate verification logic into sibling verifier containers | **Phase 9.1** (next priority) |
+| **#74** remove task-specific data-prep from the control plane | **Phase 9.2** (next priority) |
 
 **Already done (closed):** **#2** (CI gates `main`/`develop`), **#8** (supersede-on-beat, 4.2),
 **#6** (harness-bound executable tools — the `read_pdf` seam, 5.4), **#12** (workspace-contract/orientation
@@ -705,8 +756,8 @@ Designed-for, not yet scheduled; each becomes an issue/epic when its time comes:
   worker model + labels (`run`, `cycle`) are the placed seam (ADR 0003); building it = the concurrency
   engine in the Multi-tenancy track above.
 - Runtime registration of new **domain code** — a plugin loader / `verity.task_types` entry-point group
-  (ADR 0004 (i)); Phase 8 v1 requires an image build for a brand-new domain (only *config* is
-  rebuild-free).
+  (ADR 0004 (i)); **now scheduled as Phase 9.3.** Phase 8 v1 requires an image build for a brand-new
+  domain (only *config* is rebuild-free); Phase 9 closes that.
 - Over-the-wire **file ingestion/egress API** — removes Phase 8's shared exchange volume (ADR 0004 (f)
   seam / the #3 networked data plane).
 - Spec sync: collapse the §8.2 tool registry into operation signatures (**#5**) — already true in code.

@@ -75,7 +75,8 @@ _FE_KAGGLE_VERIFIER_APPROACH = (
     "Two-tier ladder over the regenerated script (the gate re-runs the script on gold data; the "
     "agent's own CSV is never trusted). CHEAP, per-cycle: the script runs on a labeled hold-out "
     "carved from train.csv and is scored on balanced accuracy; a submission that does not beat the "
-    "best ACCEPTED proxy is rejected before any Kaggle call. HARD, rate-limited (~5/day): the "
+    "best ACCEPTED proxy is rejected before any Kaggle call. HARD, rate-limited (the competition's "
+    "daily submission cap, read from its Kaggle metadata; overridable): the "
     "survivor is regenerated on the full train + real test set and submitted to the live Kaggle "
     "competition; it is ACCEPTED only if the public score beats our best prior Kaggle-confirmed "
     "score (the real leaderboard is the incumbent ladder). When the daily cap is spent the gate "
@@ -173,11 +174,13 @@ async def build_fe_kaggle_task(
 ) -> str:
     """The `fe-kaggle` catalog builder: configure the task from a declarative `TaskRequest`.
 
-    Needs two ingested inputs (the carve-out is the same as `build_fe_task`, plus the real test):
-    ``data.data_ref`` (the labeled ``train.csv``, split here for the cheap proxy) and
+    Needs two ingested inputs: ``data.data_ref`` (the labeled ``train.csv``, subsampled and split
+    here into the agent's train + the reserved hold-out for the cheap proxy) and
     ``data.test_ref`` (the real, unlabeled ``test.csv`` for Kaggle). ``verifier.knobs.competition``
-    is the competition slug (required); optional knobs tune polling/wait. Constructs the live
-    `RealKaggleScorer` (lazy `kaggle` import) and hands it to `configure_fe_kaggle_task`.
+    is the competition slug (required); optional knobs tune polling/wait, and
+    ``daily_submission_limit`` overrides the per-competition cap that is otherwise read from the
+    competition metadata. Constructs the live `RealKaggleScorer` (lazy `kaggle` import) and hands it
+    to `configure_fe_kaggle_task`.
     """
     if request.data.data_ref is None:
         raise ValueError("the fe-kaggle task requires training data (create the task with `data=`)")
@@ -200,9 +203,11 @@ async def build_fe_kaggle_task(
         RealKaggleScorer,  # lazy: only the live path needs the `kaggle` extra
     )
 
+    limit_knob = knobs.get("daily_submission_limit")
     scorer = RealKaggleScorer(
         competition=str(competition),
         poll_interval_s=float(knobs.get("score_poll_interval_s", 20.0)),
+        daily_limit_override=int(limit_knob) if limit_knob is not None else None,
     )
     return await configure_fe_kaggle_task(
         cp, backend=backend, scorer=scorer, split=split,

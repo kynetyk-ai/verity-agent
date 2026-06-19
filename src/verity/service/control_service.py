@@ -9,7 +9,7 @@ over *this* object; here it runs in-process, offline, over any `WorkerBackend`.
 **Why a store per task** (ADR 0004 (a)): a single shared store would let same-typed task instances
 bleed — task B's `INCUMBENTS` slice and context manifest would surface task A's accepted artifacts
 of the same type, contaminating B's scoring. A store per task scopes that by construction, at no
-kernel cost — the one-CP-per-run shape `fe_run` already uses, with the service as multiplexer.
+kernel cost — a generic `ControlPlane` per task instance, with the service as multiplexer.
 
 **Run identity** is unified: each per-task `ControlPlane` is given the *daemon-level*
 `RunRecordStore` and a mutable run-id cell the service sets per run, so the kernel records the run
@@ -239,7 +239,7 @@ class ControlService:
     async def run(self, task_id: str, *, goal: str | None = None) -> str:
         """Run a task once and block until it finishes; returns the ``run_id``.
 
-        The blocking convenience over ``submit_run`` + ``await_run`` — the library / `fe_run` / test
+        The blocking convenience over ``submit_run`` + ``await_run`` — the library / test
         entrypoint. The daemon uses ``submit_run`` directly for non-blocking, pollable runs.
         """
         run_id = await self.submit_run(task_id, goal=goal)

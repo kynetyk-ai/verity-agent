@@ -3,7 +3,7 @@
 This is the one layer allowed to import across services — control plane, sandbox, verifier,
 provisioning, and domains — to configure a task onto an already-constructed, **task-agnostic**
 `ControlPlane`. A caller builds a generic control plane, then applies a task through the CP's own
-API (`configure_fe_task` / `configure_code_task` register the task's providers + seed its data +
+API (`configure_fe_kaggle_task` / `configure_code_task` register the task's providers + seed data +
 `configure`). The control plane is never built around a task; `verity.control_plane` imports
 nothing from `verity.domains` (enforced by a layering test), so the CP stays generic and long-lived.
 """
@@ -25,15 +25,7 @@ from verity.composition.code import (
     describe_code_task,
 )
 from verity.composition.description import OperationDescription, TaskTypeDescription
-from verity.composition.fe import (
-    FE_GOAL,
-    FE_TASK_ID,
-    ProvisioningConfig,
-    build_fe_task,
-    configure_fe_task,
-    describe_fe_task,
-    provisioning_config_from,
-)
+from verity.composition.fe import ProvisioningConfig, provisioning_config_from
 from verity.composition.task_request import (
     DataRequest,
     PolicyRequest,
@@ -45,11 +37,6 @@ from verity.composition.task_request import (
 __all__ = [
     "ProvisioningConfig",
     "provisioning_config_from",
-    "configure_fe_task",
-    "build_fe_task",
-    "describe_fe_task",
-    "FE_GOAL",
-    "FE_TASK_ID",
     "configure_code_task",
     "build_code_task",
     "describe_code_task",

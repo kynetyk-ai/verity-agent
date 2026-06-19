@@ -14,8 +14,8 @@ bearer auth for the network daemon).
 ## `catalog` — discover what's installed (read this before `create`)
 
 ```bash
-verity catalog              # every installed task type
-verity catalog --type fe    # one type's full published contract
+verity catalog                   # every installed task type
+verity catalog --type fe-kaggle  # one type's full published contract
 ```
 
 Returns `{"task_types": [ <TaskTypeDescription>, ... ]}`. Each description **self-publishes** the
@@ -50,11 +50,15 @@ bytes over HTTP; see *Network mode* below.)
 ## `create` — define a task instance → a `task_id`
 
 ```bash
-verity create --type fe --data <handle> \
+# trivial, data-less task — the request is shaped from flags:
+verity create --type code \
   --model qwen3.6:27b-coding-mxfp8 --base-url http://host.docker.internal:11434/v1 \
-  --goal "Improve balanced accuracy via feature engineering." \
-  --max-cycles 4 --per-class 150 --reserved-fraction 0.5
+  --goal "Write a submission script that runs cleanly." --max-cycles 4 --stop-on-accept
 # -> {"task_id": "..."}
+
+# data-bearing task (e.g. fe-kaggle: two inputs + a competition slug) — from a request file:
+verity create --request-file task.json --data <train-handle> --test-data <test-handle>
+# (task.json carries type/model/knobs; only --data/--test-data/--goal still apply) -> {"task_id": "..."}
 ```
 
 | Flag | Default | Meaning |

@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from tests._fe_offline import FeWorkers
+from tests._fe_offline import FeWorkers, offline_catalog
 from verity.composition.dataset import stratified_split, subsample
 from verity.composition.task_request import (
     DataRequest,
@@ -27,6 +27,7 @@ from verity.provisioning import FakeBackend
 from verity.service import ControlService
 
 _RAW = b"id,a,class\n0,0,X\n1,2,X\n2,4,X\n3,6,Y\n4,8,Y\n5,10,Y\n"
+_REAL_TEST = b"id\n100\n101\n102\n103\n"
 
 
 def _reserved() -> dict[str, str]:
@@ -37,7 +38,7 @@ def _reserved() -> dict[str, str]:
 
 
 def _fe_request() -> TaskRequest:
-    return TaskRequest(type_name="fe", goal="improve balanced accuracy",
+    return TaskRequest(type_name="fe-kaggle", goal="improve balanced accuracy",
                        policy=PolicyRequest(stop_on_accept=True),
                        data=DataRequest(per_class=100, reserved_fraction=0.5))
 
@@ -66,8 +67,10 @@ def test_create_task_stamps_both_data_refs() -> None:
 
 
 def test_create_run_results() -> None:
-    service = ControlService(backend=FakeBackend(script=_fe_workers()), root=None)
-    task_id = service.create_task(_fe_request(), data=_RAW)
+    service = ControlService(
+        backend=FakeBackend(script=_fe_workers()), root=None, catalog=offline_catalog()
+    )
+    task_id = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
     run_id = asyncio.run(service.run(task_id))
 
     assert asyncio.run(service.status(run_id)) is JobStatus.DONE
@@ -83,12 +86,13 @@ def test_create_run_results() -> None:
 def test_task_definition_is_durable_across_restart(tmp_path) -> None:
     # Service 1 only *creates* the task (persisting its TaskRequest + ingesting data to disk).
     creator = ControlService(backend=FakeBackend(script=FeWorkers(steps=[], by_marker={})),
-                             root=tmp_path)
-    task_id = creator.create_task(_fe_request(), data=_RAW)
+                             root=tmp_path, catalog=offline_catalog())
+    task_id = creator.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
     assert task_id in creator.list_tasks()
 
     # Service 2 is a *fresh* process view over the same root: no resident tasks, no shared memory.
-    restarted = ControlService(backend=FakeBackend(script=_fe_workers()), root=tmp_path)
+    restarted = ControlService(backend=FakeBackend(script=_fe_workers()), root=tmp_path,
+                               catalog=offline_catalog())
     assert task_id in restarted.list_tasks(), "the task definition did not survive the restart"
     run_id = asyncio.run(restarted.run(task_id))  # rebuilds the CP from the persisted request
 
@@ -98,7 +102,7 @@ def test_task_definition_is_durable_across_restart(tmp_path) -> None:
 
 def test_task_request_json_round_trip() -> None:
     request = TaskRequest(
-        type_name="fe", goal="g",
+        type_name="fe-kaggle", goal="g",
         sandbox=SandboxRequest(model="anthropic:claude-sonnet-4-6", sandbox_memory="2g"),
         verifier=VerifierRequest(approach="balanced_accuracy", knobs={"margin": 0.01}),
         policy=PolicyRequest(max_cycles=7, stop_on_accept=True),
@@ -125,14 +129,14 @@ def test_local_model_name_with_colons_is_not_split() -> None:
 def test_catalog_dispatches_a_second_task_type() -> None:
     # Genericity on the service path: the same multiplexer instantiates an unrelated task type.
     service = ControlService(backend=FakeBackend(script=FeWorkers(steps=[], by_marker={})),
-                             root=None)
-    assert set(service.catalog_types()) == {"fe", "fe-kaggle", "code"}
+                             root=None, catalog=offline_catalog())
+    assert set(service.catalog_types()) == {"fe-kaggle", "code"}
     code_task = service.create_task(TaskRequest(type_name="code"))
     resident = asyncio.run(service._resident_cp(code_task))
     assert resident.in_cp_task_id == "code"
 
     # It is a distinct control plane + store from an FE instance on the same service.
-    fe_task = service.create_task(_fe_request(), data=_RAW)
+    fe_task = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
     fe_resident = asyncio.run(service._resident_cp(fe_task))
     assert resident.cp is not fe_resident.cp
     assert resident.cp.store is not fe_resident.cp.store

@@ -1,10 +1,10 @@
 """Apply the trivial `code` task to a generic control plane — the genericity demonstration.
 
 This exists to prove the control plane is task-agnostic: the *same* `ControlPlane` class that runs
-FE (`configure_fe_task`) runs a completely different task here, applied the same way — through the
-CP's API (`register_sandbox`/`register_verifier` + `configure`). The control plane has no knowledge
-of either task; both are configured onto it. The `code` task is the trivial "write submission.py
-that runs" task with a boolean runs-clean gate.
+FE-Kaggle (`configure_fe_kaggle_task`) runs a different task here, applied the same way through the
+CP's API (`register_sandbox`/`register_verifier` + `configure`). The control plane has no
+knowledge of either task; both are configured onto it. The `code` task is the trivial "write
+submission.py that runs" task with a boolean runs-clean gate.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ async def configure_code_task(
     cp: ControlPlane,
     *,
     backend: WorkerBackend,
-    split: Any = None,  # unused; kept symmetric with configure_fe_task
+    split: Any = None,  # unused; kept symmetric with the FE-Kaggle task builder
     provisioning: ProvisioningConfig | None = None,
     runner: CodeRunner | None = None,
 ) -> str:

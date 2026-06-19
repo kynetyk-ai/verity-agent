@@ -7,24 +7,42 @@ narrow :class:`KaggleScorer` port so:
 * the offline suite + CI run deterministically against :class:`FakeKaggleScorer` (no network, no
   creds), and
 * the real ``RealKaggleScorer`` (the `kaggle` client) is exercised only by a ``@kaggle``/``@live``
-  test — the daily 5-submission cap is a shared, rate-limited resource.
+  test — the daily submission cap is a shared, rate-limited resource.
 
 Two methods, mirroring the two things the gate must know: how much submission budget remains today
-(the cap is per team, ~5/day), and the public score of a submission once Kaggle has graded it. The
+(the cap is per team — the competition's own daily limit, read from its metadata), and the public
+score of a submission once Kaggle has graded it. The
 submit happens on the **trusted** side (the in-process verifier inside the control plane), never in
 a worker — credentials must not reach untrusted agent code.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["KaggleScorer", "FakeKaggleScorer", "DAILY_SUBMISSION_LIMIT"]
+__all__ = ["KaggleScorer", "FakeKaggleScorer", "DAILY_SUBMISSION_LIMIT", "daily_limit_from"]
 
-# Kaggle Playground Series cap: ~5 submissions/day per team, shared across all runs/days.
+# Default fallback only: the real per-competition cap is read from the competition metadata
+# (``max_daily_submissions``, see ``daily_limit_from`` / ``RealKaggleScorer._resolve_daily_limit``).
+# Used when the metadata can't be read. The cap is per team, shared across all runs/days.
 DAILY_SUBMISSION_LIMIT = 5
+
+
+def daily_limit_from(competitions: Iterable[Any] | None, competition: str, default: int) -> int:
+    """The competition's daily submission cap from a ``competitions_list`` result, else ``default``.
+
+    Kaggle's ``ApiCompetition`` carries ``ref`` (the slug) and ``max_daily_submissions``. We match
+    the slug exactly and trust the metadata only when it's a positive int; anything else (no match,
+    missing, zero) falls back to ``default`` (the safe over-estimate — a too-high cap is
+    self-correcting since Kaggle rejects over-cap submits).
+    """
+    for c in competitions or ():
+        if getattr(c, "ref", None) == competition:
+            limit = getattr(c, "max_daily_submissions", 0)
+            return limit if isinstance(limit, int) and limit > 0 else default
+    return default
 
 
 @runtime_checkable

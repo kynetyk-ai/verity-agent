@@ -14,7 +14,8 @@ default (Ollama). See `overview.md` for the dataset.
 Two-tier ladder (the gate re-runs your *script* on gold data — it never trusts the agent's CSV):
 1. **cheap, every cycle:** run the script on a labeled hold-out carved from `train.csv`; reject if its
    balanced accuracy doesn't beat our best **accepted** attempt — so we never waste a Kaggle submission.
-2. **hard, rate-limited (~5/day):** regenerate the submission on the full train + the real `test.csv`,
+2. **hard, rate-limited (the competition's daily cap, read from its Kaggle metadata — default 5):**
+   regenerate the submission on the full train + the real `test.csv`,
    submit to Kaggle, read the **public score**; accept iff it beats our best prior Kaggle-confirmed
    score. When the daily cap is spent the gate **blocks** until it frees (the control plane is
    long-lived); a Kaggle API failure degrades the cycle (recorded, fed back), it doesn't crash the run.
@@ -75,6 +76,7 @@ daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `
 - `data.per_class` — rows/class subsampled for speed (raise for a serious attempt; full data is slow
   on a local model). `data.reserved_fraction` — the cheap-proxy hold-out share.
 - `verifier.knobs.competition` — the competition slug. Optional: `budget_poll_interval_s`,
-  `score_poll_interval_s`, `wait_deadline_s`, `submit_message`.
+  `score_poll_interval_s`, `wait_deadline_s`, `submit_message`, `daily_submission_limit`.
 
-Mind the **~5 submissions/day** cap (shared across all runs) — keep concurrent runs to a handful.
+Mind the **daily submission cap** (the competition's own limit, read from its Kaggle metadata —
+typically ~5/day, shared across all runs) — keep concurrent runs to a handful.
