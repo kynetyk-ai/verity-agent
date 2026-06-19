@@ -11,7 +11,8 @@ scoring helpers) and only swaps the verifier's gate stack. The ladder becomes tw
 * **expensive, rate-limited (the real test):** for a survivor, regenerate the submission on the
   **full train + the real `test.csv`**, then submit to Kaggle and read the public score. Accept iff
   it **beats our best prior Kaggle-confirmed score** (the leaderboard is the incumbent ladder). The
-  Kaggle cap is ~5/day; when the budget is spent the gate **blocks** (polls) until it frees, up to
+  Kaggle cap is the competition's own daily limit (read from its metadata, default 5); when the
+  budget is spent the gate **blocks** (polls) until it frees, up to
   ``wait_deadline_s`` (then a recoverable `GateUnavailable`). The control plane imposes no dispatch
   backstop by default, so the wait is legitimate, not a hang.
 

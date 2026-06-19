@@ -95,8 +95,8 @@ The `fe-kaggle` task type submits to a live competition, so its gate needs a Kag
   compose forwards them to the control plane **only** — never to a worker).
 - **Accept the competition's rules** on its Kaggle page once, or the API returns **403** on that
   competition (auth can otherwise be fine — a 401 elsewhere means a bad token).
-- The cap is ~5 submissions/day per team; the gate reads remaining budget from the API and blocks
-  until it frees. Full package + protocol: the task's own `PROTOCOL.md` (in the Verity repo, under
+- The cap is the competition's own daily submission limit (read from its Kaggle metadata, typically
+  ~5/day per team); the gate reads remaining budget from the API and blocks until it frees. Full package + protocol: the task's own `PROTOCOL.md` (in the Verity repo, under
   `feature-engineering-test/`).
 
 ---

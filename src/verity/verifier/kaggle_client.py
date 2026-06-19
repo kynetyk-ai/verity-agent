@@ -22,7 +22,7 @@ from typing import Any
 
 from verity.contracts import GateUnavailable
 from verity.logging import get_logger
-from verity.verifier.kaggle import DAILY_SUBMISSION_LIMIT
+from verity.verifier.kaggle import DAILY_SUBMISSION_LIMIT, daily_limit_from
 
 __all__ = ["RealKaggleScorer"]
 
@@ -36,7 +36,9 @@ class RealKaggleScorer:
     competition: str
     submission_filename: str = "submission.csv"
     poll_interval_s: float = 20.0
+    daily_limit_override: int | None = None  # explicit cap; wins over competition metadata
     _api: Any = field(default=None, init=False, repr=False)
+    _daily_limit: int | None = field(default=None, init=False, repr=False)
 
     def _client(self) -> Any:
         if self._api is None:
@@ -53,7 +55,11 @@ class RealKaggleScorer:
         return self._api
 
     async def remaining_budget(self) -> int:
-        """``limit - today's submissions`` from the API (the daily cap is shared per team)."""
+        """``limit - today's submissions`` from the API (the daily cap is shared per team).
+
+        The cap is the competition's own ``max_daily_submissions`` (read once, then cached); the
+        used-count is Kaggle's real submission history, so this never drifts from the truth.
+        """
         api = self._client()
         try:
             subs = await asyncio.to_thread(api.competition_submissions, self.competition)
@@ -61,9 +67,47 @@ class RealKaggleScorer:
             raise GateUnavailable(f"could not read Kaggle submissions: {exc}") from exc
         today = datetime.now(UTC).date()
         used = sum(1 for s in subs if _submitted_on(s) == today)
-        remaining = max(0, DAILY_SUBMISSION_LIMIT - used)
-        log.info("kaggle_budget", competition=self.competition, used=used, remaining=remaining)
+        limit = await self._resolve_daily_limit()
+        remaining = max(0, limit - used)
+        log.info(
+            "kaggle_budget", competition=self.competition, used=used,
+            limit=limit, remaining=remaining,
+        )
         return remaining
+
+    async def _resolve_daily_limit(self) -> int:
+        """The competition's daily submission cap, resolved once and cached.
+
+        Precedence: explicit ``daily_limit_override`` → competition metadata
+        (``max_daily_submissions``) → the ``DAILY_SUBMISSION_LIMIT`` fallback. A metadata-read
+        failure degrades to the fallback (logged), never raises — the budget poll calls this every
+        tick, so it must be cheap (cached) and must not turn a transient API blip into a hard error.
+        """
+        if self._daily_limit is not None:
+            return self._daily_limit
+        if self.daily_limit_override is not None:
+            self._daily_limit = self.daily_limit_override
+            log.info(
+                "kaggle_daily_limit", competition=self.competition,
+                limit=self._daily_limit, source="override",
+            )
+            return self._daily_limit
+        api = self._client()
+        try:
+            resp = await asyncio.to_thread(api.competitions_list, search=self.competition)
+            competitions = getattr(resp, "competitions", None)
+            limit = daily_limit_from(competitions, self.competition, DAILY_SUBMISSION_LIMIT)
+            source = "metadata" if limit != DAILY_SUBMISSION_LIMIT else "metadata-or-fallback"
+        except Exception as exc:  # noqa: BLE001 — metadata read is best-effort; degrade to fallback
+            limit = DAILY_SUBMISSION_LIMIT
+            source = "fallback"
+            log.warning(
+                "kaggle_daily_limit_unavailable", competition=self.competition,
+                error=str(exc), limit=limit,
+            )
+        self._daily_limit = limit
+        log.info("kaggle_daily_limit", competition=self.competition, limit=limit, source=source)
+        return limit
 
     async def submit_and_score(
         self, submission_csv: bytes, *, message: str, wait_deadline_s: float

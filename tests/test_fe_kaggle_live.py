@@ -3,7 +3,8 @@
 Two levels, both real-network:
 * **budget (safe, read-only):** authenticate and read the remaining daily budget from the API. This
   also confirms the competition's rules are accepted (the API 403s otherwise). Spends nothing.
-* **submit (opt-in, spends 1 of the ~5/day):** gated behind ``VERITY_KAGGLE_SUBMIT=1`` and the real
+* **submit (opt-in, spends 1 of the competition's daily allowance):** gated behind
+  ``VERITY_KAGGLE_SUBMIT=1`` and the real
   ``test.csv`` — submits a trivial constant-class submission and reads back its public score,
   proving the full submit→poll path end to end.
 
@@ -24,7 +25,6 @@ from pathlib import Path
 import pytest
 
 from verity.contracts import GateUnavailable
-from verity.verifier.kaggle import DAILY_SUBMISSION_LIMIT
 
 _COMPETITION = os.environ.get("KAGGLE_COMPETITION", "playground-series-s6e6")
 _DATASET = Path("feature-engineering-test/test.csv")
@@ -57,7 +57,9 @@ def test_remaining_budget_is_readable() -> None:
     except GateUnavailable as exc:
         pytest.skip(f"Kaggle API unavailable (accepted the competition rules?): {exc}")
     assert isinstance(budget, int)
-    assert 0 <= budget <= DAILY_SUBMISSION_LIMIT
+    # The cap is the competition's own daily limit (read from its metadata), not a fixed 5.
+    limit = asyncio.run(scorer._resolve_daily_limit())
+    assert 0 <= budget <= limit
 
 
 @pytest.mark.kaggle
@@ -65,7 +67,7 @@ def test_remaining_budget_is_readable() -> None:
 @pytest.mark.skipif(not _READY, reason=_WHY)
 @pytest.mark.skipif(
     os.environ.get("VERITY_KAGGLE_SUBMIT") != "1",
-    reason="opt-in: set VERITY_KAGGLE_SUBMIT=1 to spend one of the ~5/day submissions",
+    reason="opt-in: set VERITY_KAGGLE_SUBMIT=1 to spend one of the day's submissions",
 )
 @pytest.mark.skipif(not _DATASET.exists(), reason="the real test.csv is not present")
 def test_submit_and_score_round_trip() -> None:
