@@ -122,6 +122,16 @@ class WorkerSpec:
     runtime: str | None = None  # OCI runtime, e.g. "runsc" (gVisor); None = daemon default (ADR i)
     timeout_s: float = 600.0
 
+    # -- trusted-service workers (§9.1): a long-lived sibling reached over the wire (the verifier)
+    # Read ONLY by ``DockerBackend.build_service_argv`` (the ``launch`` path). The hostile
+    # ``build_argv`` (the ``run_to_completion`` batch path) never consults these, so an untrusted
+    # worker can never acquire the docker socket — the posture is decided by the *method*, not a
+    # flag on the spec. ``service_name`` is a stable ``--name`` (also the DNS name on the network).
+    service_name: str | None = None
+    network_name: str | None = None  # attach to a user-defined network for CP<->service DNS
+    mount_docker_socket: bool = False  # bind /var/run/docker.sock (trusted infra only)
+    host_mounts: tuple[tuple[str, str, str], ...] = ()  # (host, target, mode), e.g. shared staging
+
 
 @dataclass(frozen=True, slots=True)
 class WorkerHandle:

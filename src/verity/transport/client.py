@@ -11,6 +11,7 @@ every later port call simply crosses the transport.
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,10 @@ class RemoteVerifier:
     transport: Transport
     identity: str = ""
     setup_payload: VerifierSetup | None = None
+    # When the control plane *launched* the verifier container, this destroys it at teardown — so
+    # the standing daemon's ``verifier.teardown()`` reaps the on-demand sibling with no CP change
+    # (the container lifecycle stays on the provisioning side; this is just the injected callback).
+    on_teardown: Callable[[], Awaitable[None]] | None = None
 
     async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         body = json.dumps(verifier_request_to_dict(request)).encode("utf-8")
@@ -73,7 +78,15 @@ class RemoteVerifier:
         self.identity = str(result["identity"])
 
     async def teardown(self) -> None:
-        parse_result(await self.transport.request("teardown", b""))
+        # Best-effort wire teardown (the service may already be gone), then destroy the container if
+        # we launched it — the latter must run even if the former can't reach the peer.
+        try:
+            parse_result(await self.transport.request("teardown", b""))
+        except TransportUnavailable:
+            pass
+        finally:
+            if self.on_teardown is not None:
+                await self.on_teardown()
 
     async def health(self) -> bool:
         return bool(parse_result(await self.transport.request("health", b"")))

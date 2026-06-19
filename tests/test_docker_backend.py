@@ -152,6 +152,60 @@ def test_materialize_nests_inputs_into_the_writable_dir_and_ro_mounts_the_rest(
     assert ro.read_bytes() == b"{}"
 
 
+# ------------------------------------------- trusted-service launch posture (§9.1, offline)
+
+
+def _verifier_service_spec() -> WorkerSpec:
+    return WorkerSpec(
+        image="verity-verifier:latest",
+        command=(),
+        labels=Labels(role="verifier", config="fe-kaggle"),
+        service_name="verity-verifier-abc1234567",
+        network_name="verity-net",
+        mount_docker_socket=True,
+        host_mounts=(("/srv/staging", "/srv/staging", "rw"),),
+        env={"VERITY_VERIFIER": "fe-kaggle"},
+        env_passthrough=("KAGGLE_KEY",),
+    )
+
+
+def test_service_argv_is_a_trusted_detached_posture() -> None:
+    name = "verity-verifier-abc1234567"
+    argv = DockerBackend().build_service_argv(_verifier_service_spec(), name=name)
+    assert argv[:5] == ["docker", "run", "-d", "--rm", "--name"] and name in argv
+    # trusted infrastructure — NONE of the hostile-worker flags
+    hostile = ("--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--network=none")  # noqa: E501
+    for flag in hostile:
+        assert flag not in argv, flag
+    assert not any(a.startswith("--user=") for a in argv)
+    # joins the user-defined network, mounts the socket + the shared staging at an identical path
+    assert argv[argv.index("--network") + 1] == "verity-net"
+    assert "/var/run/docker.sock:/var/run/docker.sock" in argv
+    assert "/srv/staging:/srv/staging:rw" in argv
+    # labels + env still applied; resource limits still bound
+    assert "role=verifier" in argv and "config=fe-kaggle" in argv
+    assert "VERITY_VERIFIER=fe-kaggle" in argv
+    assert any(a.startswith("--memory=") for a in argv)
+
+
+def test_service_argv_forwards_creds_by_name_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KAGGLE_KEY", "secret-key")
+    argv = DockerBackend().build_service_argv(_verifier_service_spec(), name="n")
+    # the credential is forwarded BY NAME; its value never lands on the argv
+    assert argv.count("KAGGLE_KEY") == 1 and "secret-key" not in " ".join(argv)
+
+
+def test_hostile_build_argv_never_mounts_the_docker_socket() -> None:
+    # The structural §9.1 guarantee: the socket mount lives ONLY on build_service_argv (the launch
+    # path). Even a (misconfigured) hostile spec carrying mount_docker_socket/network_name gets no
+    # socket and stays network-isolated on the run_to_completion path — build_argv has no branch for
+    # them, so an untrusted worker can never acquire the socket.
+    spec = replace(_code_runner_spec(), mount_docker_socket=True, network_name="verity-net")
+    argv = DockerBackend().build_argv(spec, name="n", mounts=[])
+    assert "/var/run/docker.sock:/var/run/docker.sock" not in argv
+    assert "--network=none" in argv  # still isolated; network_name is ignored on the hostile path
+
+
 # ----------------------------------------------------------------- real runs (@docker)
 
 

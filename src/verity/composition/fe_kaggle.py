@@ -17,8 +17,10 @@ for ``verity catalog``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
+import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -27,7 +29,7 @@ from verity.composition.dataset import stratified_split, subsample
 from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.fe import ProvisioningConfig, provisioning_config_from
 from verity.composition.task_request import TaskRequest
-from verity.contracts import Artifact, ArtifactStatus, Operation, OperationStatus
+from verity.contracts import Artifact, ArtifactStatus, GateUnavailable, Operation, OperationStatus
 from verity.contracts.ports import VerifierPort, VerifierSetup
 from verity.control_plane.api import ControlPlane
 from verity.control_plane.config import TaskConfig
@@ -42,7 +44,7 @@ from verity.domains.feature_engineering import (
     build_feature_engineering_domain,
     declared_objects,
 )
-from verity.provisioning.backend import WorkerBackend
+from verity.provisioning.backend import Labels, WorkerBackend, WorkerSpec
 from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
 
@@ -50,6 +52,7 @@ __all__ = [
     "FE_KAGGLE_TASK_ID",
     "FE_KAGGLE_GOAL",
     "VerifierFactory",
+    "launch_fe_kaggle_factory",
     "configure_fe_kaggle_task",
     "build_fe_kaggle_task",
     "describe_fe_kaggle_task",
@@ -62,6 +65,11 @@ FE_KAGGLE_GOAL = (
 
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 _DEFAULT_VERIFIER_URL = "http://verifier:8001"
+_DEFAULT_VERIFIER_IMAGE = "verity-verifier:latest"
+_DEFAULT_VERIFIER_PORT = 8001
+# Creds the verifier service needs, forwarded by NAME (values stay in the daemon env, never the CP
+# image or an agent worker): the Kaggle credentials the trusted final-test gate submits with.
+_VERIFIER_CRED_ENV = ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_CONFIG_DIR")
 
 # How the control plane obtains the verifier for a task: it builds the per-task `VerifierSetup` and
 # hands it to a factory that returns a (typically remote) `VerifierPort`. The default ships the
@@ -70,7 +78,7 @@ VerifierFactory = Callable[[VerifierSetup], Awaitable[VerifierPort]]
 
 
 async def _http_verifier(setup: VerifierSetup) -> VerifierPort:
-    """Default production seam: a `RemoteVerifier` over HTTP at ``$VERITY_VERIFIER_URL``.
+    """Static seam: a `RemoteVerifier` over HTTP at ``$VERITY_VERIFIER_URL`` (a standing service).
 
     The HTTP transport import is **lazy** so this module pulls neither the ``service`` extra nor —
     load-bearing for §9.1 — any gate/``kaggle`` code at import time: the gates live in the verifier
@@ -80,6 +88,98 @@ async def _http_verifier(setup: VerifierSetup) -> VerifierPort:
 
     url = os.environ.get("VERITY_VERIFIER_URL", _DEFAULT_VERIFIER_URL)
     return build_remote_verifier(url, setup_payload=setup)
+
+
+def _verifier_service_spec(network: str, *, image: str, staging: str | None) -> WorkerSpec:
+    """The `WorkerSpec` for an on-demand, **trusted** verifier service container (§9.1).
+
+    Joins ``network`` (so the control plane reaches it by its container name via Docker DNS), mounts
+    the docker socket (to launch its own code-runner children) and — when set — the shared staging
+    dir at an identical host path (so those children's bind mounts resolve on the host daemon, the
+    same sibling-mount trick the control plane uses). The Kaggle creds are forwarded by name; the
+    verifier builds its gate stack from the setup payload it is then sent. The image ``ENTRYPOINT``
+    runs ``verity verifier`` (``VERITY_VERIFIER=fe-kaggle``)."""
+    name = f"verity-verifier-{uuid.uuid4().hex[:10]}"
+    env = {"VERITY_VERIFIER": FE_KAGGLE_TASK_ID}
+    host_mounts: tuple[tuple[str, str, str], ...] = ()
+    if staging:
+        env["VERITY_WORKER_STAGING"] = staging
+        host_mounts = ((staging, staging, "rw"),)
+    return WorkerSpec(
+        image=image, command=(),
+        labels=Labels(role="verifier", config=FE_KAGGLE_TASK_ID),
+        service_name=name, network_name=network, mount_docker_socket=True,
+        host_mounts=host_mounts, env=env, env_passthrough=_VERIFIER_CRED_ENV,
+    )
+
+
+async def _await_verifier_ready(
+    verifier: VerifierPort, *, timeout_s: float, poll_interval_s: float
+) -> None:
+    """Poll the freshly-launched service's ``health`` until it answers, or give up (recoverable)."""
+    from verity.transport.base import TransportUnavailable
+
+    waited = 0.0
+    while True:
+        try:
+            if await verifier.health():
+                return
+        except TransportUnavailable:
+            pass  # the container is still booting uvicorn — keep polling
+        if waited >= timeout_s:
+            raise GateUnavailable(f"verifier service did not become healthy within {timeout_s}s")
+        await asyncio.sleep(poll_interval_s)
+        waited += poll_interval_s
+
+
+def launch_fe_kaggle_factory(
+    backend: WorkerBackend,
+    *,
+    network: str,
+    image: str = _DEFAULT_VERIFIER_IMAGE,
+    staging: str | None = None,
+    port: int = _DEFAULT_VERIFIER_PORT,
+    health_timeout_s: float = 60.0,
+    health_poll_interval_s: float = 1.0,
+) -> VerifierFactory:
+    """A `VerifierFactory` that **launches** the verifier sibling on demand (the §9.1 default).
+
+    Per task: launch a trusted verifier container on ``network``, reach it by its container name via
+    Docker DNS (no address inspection), wait for it to be healthy, and return a `RemoteVerifier`
+    that ships the setup payload over HTTP — and whose ``teardown`` destroys the container. This is
+    the *minimal* on-demand lifecycle (the right pattern for many verifiers, no idle containers);
+    the full fleet lifecycle (concurrency, address inspection, reconciliation) is tracked apart.
+    """
+
+    async def make(setup: VerifierSetup) -> VerifierPort:
+        from verity.transport.http import build_remote_verifier
+
+        spec = _verifier_service_spec(network, image=image, staging=staging)
+        handle = await backend.launch(spec)
+        verifier = build_remote_verifier(f"http://{spec.service_name}:{port}", setup_payload=setup)
+        verifier.on_teardown = lambda: backend.destroy(handle)
+        await _await_verifier_ready(
+            verifier, timeout_s=health_timeout_s, poll_interval_s=health_poll_interval_s
+        )
+        return verifier
+
+    return make
+
+
+def _verifier_factory_from_env(backend: WorkerBackend) -> VerifierFactory:
+    """Pick the verifier seam from the environment: launch a sibling per task when a network is
+    configured (``$VERITY_VERIFIER_NETWORK``), else talk to a standing service at
+    ``$VERITY_VERIFIER_URL`` (the default). Offline tests bypass this by injecting a factory.
+    """
+    network = os.environ.get("VERITY_VERIFIER_NETWORK")
+    if network:
+        return launch_fe_kaggle_factory(
+            backend, network=network,
+            image=os.environ.get("VERITY_VERIFIER_IMAGE", _DEFAULT_VERIFIER_IMAGE),
+            staging=os.environ.get("VERITY_WORKER_STAGING"),
+            port=int(os.environ.get("VERITY_VERIFIER_PORT", str(_DEFAULT_VERIFIER_PORT))),
+        )
+    return _http_verifier
 
 _FE_KAGGLE_INSTRUCTIONS = (
     "Improve balanced accuracy by any means that fits in one script — features, model choice, a "
@@ -185,7 +285,7 @@ async def configure_fe_kaggle_task(
             ),
         },
     )
-    verifier = await (make_verifier or _http_verifier)(setup)
+    verifier = await (make_verifier or _verifier_factory_from_env(backend))(setup)
 
     cp.register_sandbox(FE_KAGGLE_TASK_ID, lambda: sandbox)
     cp.register_verifier(FE_KAGGLE_TASK_ID, lambda: verifier)
