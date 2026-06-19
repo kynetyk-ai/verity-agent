@@ -1,8 +1,8 @@
 # The long-lived Verity control-plane DAEMON (ROADMAP 8.3, ADR 0004).
 #
-# Unlike infra/compose.fe.yml (a one-shot batch `fe_run`), this brings up the GENERIC control plane
-# as a STANDING service — `verity serve` over a Unix-domain socket inside the container — that an
-# operator (or Claude Code) drives at runtime with NO image rebuild between tasks:
+# Brings up the GENERIC control plane as a STANDING service — `verity serve` over a Unix-domain
+# socket inside the container (the image's default ENTRYPOINT) — that an operator (or Claude Code)
+# drives at runtime with NO image rebuild between tasks:
 #
 #     just cp-serve                          # build images + bring this up (detached)
 #     docker exec verity-cp verity catalog   # the `verity` CLI is a thin client over the socket
@@ -41,7 +41,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile.controlplane
-    # Override the image's batch ENTRYPOINT (fe_run) with the standing daemon.
+    # The image's default ENTRYPOINT is already `verity serve`; stated explicitly here for clarity.
     entrypoint: ["verity", "serve"]
     restart: unless-stopped
     environment:

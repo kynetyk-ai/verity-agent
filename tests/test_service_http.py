@@ -19,7 +19,7 @@ pytest.importorskip("httpx")
 
 import httpx
 
-from tests._fe_offline import FeWorkers
+from tests._fe_offline import FeWorkers, offline_catalog
 from verity.composition.dataset import stratified_split, subsample
 from verity.composition.task_request import DataRequest, PolicyRequest, TaskRequest
 from verity.provisioning import FakeBackend
@@ -38,7 +38,7 @@ def _reserved() -> dict[str, str]:
 
 def _fe_request_body() -> dict:
     return TaskRequest(
-        type_name="fe", goal="improve balanced accuracy",
+        type_name="fe-kaggle", goal="improve balanced accuracy",
         policy=PolicyRequest(stop_on_accept=True),
         data=DataRequest(per_class=100, reserved_fraction=0.5),
     ).to_dict()
@@ -49,10 +49,11 @@ def _build(tmp_path):
     exchange_in.mkdir()
     exchange_out.mkdir()
     (exchange_in / "train.csv").write_bytes(_RAW)
+    (exchange_in / "test.csv").write_bytes(b"id\n100\n101\n102\n103\n")
     service = ControlService(
         backend=FakeBackend(script=FeWorkers(steps=[("submit", ("ds",), b"good", ["feat0"])],
                                              by_marker={b"good": _reserved()})),
-        root=None,
+        root=None, catalog=offline_catalog(),
     )
     app = build_app(service, exchange_in=exchange_in, exchange_out=exchange_out)
     return app, exchange_out, service
@@ -74,12 +75,18 @@ def test_http_full_flow_in_process(tmp_path) -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://verity") as client:
             # catalog
             cat = (await client.get("/catalog")).json()
-            assert {t["type_name"] for t in cat["task_types"]} == {"fe", "fe-kaggle", "code"}
+            assert {t["type_name"] for t in cat["task_types"]} == {"fe-kaggle", "code"}
 
-            # ingest -> create -> run
+            # ingest (train + the real test) -> create -> run
             handle = (await client.post("/objects", json={"name": "train.csv"})).json()["handle"]
+            test_handle = (
+                await client.post("/objects", json={"name": "test.csv"})
+            ).json()["handle"]
             task_id = (
-                await client.post("/tasks", json={"request": _fe_request_body(), "data": handle})
+                await client.post(
+                    "/tasks",
+                    json={"request": _fe_request_body(), "data": handle, "test_data": test_handle},
+                )
             ).json()["task_id"]
             run_id = (await client.post(f"/tasks/{task_id}/runs", json={})).json()["run_id"]
 
@@ -126,7 +133,7 @@ def test_http_over_real_unix_socket(tmp_path) -> None:
 
             client = Client(str(sock))
             cat = await client.catalog()
-            assert any(t["type_name"] == "fe" for t in cat["task_types"])
+            assert any(t["type_name"] == "fe-kaggle" for t in cat["task_types"])
         finally:
             server.should_exit = True
             await serve_task

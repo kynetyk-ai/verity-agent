@@ -10,8 +10,8 @@ Splits a labelled CSV into the three pieces §12 needs:
 
 Stratified by the target so balanced accuracy is well-defined on both sides, and fully deterministic
 (no RNG — reproducible verdicts, §5.8). Pure stdlib (``csv``) so the harness needs no pandas; the
-*agent's* script installs its own libraries in-container. Lives in ``composition`` so the
-containerized FE entrypoint (`verity.composition.fe_run`) can prepare its split in the image.
+*agent's* script installs its own libraries in-container. Lives in ``composition`` so the FE-Kaggle
+catalog builder (`verity.composition.fe_kaggle`) can prepare its split when configuring the task.
 """
 
 from __future__ import annotations

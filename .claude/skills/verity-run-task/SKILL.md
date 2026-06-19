@@ -25,8 +25,8 @@ you poll `status` until it's terminal, then read `results` and `export` artifact
 **Never assume a fixed set of task types or verifiers — read the live catalog.** Run:
 
 ```bash
-docker exec verity-cp verity catalog            # all installed task types
-docker exec verity-cp verity catalog --type fe  # one type's full published contract
+docker exec verity-cp verity catalog                  # all installed task types
+docker exec verity-cp verity catalog --type fe-kaggle # one type's full published contract
 ```
 
 Each entry self-describes its **output-shape contract** (the artifact types / operations the agent must
@@ -42,12 +42,17 @@ only the running container; you do NOT need the Verity source repo** (`$CP` defa
 
 ```bash
 docker exec $CP verity catalog                       # step 0: discover task types + contracts
-# put your input file where the daemon's exchange in/ dir is mounted, then:
-docker exec $CP verity ingest train.csv              # -> {"handle": "<sha>"}
-docker exec $CP verity create --type fe --data <handle> \
-  --model qwen3.6:27b-coding-mxfp8 \
-  --base-url http://host.docker.internal:11434/v1 \
-  --max-cycles 4 --per-class 150                     # -> {"task_id": "..."}
+# the trivial, data-less `code` task (flag-shaped request, no creds):
+docker exec $CP verity create --type code \
+  --model anthropic:claude-sonnet-4-6 --max-cycles 2 --stop-on-accept   # -> {"task_id": "..."}
+
+# or a data-bearing task like `fe-kaggle` (two inputs + a competition slug → a request file).
+# Put the input files where the daemon's exchange in/ dir is mounted, then:
+docker exec $CP verity ingest train.csv              # -> {"handle": "<train-sha>"}
+docker exec $CP verity ingest test.csv               # second input -> {"handle": "<test-sha>"}
+docker exec $CP verity create --request-file /exchange/in/task.json \
+  --data <train-sha> --test-data <test-sha>          # task.json carries type/model/competition
+
 docker exec $CP verity run <task_id>                 # -> {"run_id": "..."}  (async)
 docker exec $CP verity status <run_id>               # poll until "done" / "failed"
 docker exec $CP verity results <run_id>              # RunReport + accepted-artifact ids
@@ -60,7 +65,9 @@ docker exec $CP verity export <run_id>               # durable artifacts -> exch
 the bundled orchestrator (daemon must already be up):
 
 ```bash
-bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type fe --data train.csv --max-cycles 4 --per-class 150
+bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type code --goal "write a script that runs"
+# data-bearing tasks (two inputs + a request file), e.g. fe-kaggle:
+bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --request-file task.json --data train.csv --test-data test.csv
 ```
 
 ## Guardrails (read before running)

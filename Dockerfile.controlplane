@@ -5,13 +5,11 @@
 # Runs a GENERIC, task-agnostic control plane that launches ephemeral sandbox + code-runner WORKER
 # containers as *siblings* on the host daemon, via a mounted /var/run/docker.sock (the controlled,
 # audited socket of ADR 0003 f — not docker-in-docker). The control-plane code is not built around
-# FE (it carries every task); an entrypoint merely configures one. Two ways to run, both off this
-# one image (no rebuild between them):
-#   - BATCH (the default ENTRYPOINT): `python -m verity.composition.fe_run` runs the §12 FE task once
-#     and exits — wired by infra/compose.fe.yml (`just fe-containerized`).
-#   - DAEMON (ROADMAP 8.3, ADR 0004): the long-lived `verity serve` control surface over a
-#     Unix-domain socket — selected by infra/compose.daemon.yml (`just cp-serve`), which overrides
-#     the entrypoint. Configure tasks, ingest data, run, and export at runtime, no image rebuild.
+# any task (it carries the whole catalog); an operator configures one at runtime.
+#
+# The default ENTRYPOINT is the long-lived `verity serve` DAEMON (ROADMAP 8.3, ADR 0004): a control
+# surface over a Unix-domain socket — wired by infra/compose.daemon.yml (`just cp-serve`). Configure
+# tasks, ingest data, run, and export at runtime, with no image rebuild between tasks.
 #
 # Carries verity CORE + the `service` extra (fastapi/uvicorn/httpx — the daemon's HTTP-over-UDS
 # surface) — NOT the sandbox extra (deepagents/langchain live in the worker image). Plus the docker
@@ -39,4 +37,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-ENTRYPOINT ["python", "-m", "verity.composition.fe_run"]
+ENTRYPOINT ["verity", "serve"]

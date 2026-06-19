@@ -17,6 +17,7 @@ from verity.provisioning.backend import CompletedWorker, WorkerSpec
 from verity.sandbox import ProposalDescriptor
 from verity.sandbox.container_io import CONTAINER_OUTBOX
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
+from verity.verifier.kaggle import KaggleScorer
 
 
 def preds_csv(preds: dict[str, str]) -> bytes:
@@ -75,3 +76,45 @@ class FeWorkers:
                     outputs={f"/out/{PREDICTIONS_OUTPUT}": preds_csv(preds)},
                 )
         return CompletedWorker(exit_code=0, stdout="", stderr="")  # no scorable output
+
+
+def offline_catalog(scorer: KaggleScorer | None = None):  # type: ignore[no-untyped-def]
+    """A `TaskCatalog` for offline service/daemon tests: the real `fe-kaggle` task wired to a
+    `FakeKaggleScorer` (so the loop runs with no Kaggle creds/network), plus the `code` task.
+
+    The production catalog builder (`build_fe_kaggle_task`) constructs a `RealKaggleScorer`; this
+    mirrors its data prep but injects the fake — the only difference needed to drive `fe-kaggle`
+    end to end over a `FakeBackend`. ``scorer`` overrides the default `FakeKaggleScorer`.
+    """
+    from verity.composition.catalog import TaskCatalog
+    from verity.composition.code import CODE_TASK_ID, build_code_task, describe_code_task
+    from verity.composition.dataset import stratified_split, subsample
+    from verity.composition.fe import provisioning_config_from
+    from verity.composition.fe_kaggle import (
+        FE_KAGGLE_TASK_ID,
+        configure_fe_kaggle_task,
+        describe_fe_kaggle_task,
+    )
+    from verity.verifier.kaggle import FakeKaggleScorer
+
+    active_scorer: KaggleScorer = scorer if scorer is not None else FakeKaggleScorer()
+
+    async def _build_offline_fe_kaggle(cp, *, backend, request):  # type: ignore[no-untyped-def]
+        raw = cp.store.get_object(request.data.data_ref)
+        real_test = cp.store.get_object(request.data.test_ref)
+        sub = subsample(raw, per_class=request.data.per_class, target=request.data.target)
+        split = stratified_split(
+            sub, target=request.data.target, id_column=request.data.id_column,
+            reserved_fraction=request.data.reserved_fraction,
+        )
+        return await configure_fe_kaggle_task(
+            cp, backend=backend, scorer=active_scorer,
+            split=split, full_train_csv=sub, real_test_csv=real_test,
+            provisioning=provisioning_config_from(request.sandbox),
+            poll_interval_s=0.0, wait_deadline_s=5.0,
+        )
+
+    catalog = TaskCatalog()
+    catalog.register(FE_KAGGLE_TASK_ID, _build_offline_fe_kaggle, describe=describe_fe_kaggle_task)
+    catalog.register(CODE_TASK_ID, build_code_task, describe=describe_code_task)
+    return catalog

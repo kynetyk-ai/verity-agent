@@ -1,8 +1,8 @@
 """The task catalog (ROADMAP 8.1, ADR 0004 (b)/(i)): a registry of named task-type builders.
 
-A :class:`TaskCatalog` maps a **task-type name** (`"fe"`, `"code"`) to an async **builder** with a
-uniform signature — ``async def build(cp, *, backend, request) -> str`` — that applies the task to a
-generic, task-agnostic `ControlPlane` from a declarative :class:`TaskRequest`. This is the seam
+A :class:`TaskCatalog` maps a **task-type name** (`"fe-kaggle"`, `"code"`) to an async **builder**
+with a uniform signature — ``async def build(cp, *, backend, request) -> str`` — that applies it to
+a generic, task-agnostic `ControlPlane` from a declarative :class:`TaskRequest`. This is the seam
 the long-lived control service multiplexes over: select a type by name, parameterize it with a
 request, no image rebuild.
 
@@ -18,7 +18,6 @@ from collections.abc import Awaitable, Callable
 
 from verity.composition.code import CODE_TASK_ID, build_code_task, describe_code_task
 from verity.composition.description import TaskTypeDescription
-from verity.composition.fe import FE_TASK_ID, build_fe_task, describe_fe_task
 from verity.composition.fe_kaggle import (
     FE_KAGGLE_TASK_ID,
     build_fe_kaggle_task,
@@ -94,9 +93,8 @@ class TaskCatalog:
 
 
 def default_catalog() -> TaskCatalog:
-    """The built-in catalog: the FE and trivial-`code` task types installed in the image."""
+    """The built-in catalog: the FE-Kaggle and trivial-`code` task types installed in the image."""
     catalog = TaskCatalog()
-    catalog.register(FE_TASK_ID, build_fe_task, describe=describe_fe_task)
     catalog.register(FE_KAGGLE_TASK_ID, build_fe_kaggle_task, describe=describe_fe_kaggle_task)
     catalog.register(CODE_TASK_ID, build_code_task, describe=describe_code_task)
     return catalog

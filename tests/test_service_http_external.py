@@ -20,7 +20,7 @@ pytest.importorskip("httpx")
 
 import httpx
 
-from tests._fe_offline import FeWorkers, entrypoint_bytes
+from tests._fe_offline import FeWorkers, entrypoint_bytes, offline_catalog
 from verity.composition.dataset import stratified_split, subsample
 from verity.composition.task_request import DataRequest, PolicyRequest, TaskRequest
 from verity.domains.feature_engineering import ENTRYPOINT
@@ -29,6 +29,7 @@ from verity.service.control_service import ControlService
 from verity.service.http import build_app
 
 _RAW = b"id,a,class\n0,0,X\n1,2,X\n2,4,X\n3,6,Y\n4,8,Y\n5,10,Y\n"
+_REAL_TEST = b"id\n100\n101\n102\n103\n"
 _TOKEN = "s3cret-token"  # noqa: S105 — a test fixture, not a real credential
 
 
@@ -41,7 +42,7 @@ def _reserved() -> dict[str, str]:
 
 def _fe_request_body() -> dict:
     return TaskRequest(
-        type_name="fe", goal="improve balanced accuracy",
+        type_name="fe-kaggle", goal="improve balanced accuracy",
         policy=PolicyRequest(stop_on_accept=True),
         data=DataRequest(per_class=100, reserved_fraction=0.5),
     ).to_dict()
@@ -54,7 +55,7 @@ def _build(tmp_path: Path, *, auth_token: str | None = None, max_upload_bytes: i
     service = ControlService(
         backend=FakeBackend(script=FeWorkers(steps=[("submit", ("ds",), b"good", ["feat0"])],
                                              by_marker={b"good": _reserved()})),
-        root=None,
+        root=None, catalog=offline_catalog(),
     )
     return build_app(
         service, exchange_in=exchange_in, exchange_out=exchange_out,
@@ -81,7 +82,7 @@ def test_bearer_auth_gates_every_route_but_health(tmp_path) -> None:
             assert wrong.status_code == 401
             ok = await c.get("/catalog", headers={"Authorization": f"Bearer {_TOKEN}"})
             assert ok.status_code == 200
-            assert {t["type_name"] for t in ok.json()["task_types"]} == {"fe", "fe-kaggle", "code"}
+            assert {t["type_name"] for t in ok.json()["task_types"]} == {"fe-kaggle", "code"}
 
     asyncio.run(scenario())
 
@@ -103,14 +104,19 @@ def test_byte_upload_and_artifact_download_round_trip(tmp_path) -> None:
     async def scenario() -> None:
         transport = httpx.ASGITransport(app=_build(tmp_path, auth_token=_TOKEN))
         async with httpx.AsyncClient(transport=transport, base_url="http://verity") as c:
-            # Upload raw bytes over the wire (no shared volume) -> a content-addressed handle.
+            # Upload raw bytes over the wire (no shared volume) -> content-addressed handles.
             up = await c.post("/objects", content=_RAW, headers=octet)
             assert up.status_code == 200
             handle = up.json()["handle"]
+            test_handle = (await c.post("/objects", content=_REAL_TEST, headers=octet)).json()[
+                "handle"
+            ]
 
-            # create -> run -> an accepted Submission lands.
+            # create (train + the real test) -> run -> an accepted Submission lands.
             task_id = (await c.post(
-                "/tasks", json={"request": _fe_request_body(), "data": handle}, headers=auth
+                "/tasks",
+                json={"request": _fe_request_body(), "data": handle, "test_data": test_handle},
+                headers=auth,
             )).json()["task_id"]
             started = await c.post(f"/tasks/{task_id}/runs", json={}, headers=auth)
             run_id = started.json()["run_id"]
@@ -174,7 +180,7 @@ def test_over_real_tcp_port_with_bearer_auth(tmp_path) -> None:
 
             # an authenticated client reaches the verbs
             cat = await Client(base_url=base, token=_TOKEN).catalog()
-            assert any(t["type_name"] == "fe" for t in cat["task_types"])
+            assert any(t["type_name"] == "fe-kaggle" for t in cat["task_types"])
 
             # a tokenless client is refused with a typed 401
             try:

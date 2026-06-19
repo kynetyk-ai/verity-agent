@@ -6,8 +6,8 @@ Two proofs that the control plane is not shaped around any task:
    *nothing* from `verity.domains`. If anyone couples the control plane to FE (or any task), the
    build fails here. This is what makes "the CP stays generic" enforceable rather than a promise.
 2. **By demonstration:** the *same* generic `ControlPlane(store)` construction accepts two unrelated
-   tasks — FE and the trivial `code` task — each applied through the CP's API (`configure_*_task`),
-   with no task knowledge baked into the control plane.
+   tasks — the trivial `code` task and the FE-Kaggle task — each applied through the CP's API, with
+   no task knowledge baked into the control plane.
 """
 
 from __future__ import annotations
@@ -15,13 +15,18 @@ from __future__ import annotations
 import ast
 import asyncio
 import pathlib
-from dataclasses import dataclass, field
 
 import verity.control_plane
-from verity.composition import configure_code_task, configure_fe_task
+from verity.composition import configure_code_task
+from verity.composition.dataset import stratified_split, subsample
+from verity.composition.fe_kaggle import configure_fe_kaggle_task
 from verity.control_plane.api import ControlPlane
 from verity.control_plane.store import SqliteStore
 from verity.provisioning import FakeBackend
+from verity.verifier.kaggle import FakeKaggleScorer
+
+_RAW = b"id,a,class\n0,0,X\n1,2,X\n2,4,X\n3,6,Y\n4,8,Y\n5,10,Y\n"
+_REAL_TEST = b"id\n100\n101\n"
 
 
 def _imported_modules(package: object) -> set[str]:
@@ -45,17 +50,18 @@ def test_control_plane_imports_no_domain() -> None:
     assert not leaks, f"the control plane must stay task-agnostic; it imports: {leaks}"
 
 
-@dataclass
-class _Split:
-    agent_train_csv: bytes = b"id,a,class\n1,2,X\n3,4,Y\n"
-    reserved_test_csv: bytes = b"id,a\n5,6\n"
-    reserved_labels: dict[str, str] = field(default_factory=lambda: {"5": "X"})
-
-
 def test_one_generic_control_plane_runs_two_different_tasks() -> None:
     # The identical construction — a bare ControlPlane(store) — accepts either task via its API.
-    fe_cp = ControlPlane(SqliteStore())
-    assert asyncio.run(configure_fe_task(fe_cp, backend=FakeBackend(), split=_Split())) == "fe"
-
     code_cp = ControlPlane(SqliteStore())
     assert asyncio.run(configure_code_task(code_cp, backend=FakeBackend())) == "code"
+
+    kaggle_cp = ControlPlane(SqliteStore())
+    sub = subsample(_RAW, per_class=100, target="class")
+    split = stratified_split(sub, target="class", id_column="id", reserved_fraction=0.5)
+    task_id = asyncio.run(
+        configure_fe_kaggle_task(
+            kaggle_cp, backend=FakeBackend(), scorer=FakeKaggleScorer(),
+            split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
+        )
+    )
+    assert task_id == "fe-kaggle"

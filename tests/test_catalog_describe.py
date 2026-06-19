@@ -11,9 +11,9 @@ from __future__ import annotations
 from verity.composition import UnknownTaskType, default_catalog
 
 
-def test_describe_fe_publishes_shape_and_approach() -> None:
-    desc = default_catalog().describe("fe").to_dict()
-    assert desc["type_name"] == "fe"
+def test_describe_fe_kaggle_publishes_shape_and_approach() -> None:
+    desc = default_catalog().describe("fe-kaggle").to_dict()
+    assert desc["type_name"] == "fe-kaggle"
     assert {"DatasetVersion", "Submission"} <= set(desc["artifact_types"])
     assert "Feature" not in desc["artifact_types"]  # the broadened domain dropped feature harvest
     assert "Submission" in desc["gated_types"]
@@ -36,7 +36,7 @@ def test_describe_code_publishes_its_contract() -> None:
 def test_describe_all_covers_every_catalog_type() -> None:
     catalog = default_catalog()
     described = {d.type_name for d in catalog.describe_all()}
-    assert described == set(catalog.types()) == {"fe", "fe-kaggle", "code"}
+    assert described == set(catalog.types()) == {"fe-kaggle", "code"}
 
 
 def test_describe_unknown_type_raises() -> None:
