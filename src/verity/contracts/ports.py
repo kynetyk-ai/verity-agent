@@ -23,13 +23,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from verity.contracts.model import Artifact, Operation, VerdictBundle
 from verity.logging import get_logger
 
 __all__ = [
     "ServiceLifecycle",
+    "VerifierSetup",
     "VerifierRequest",
     "VerifierPort",
     "ProposalEnvelope",
@@ -65,6 +66,22 @@ class ServiceLifecycle(Protocol):
 
 
 # ------------------------------------------------------------------- verifier port (§3.6)
+
+
+@dataclass(frozen=True, slots=True)
+class VerifierSetup:
+    """Per-task data + knobs shipped to a **remote** verifier before its first dispatch.
+
+    The seam that lets a data-bearing verifier (e.g. feature-engineering's split CSVs) run in its
+    own image: the control plane ships the per-task inputs once, at provisioning, and the verifier
+    service builds its gate stack from them server-side. Deliberately **generic** — ``objects`` are
+    named byte blobs, ``params`` are JSON-serializable knobs — so the wire stays domain-agnostic
+    (the control plane treats both as opaque; only the verifier image interprets them). Carries no
+    rationale field (segregation is structural, §10), exactly like :class:`VerifierRequest`.
+    """
+
+    objects: Mapping[str, bytes] = field(default_factory=dict)
+    params: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

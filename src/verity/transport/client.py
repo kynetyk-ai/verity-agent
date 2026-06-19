@@ -16,12 +16,18 @@ from typing import Any
 
 from verity.contracts.errors import GateUnavailable
 from verity.contracts.model import VerdictBundle
-from verity.contracts.ports import ProposalEnvelope, ServedContext, VerifierRequest
+from verity.contracts.ports import (
+    ProposalEnvelope,
+    ServedContext,
+    VerifierRequest,
+    VerifierSetup,
+)
 from verity.contracts.wire import (
     proposal_envelope_from_dict,
     served_context_to_dict,
     verdict_bundle_from_dict,
     verifier_request_to_dict,
+    verifier_setup_to_dict,
 )
 from verity.sandbox.errors import SandboxError
 from verity.transport.base import Transport, TransportUnavailable
@@ -32,10 +38,17 @@ __all__ = ["RemoteVerifier", "RemoteSandbox"]
 
 @dataclass(slots=True)
 class RemoteVerifier:
-    """A :class:`VerifierPort` over a transport. ``identity`` is learned in :meth:`provision`."""
+    """A :class:`VerifierPort` over a transport. ``identity`` is learned in :meth:`provision`.
+
+    A data-bearing verifier (feature-engineering) carries a per-task :class:`VerifierSetup` —
+    shipped to the server **once**, at the front of :meth:`provision`, so the remote builds its gate
+    stack before any dispatch. ``setup_payload`` is ``None`` for a dataless verifier (the fake),
+    which is ready as soon as the service starts.
+    """
 
     transport: Transport
     identity: str = ""
+    setup_payload: VerifierSetup | None = None
 
     async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         body = json.dumps(verifier_request_to_dict(request)).encode("utf-8")
@@ -48,7 +61,14 @@ class RemoteVerifier:
         return verdict_bundle_from_dict(result)
 
     async def provision(self) -> None:
-        # The server provisions its impl and returns its identity (a sync attr in-process).
+        # Ship the per-task data first (if any), then provision: the server builds its impl from the
+        # setup payload, then provisions it and returns its identity (a sync attr in-process).
+        if self.setup_payload is not None:
+            setup = json.dumps(verifier_setup_to_dict(self.setup_payload)).encode("utf-8")
+            try:
+                parse_result(await self.transport.request("setup", setup))
+            except TransportUnavailable as exc:
+                raise GateUnavailable(f"verifier unreachable: {exc}") from exc
         result = parse_result(await self.transport.request("provision", b""))
         self.identity = str(result["identity"])
 

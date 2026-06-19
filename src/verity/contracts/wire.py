@@ -40,7 +40,12 @@ from verity.contracts.model import (
     VerdictBundle,
     VerdictKind,
 )
-from verity.contracts.ports import ProposalEnvelope, ServedContext, VerifierRequest
+from verity.contracts.ports import (
+    ProposalEnvelope,
+    ServedContext,
+    VerifierRequest,
+    VerifierSetup,
+)
 
 __all__ = [
     "WIRE_VERSION",
@@ -66,6 +71,8 @@ __all__ = [
     "proposal_envelope_from_dict",
     "verifier_request_to_dict",
     "verifier_request_from_dict",
+    "verifier_setup_to_dict",
+    "verifier_setup_from_dict",
 ]
 
 # Bump when the wire JSON shape changes, so a receiver can refuse an incompatible peer.
@@ -284,4 +291,17 @@ def verifier_request_from_dict(d: Mapping[str, Any]) -> VerifierRequest:
         proposal=artifact_from_dict(d["proposal"]),
         store_slice=tuple(artifact_from_dict(a) for a in d.get("store_slice", [])),
         objects=objects_from_wire(d.get("objects", {})),
+    )
+
+
+def verifier_setup_to_dict(s: VerifierSetup) -> JsonDict:
+    # ``objects`` ride as the tagged inline-base64 union (like every other byte attachment);
+    # ``params`` are plain JSON knobs. No rationale field — segregation is structural (§10).
+    return {"objects": objects_to_wire(s.objects), "params": dict(s.params)}
+
+
+def verifier_setup_from_dict(d: Mapping[str, Any]) -> VerifierSetup:
+    return VerifierSetup(
+        objects=objects_from_wire(d.get("objects", {})),
+        params=dict(d.get("params", {})),
     )
