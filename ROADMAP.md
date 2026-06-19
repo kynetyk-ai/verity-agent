@@ -25,9 +25,12 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > exchange + store volumes provably off every worker. Remaining beyond v1 (deferred engine tracks):
 > hosted-model live validation, the multi-tenancy/concurrency engine (#58), crash recovery (#57), the
 > full #3 networked data plane, and a `K8sBackend`.
-> **Phase 9 ⬜ is the next priority:** extract the last domain code out of the control-plane image — the
-> in-process verifier (#73) and the in-CP data-prep / dataset-splitting (#74) — so adding a verifier or
-> task type needs **no CP rebuild** (the kernel is already generic; the image/process must match).
+> **Phase 9 🚧 is underway:** extract the last domain code out of the control-plane image so adding a
+> verifier or task type needs **no CP rebuild**. **9.1 ✅** — the verifier runs as a **sibling
+> container** (its own image carries the gates + `kaggle`; the CP image drops `--extra kaggle`), built
+> per task from a `VerifierSetup` shipped over the wire and reached via a **minimal on-demand launch**
+> (full fleet lifecycle deferred to **#77**); the dataset **split still happens CP-side** as the
+> explicit 9.2 residual. Next: **9.2** in-CP data-prep out (#74), then **9.3** the plugin loader.
 > The **control-plane API reference** (with a worked FE example) is
 > [`docs/api-surface.md`](docs/api-surface.md).
 
@@ -65,10 +68,9 @@ These hold in every phase (see `CLAUDE.md` → *Coding habits*):
 - **uv** for everything; **structured logging from day one**; **tests alongside the code**.
 - **Branch + PR** for all changes; **never a PR on buggy or embarrassing code.**
 - **Container-per-service readiness** — the architecture keeps each service independently imageable
-  (async ports, no shared mutable state). Today the **sandbox** ships its own image and the **control
-  plane** runs as a container; the **verifier still runs in-process** in the CP and moves to its own
-  sibling image in **Phase 9** (#73), alongside extracting the in-CP data-prep (#74) — so the CP image
-  carries no domain code.
+  (async ports, no shared mutable state). The **sandbox**, the **verifier** (its own image since
+  Phase 9.1 / #73 — gates + `kaggle`, launched as a sibling), and the **control plane** each ship as a
+  container; the remaining domain code in the CP image is the dataset **split** (#74, Phase 9.2).
 - **Spec-traceability** — implementation decisions cite the spec section (`§N`) they realize; the
   vendored `spec/` tree is authoritative.
 - **Invariants are property tests**, not prose aspirations (spec §5).
@@ -622,7 +624,7 @@ entrypoint + `infra/compose.fe.yml` were removed with the basic-`fe` task (#68);
   shared exchange volume — #3 proper); the **plugin loader** for runtime domain-code registration (now
   scheduled — Phase 9.3); and **auth/authz** on the external HTTP surface.
 
-### Phase 9 — The dumb control plane: domain code out of the CP image ⬜ *(next priority)*
+### Phase 9 — The dumb control plane: domain code out of the CP image 🚧 *(in progress)*
 
 The architectural debt the service split left standing: domain logic still **compiled into the
 control-plane image** and run **in the CP process**, so adding a verifier or a task type forces a
@@ -634,16 +636,22 @@ litmus test for the whole phase: **adding a new verifier or task type ships a co
 entry, with no CP rebuild.** Part of epic **#27** (service split). Each sprint a green, focused commit;
 the genericity guard and the sandbox byte-provenance isolation invariant hold throughout.
 
-- **9.1 Verifier → sibling containers (#73) ⬜** — wire the *already-built but unwired* transport seam
-  (`RemoteVerifier` / `VerifierServer` / `HttpTransport`, `Dockerfile.verifier`): composition builders
-  register a `RemoteVerifier` instead of constructing the in-process `SdkVerifier`; the verifier runs as
-  a **sibling worker** (parallel to `BackendCodeRunner`) — or standing — in its **own image** carrying
-  the domain gates + extras (e.g. `kaggle`), and itself spawns the code-runner sibling (or the
-  code-runner becomes its child). The trusted creds (Kaggle) live on the verifier side, never the CP or
-  the agent worker — the in-process placement was never required by the trusted-submitter property.
-  **Done:** `Dockerfile.controlplane` drops `--extra kaggle` and all gate code; a new verifier needs no
-  CP rebuild; fe-kaggle passes end-to-end over the remote path (the §13/acceptance + `test_service_e2e`
-  coverage runs against it). Folds in the residual of **#10** (capability advertisement).
+- **9.1 Verifier → sibling containers (#73) ✅** — the *already-built but unwired* transport seam is now
+  wired: composition builds a `RemoteVerifier` (a generic per-task `VerifierSetup` ships the split CSVs
+  + gate knobs over the wire at provision) instead of the in-process `SdkVerifier`; the fe-kaggle gates
+  + the `kaggle` extra moved into `Dockerfile.verifier`, which carries the docker CLI and spawns its own
+  code-runner siblings. `Dockerfile.controlplane` **drops `--extra kaggle`** and all gate code — a guard
+  test (`test_cp_image_imports_no_fe_gates_or_kaggle` + a kaggle-blocked daemon import) proves a new
+  verifier needs **no CP rebuild**. The trusted Kaggle creds are forwarded by name to the verifier
+  sibling only, never the agent worker. **Verifier reach = a *minimal on-demand launch*** (the right
+  pattern for many verifiers — no idle containers, no compose-per-type): `DockerBackend.launch()` runs a
+  trusted, detached verifier on a shared user-defined network, reached by container name via Docker DNS;
+  a *separate* `build_service_argv` keeps the hostile worker baseline pristine (an untrusted worker
+  structurally cannot get the socket). **The full fleet lifecycle** (`wait()`, inspect-addressing,
+  per-tenant concurrency, reconciliation/GC, run-context forwarding, creds-as-secret, `K8sBackend`) is
+  deferred to **#77**. Folds in the residual of **#10** (capability advertisement). *(End-to-end
+  `@kaggle @live` validation is the manual step; the offline suite + argv-pins + the import guards are
+  green.)*
 - **9.2 Task-prep out of the control plane (#74) ⬜** — the CP must hold **no** task-specific
   data-preparation. Today `build_fe_kaggle_task` splits the dataset (`subsample` + `stratified_split`,
   deriving the answer key) **in the CP** (ADR 0004 itself calls this "the riskiest new logic"). Move the
