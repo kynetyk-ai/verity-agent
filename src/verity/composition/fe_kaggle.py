@@ -97,8 +97,9 @@ def _verifier_service_spec(network: str, *, image: str, staging: str | None) -> 
     the docker socket (to launch its own code-runner children) and — when set — the shared staging
     dir at an identical host path (so those children's bind mounts resolve on the host daemon, the
     same sibling-mount trick the control plane uses). The Kaggle creds are forwarded by name; the
-    verifier builds its gate stack from the setup payload it is then sent. The image ``ENTRYPOINT``
-    runs ``verity verifier`` (``VERITY_VERIFIER=fe-kaggle``)."""
+    verifier builds its gate stack from the setup payload it is then sent. ``command`` is empty so
+    the image ``ENTRYPOINT`` (``python -m verity.verifier``) runs, selected by
+    ``VERITY_VERIFIER=fe-kaggle``."""
     name = f"verity-verifier-{uuid.uuid4().hex[:10]}"
     env = {"VERITY_VERIFIER": FE_KAGGLE_TASK_ID}
     host_mounts: tuple[tuple[str, str, str], ...] = ()

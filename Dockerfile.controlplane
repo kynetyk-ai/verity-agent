@@ -12,8 +12,10 @@
 # tasks, ingest data, run, and export at runtime, with no image rebuild between tasks.
 #
 # Carries verity CORE + the `service` extra (fastapi/uvicorn/httpx — the daemon's HTTP-over-UDS
-# surface) — NOT the sandbox extra (deepagents/langchain live in the worker image). Plus the docker
-# CLI, so `DockerBackend` can drive the mounted socket.
+# surface) — NOT the sandbox extra (deepagents/langchain live in the worker image), and (since §9.1)
+# NOT the `kaggle` extra or any gate code: the fe-kaggle gates + the Kaggle creds live in the
+# verifier image, which the CP launches as a sibling and reaches over HTTP. Plus the docker CLI, so
+# `DockerBackend` can drive the mounted socket.
 #
 # Run (see the compose files for the full wiring): mount the socket and a shared staging dir at an
 # identical host<->container path (VERITY_WORKER_STAGING); the daemon also mounts an exchange dir
@@ -28,10 +30,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 COPY . /app
 
-# Bake verity CORE + the `service` and `kaggle` extras into a venv — no dev/test deps, no sandbox
-# libs. `service` (fastapi/uvicorn/httpx) is the `verity serve` daemon (8.3); `kaggle` is the
-# real-leaderboard final-test gate for the fe-kaggle task (the verifier submits on the trusted CP side).
-RUN uv sync --frozen --no-dev --extra service --extra kaggle
+# Bake verity CORE + the `service` extra into a venv — no dev/test deps, no sandbox libs, and no
+# `kaggle` extra (§9.1: the fe-kaggle gates + the Kaggle client moved to the verifier image, so a new
+# verifier or task type no longer forces a control-plane rebuild). `service` (fastapi/uvicorn/httpx)
+# is the `verity serve` daemon (8.3) + the HTTP transport the CP talks to the verifier sibling over.
+RUN uv sync --frozen --no-dev --extra service
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
