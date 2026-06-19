@@ -47,6 +47,7 @@ __all__ = ["DockerBackend", "docker_available"]
 log = get_logger("verity.provisioning.docker")
 
 _Mount = tuple[Path, str, str]  # (host, container_target, "ro"|"rw")
+_Argv = list[str]  # aliased so annotations after the `list` method don't resolve to it (mypy)
 
 
 class DockerBackend:
@@ -225,9 +226,53 @@ class DockerBackend:
     async def logs(self, handle: WorkerHandle) -> bytes:
         return (await self._capture([self.docker_bin, "logs", handle.id])).encode(errors="replace")
 
-    # launch / wait (detached) underpin a future fleet loop; the batch path is run_to_completion.
-    async def launch(self, spec: WorkerSpec) -> WorkerHandle:  # pragma: no cover - fleet path
-        raise NotImplementedError("the detached launch path lands with the fleet loop (7.4.h+)")
+    # -- trusted long-lived service workers (§9.1: the verifier sibling) ----------
+
+    def build_service_argv(self, spec: WorkerSpec, *, name: str) -> _Argv:
+        """``docker run -d`` argv for a **trusted** long-lived service worker (the verifier).
+
+        Deliberately a *separate* builder from the hostile :meth:`build_argv`: a service is trusted
+        infrastructure that must mount the docker socket (to launch its own code-runner children)
+        and join a user-defined network (so the control plane reaches it by name) — the opposite of
+        cap-dropped, read-only, socket-less posture untrusted code runs under. Keeping the socket
+        mount on this path *only* means an untrusted worker can never acquire it (it goes through
+        :meth:`build_argv`, which has no socket branch). Resource limits still apply; the container
+        is removed on stop (``--rm``) and explicitly on :meth:`destroy`.
+        """
+        argv = [self.docker_bin, "run", "-d", "--rm", "--name", name]
+        if spec.runtime is not None:
+            argv.append(f"--runtime={spec.runtime}")
+        argv += [
+            f"--memory={spec.limits.memory}", f"--memory-swap={spec.limits.memory}",
+            f"--cpus={spec.limits.cpus}", f"--pids-limit={spec.limits.pids}",
+        ]
+        if spec.network_name is not None:
+            argv += ["--network", spec.network_name]
+        if spec.mount_docker_socket:
+            argv += ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
+        for host, target, mode in spec.host_mounts:
+            argv += ["-v", f"{host}:{target}:{mode}"]
+        for key, value in spec.labels.as_dict().items():
+            argv += ["--label", f"{key}={value}"]
+        for key, value in spec.env.items():
+            argv += ["-e", f"{key}={value}"]
+        for var in spec.env_passthrough:  # forwarded by NAME; the value stays in the daemon env
+            if os.environ.get(var):
+                argv += ["-e", var]
+        argv += ["-w", spec.workdir, spec.image]
+        argv += list(spec.command)
+        return argv
+
+    async def launch(self, spec: WorkerSpec) -> WorkerHandle:
+        """Launch a detached **trusted service** worker; returns a handle whose ``id`` is the
+        container name (its DNS name on ``network_name``). Reached over the wire, destroyed via
+        :meth:`destroy` — not harvested like a batch worker. (The batch path is
+        :meth:`run_to_completion`; ``wait`` stays a fleet-loop concern.)"""
+        name = spec.service_name or self._name(spec.labels)
+        argv = self.build_service_argv(spec, name=name)
+        await self._capture(argv)  # detached: returns the container id, then docker run exits
+        log.info("service_launched", name=name, image=spec.image, **spec.labels.as_dict())
+        return WorkerHandle(id=name, labels=spec.labels)
 
     async def wait(  # pragma: no cover - fleet path
         self, handle: WorkerHandle, *, timeout_s: float

@@ -26,6 +26,7 @@ from verity.contracts import (  # noqa: E402
     VerdictBundle,
     VerdictKind,
     VerifierRequest,
+    VerifierSetup,
 )
 from verity.contracts.wire import verifier_request_to_dict  # noqa: E402
 from verity.transport.client import RemoteVerifier  # noqa: E402
@@ -81,6 +82,34 @@ def test_http_dispatch_roundtrips_through_fastapi() -> None:
             await client.aclose()
 
     assert asyncio.run(go()) == _ACCEPT
+
+
+def test_http_setup_builds_a_data_bearing_verifier() -> None:
+    # A builder-backed server over real HTTP: the per-task VerifierSetup is shipped at provision and
+    # the impl is built server-side from it (§9.1), then dispatch uses it.
+    built: list[VerifierSetup] = []
+
+    def builder(setup: VerifierSetup) -> _Verifier:
+        built.append(setup)
+        return _Verifier()
+
+    app = build_asgi_app(VerifierServer(builder=builder))
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://verifier")
+    setup = VerifierSetup(objects={"train.csv": b"x,y\n1,2\n"}, params={"competition": "demo"})
+    remote = RemoteVerifier(
+        HttpTransport(base_url="http://verifier", client=client), setup_payload=setup
+    )
+
+    async def go() -> VerdictBundle:
+        try:
+            await remote.provision()
+            return await remote.dispatch(_REQUEST)
+        finally:
+            await client.aclose()
+
+    assert asyncio.run(go()) == _ACCEPT
+    assert built[0].objects["train.csv"] == b"x,y\n1,2\n"  # data survived the real HTTP hop
+    assert remote.identity == "svc-verifier"
 
 
 def test_http_provision_resolves_identity() -> None:

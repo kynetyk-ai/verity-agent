@@ -78,6 +78,45 @@ class FeWorkers:
         return CompletedWorker(exit_code=0, stdout="", stderr="")  # no scorable output
 
 
+def loopback_fe_kaggle_factory(backend, scorer):  # type: ignore[no-untyped-def]
+    """An offline ``make_verifier`` for `configure_fe_kaggle_task` (§9.1).
+
+    Builds the **real** FE-Kaggle gate stack in-process over the given `FakeBackend` + scorer and
+    wraps it in a loopback `RemoteVerifier`, so the offline suite drives the same
+    setup→build→dispatch seam the production HTTP path does — with no Docker, model, or network. The
+    builder receives the per-task `VerifierSetup` the control plane shipped, exactly as the verifier
+    image's builder would over the wire.
+    """
+    from verity.contracts.ports import VerifierSetup
+    from verity.domains.feature_engineering_kaggle import (
+        build_feature_engineering_kaggle_verifier,
+    )
+    from verity.transport import LoopbackTransport, RemoteVerifier, VerifierServer
+    from verity.verifier import BackendCodeRunner
+
+    def _builder(setup: VerifierSetup):  # type: ignore[no-untyped-def]
+        runner = BackendCodeRunner(backend=backend, config="fe-kaggle")
+        return build_feature_engineering_kaggle_verifier(
+            runner, scorer=scorer,
+            agent_train_csv=setup.objects["agent_train"],
+            reserved_test_csv=setup.objects["reserved_test"],
+            reserved_labels=setup.params["reserved_labels"],
+            full_train_csv=setup.objects["full_train"],
+            real_test_csv=setup.objects["real_test"],
+            timeout_s=float(setup.params.get("timeout_s", 900.0)),
+            wait_deadline_s=float(setup.params.get("wait_deadline_s", 86_400.0)),
+            poll_interval_s=float(setup.params.get("poll_interval_s", 60.0)),
+            submit_message=str(setup.params.get("submit_message", "verity")),
+        )
+
+    async def make(setup: VerifierSetup):  # type: ignore[no-untyped-def]
+        return RemoteVerifier(
+            LoopbackTransport(VerifierServer(builder=_builder).handle), setup_payload=setup
+        )
+
+    return make
+
+
 def offline_catalog(scorer: KaggleScorer | None = None):  # type: ignore[no-untyped-def]
     """A `TaskCatalog` for offline service/daemon tests: the real `fe-kaggle` task wired to a
     `FakeKaggleScorer` (so the loop runs with no Kaggle creds/network), plus the `code` task.
@@ -108,7 +147,8 @@ def offline_catalog(scorer: KaggleScorer | None = None):  # type: ignore[no-unty
             reserved_fraction=request.data.reserved_fraction,
         )
         return await configure_fe_kaggle_task(
-            cp, backend=backend, scorer=active_scorer,
+            cp, backend=backend,
+            make_verifier=loopback_fe_kaggle_factory(backend, active_scorer),
             split=split, full_train_csv=sub, real_test_csv=real_test,
             provisioning=provisioning_config_from(request.sandbox),
             poll_interval_s=0.0, wait_deadline_s=5.0,

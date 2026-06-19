@@ -26,6 +26,7 @@ from verity.contracts import (
     VerdictBundle,
     VerdictKind,
     VerifierRequest,
+    VerifierSetup,
 )
 from verity.sandbox.errors import SandboxError
 from verity.transport import (
@@ -139,6 +140,48 @@ def test_remote_verifier_provision_resolves_identity_over_the_wire() -> None:
 
     assert remote.identity == "fake-verifier" and impl.provisioned is True
     assert asyncio.run(remote.health()) is True
+
+
+# --------------------------------------------- data-bearing verifier: setup→build→dispatch (§9.1)
+
+
+def test_setup_ships_data_and_builds_the_verifier_before_dispatch() -> None:
+    built: list[VerifierSetup] = []
+
+    def builder(setup: VerifierSetup) -> _RecordingVerifier:
+        built.append(setup)
+        return _RecordingVerifier()
+
+    server = VerifierServer(builder=builder)
+    setup = VerifierSetup(
+        objects={"train.csv": b"a,b\n1,2\n", "labels.bin": bytes(range(256))},
+        params={"competition": "demo", "reserved_labels": {"7": "x"}},
+    )
+    remote = RemoteVerifier(LoopbackTransport(server.handle), setup_payload=setup)
+
+    asyncio.run(remote.provision())  # ships `setup` first, then `provision`
+    bundle = asyncio.run(remote.dispatch(VerifierRequest(proposal=_ARTIFACT)))
+
+    assert bundle == _ACCEPT
+    assert remote.identity == "fake-verifier"  # learned over the wire, post-build
+    assert len(built) == 1  # the server built exactly one impl from the payload
+    assert built[0].objects["train.csv"] == b"a,b\n1,2\n"  # data crossed intact (object bytes)
+    assert built[0].objects["labels.bin"] == bytes(range(256))
+    assert built[0].params == {"competition": "demo", "reserved_labels": {"7": "x"}}
+
+
+def test_dispatch_before_setup_is_a_transport_error() -> None:
+    # A builder-backed server has no impl until `setup`; dispatching first must fail informatively,
+    # not crash with an AttributeError.
+    server = VerifierServer(builder=lambda _setup: _RecordingVerifier())
+    remote = RemoteVerifier(LoopbackTransport(server.handle))
+    with pytest.raises(TransportError, match="not set up yet"):
+        asyncio.run(remote.dispatch(VerifierRequest(proposal=_ARTIFACT)))
+
+
+def test_builder_server_rejects_being_constructed_empty() -> None:
+    with pytest.raises(ValueError, match="impl or a builder"):
+        VerifierServer()
 
 
 # ----------------------------------------------------------------------------- sandbox round-trips

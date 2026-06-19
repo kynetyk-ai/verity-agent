@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import httpx
 from fastapi import FastAPI, Request, Response
 
+from verity.contracts.ports import VerifierSetup
 from verity.transport.base import Transport, TransportUnavailable
 from verity.transport.client import RemoteVerifier
 from verity.transport.envelope import RECOVERABLE_KINDS
@@ -84,7 +85,9 @@ def status_for_envelope(reply: bytes) -> int:
     return _RECOVERABLE_STATUS if kind in RECOVERABLE_KINDS else _FATAL_STATUS
 
 
-def build_remote_verifier(base_url: str, *, timeout_s: float = 30.0) -> RemoteVerifier:
+def build_remote_verifier(
+    base_url: str, *, timeout_s: float = 30.0, setup_payload: VerifierSetup | None = None
+) -> RemoteVerifier:
     """A control-plane-side ``VerifierPort`` over HTTP at ``base_url``.
 
     Register it as a ``ProviderRegistry`` factory (``verifier_key="remote"``) so a task dispatches
@@ -92,8 +95,14 @@ def build_remote_verifier(base_url: str, *, timeout_s: float = 30.0) -> RemoteVe
 
         url = os.environ["VERITY_VERIFIER_URL"]
         vp.register("remote", lambda: build_remote_verifier(url))
+
+    Pass ``setup_payload`` for a **data-bearing** verifier: the per-task data + knobs are shipped to
+    the service at the front of ``provision`` so it can build its gate stack server-side (§9.1).
     """
-    return RemoteVerifier(HttpTransport(base_url=base_url.rstrip("/"), timeout_s=timeout_s))
+    return RemoteVerifier(
+        HttpTransport(base_url=base_url.rstrip("/"), timeout_s=timeout_s),
+        setup_payload=setup_payload,
+    )
 
 
 def build_asgi_app(server: VerifierServer | SandboxServer) -> FastAPI:

@@ -26,6 +26,7 @@ from verity.contracts import (
     VerdictBundle,
     VerdictKind,
     VerifierRequest,
+    VerifierSetup,
 )
 from verity.contracts.wire import (
     OBJECT_REF_MARKER,
@@ -48,6 +49,8 @@ from verity.contracts.wire import (
     verdict_bundle_to_dict,
     verifier_request_from_dict,
     verifier_request_to_dict,
+    verifier_setup_from_dict,
+    verifier_setup_to_dict,
 )
 from verity.control_plane.store import SqliteStore
 
@@ -144,6 +147,22 @@ def test_verifier_request_roundtrips_with_slice_and_objects() -> None:
         objects={"submission.py": b"print(1)"},
     )
     assert _roundtrip(verifier_request_to_dict, verifier_request_from_dict, req) == req
+
+
+def test_verifier_setup_roundtrips_with_objects_and_params() -> None:
+    setup = VerifierSetup(
+        objects={"train.csv": b"a,b\n1,2\n", "labels.bin": bytes(range(256))},
+        params={"competition": "demo", "reserved_labels": {"7": "x"}, "timeout_s": 900.0},
+    )
+    back = _roundtrip(verifier_setup_to_dict, verifier_setup_from_dict, setup)
+    assert dict(back.objects) == dict(setup.objects)  # byte blobs survive base64 (incl. binary)
+    assert dict(back.params) == dict(setup.params)
+
+
+def test_verifier_setup_carries_no_rationale_field() -> None:
+    # Like VerifierRequest, the setup payload reaches the (remote) gate, so it must never carry the
+    # proposer's reasoning — only data + knobs (§10). The shape is exactly {objects, params}.
+    assert set(verifier_setup_to_dict(VerifierSetup())) == {"objects", "params"}
 
 
 def test_rationale_is_structurally_absent_from_verifier_request() -> None:

@@ -17,8 +17,14 @@
 # via the mounted /var/run/docker.sock (ADR 0003 §f — not docker-in-docker). Agent workers reach a
 # host-local model at host.docker.internal (set VERITY_LOCAL_BASE_URL) or a hosted API by key.
 #
+# §9.1: for a data-bearing task (fe-kaggle) the CP also launches a TRUSTED verifier SIBLING (its own
+# image, carrying the gates + the kaggle extra) on a shared user-defined network (`verity-net`), and
+# reaches it by its container name via Docker DNS (VERITY_VERIFIER_NETWORK). The CP image itself
+# carries no gate/kaggle code.
+#
 # Prereqs: build the images (just cp-serve does this for you):
 #   docker build -f Dockerfile.sandbox      -t verity-sandbox:latest .
+#   docker build -f Dockerfile.verifier     -t verity-verifier:latest .
 #   docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
 #
 # Volume model — three host dirs, each with a distinct job. The EXCHANGE and the STORE are mounted
@@ -54,14 +60,22 @@ services:
       VERITY_SANDBOX_IMAGE: "verity-sandbox:latest"
       VERITY_MODEL: "${VERITY_MODEL:-qwen3.6:27b-coding-mxfp8}"
       VERITY_LOCAL_BASE_URL: "${VERITY_LOCAL_BASE_URL:-http://host.docker.internal:11434/v1}"
+      # §9.1 verifier sibling: the image to launch + the shared network the CP reaches it on by name.
+      VERITY_VERIFIER_IMAGE: "verity-verifier:latest"
+      VERITY_VERIFIER_NETWORK: "verity-net"
       # Model credentials — the CP forwards the selected model's key env to the agent worker
       # (sandbox env-passthrough). Empty unless a hosted model is used; a local model needs none.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      # Kaggle creds for the fe-kaggle task — read by the trusted in-process verifier on the CP to
-      # submit + score; NOT in the sandbox env-passthrough, so they never reach a worker.
+      # Kaggle creds for the fe-kaggle task — the CP forwards them (by NAME) only to the verifier
+      # sibling it launches, where the trusted final-test gate submits + scores. They are NOT in the
+      # sandbox env-passthrough, so they never reach an agent worker, and the CP image carries no
+      # kaggle code. (They do transit the CP container's env to be forwarded; mounting them as a
+      # secret into the verifier only is a hardening item — see the fleet-lifecycle issue.)
       KAGGLE_USERNAME: "${KAGGLE_USERNAME:-}"
       KAGGLE_KEY: "${KAGGLE_KEY:-}"
+    networks:
+      - verity-net
     volumes:
       # The controlled host socket — the CP launches sibling workers through it (ADR 0003 §f).
       - /var/run/docker.sock:/var/run/docker.sock
@@ -71,3 +85,9 @@ services:
       - ${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}:/exchange
       # Persistent provenance stores + task definitions (durable across restarts). CP-ONLY.
       - ${VERITY_STORE_HOST:-/tmp/verity-store}:/var/lib/verity
+
+# A fixed-name user-defined network so the CP-launched verifier sibling (joined via
+# VERITY_VERIFIER_NETWORK) is reachable from the CP by its container name through Docker DNS (§9.1).
+networks:
+  verity-net:
+    name: verity-net

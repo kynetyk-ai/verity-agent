@@ -2,17 +2,22 @@
 
 Drives the config-driven FE-Kaggle loop over `FakeBackend` (reusing the shared offline worker
 doubles + a `FakeKaggleScorer`) and asserts the placed seams: the control plane binds a
-`RunContext`, which reaches both the sandbox driver and the verifier's code-runner, so **every**
-worker carries ``{harness,tenant,run,cycle,role,config}``; the ``run`` id is one stable value across
-the run while ``cycle`` advances per sandbox cycle; and the run emits a `RunRecord` keyed by
-``(tenant_id, run_id)`` that points back at the accepted artifacts.
+`RunContext`, which reaches the **sandbox** driver, so every sandbox worker carries
+``{harness,tenant,run,cycle,role,config}``; the ``run`` id is one stable value across the run while
+``cycle`` advances per sandbox cycle; and the run emits a `RunRecord` keyed by ``(tenant_id,
+run_id)`` that points back at the accepted artifacts.
+
+**§9.1 boundary:** the verifier now runs as a *separate service* (here, loopback), so the control
+plane no longer binds its `RunContext` into the verifier's code-runner — those workers carry their
+own ``{role,config}`` but not the CP's ``tenant/run/cycle``. Forwarding run identity across the
+verifier service boundary is deferred to the fleet-lifecycle issue (see ROADMAP Phase 9).
 """
 
 from __future__ import annotations
 
 import asyncio
 
-from tests._fe_offline import FeWorkers
+from tests._fe_offline import FeWorkers, loopback_fe_kaggle_factory
 from verity.composition.dataset import stratified_split, subsample
 from verity.composition.fe_kaggle import FE_KAGGLE_TASK_ID, configure_fe_kaggle_task
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
@@ -34,16 +39,20 @@ def _run_kaggle_loop(*, max_cycles: int) -> tuple[FakeBackend, ControlPlane, str
     backend = FakeBackend(script=FeWorkers(steps=steps, by_marker=by_marker))
     store = SqliteStore()
     cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=max_cycles))
+    scorer = FakeKaggleScorer(scores=[0.80, 0.85])
     asyncio.run(
         configure_fe_kaggle_task(
-            cp, backend=backend, scorer=FakeKaggleScorer(scores=[0.80, 0.85]),
+            cp, backend=backend,
+            make_verifier=loopback_fe_kaggle_factory(backend, scorer),
             split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
             poll_interval_s=0.0, wait_deadline_s=5.0,
         )
     )
     asyncio.run(cp.run(FE_KAGGLE_TASK_ID, goal="climb the leaderboard"))
-    run_ids = {s.labels.run for s in backend.launched}
-    assert len(run_ids) == 1  # one run id across every worker the run launched
+    # The run id is carried by the sandbox workers the CP binds run-context into (the verifier is a
+    # separate service now and labels its own code-runners — see the module docstring).
+    run_ids = {s.labels.run for s in backend.launched if s.labels.role == "sandbox"}
+    assert len(run_ids) == 1  # one run id across every sandbox worker the run launched
     return backend, cp, run_ids.pop()
 
 
@@ -54,16 +63,22 @@ def test_every_worker_is_labelled_with_run_identity() -> None:
     assert len(sandboxes) == 2  # a fresh sandbox worker per cycle
     assert code_runners  # the verifier's gates ran the submission in code-runner worker(s)
 
-    # the run id is minted (non-empty) and tenant + harness + config are stamped on every worker
+    # The CP binds run identity into the sandbox workers: run + tenant + harness + config + an
+    # advancing cycle.
     assert run_id != ""
-    for spec in backend.launched:
+    for spec in sandboxes:
         assert spec.labels.tenant == "default"
         assert spec.labels.harness == "verity"
         assert spec.labels.config == "fe-kaggle"
         assert spec.labels.run == run_id
+    assert [s.labels.cycle for s in sandboxes] == ["1", "2"]  # advances per cycle, in order
 
-    # the cycle stamp advances per cycle for the sandbox (one sandbox launched per cycle, in order)
-    assert [s.labels.cycle for s in sandboxes] == ["1", "2"]
+    # §9.1: the verifier (separate service) labels its own code-runners with role + config, but the
+    # CP's run identity is NOT forwarded across the service boundary yet (deferred — see docstring).
+    for spec in code_runners:
+        assert spec.labels.role == "code-runner"
+        assert spec.labels.config == "fe-kaggle"
+        assert spec.labels.run == ""  # run identity not forwarded to the remote verifier (yet)
 
 
 def test_run_emits_a_run_record_pointing_into_the_store() -> None:
@@ -85,18 +100,20 @@ def test_a_second_run_of_the_same_task_gets_a_fresh_run_id() -> None:
         script=FeWorkers(steps=[("submit", ("ds",), b"a", ["f0"])], by_marker={b"a": reserved})
     )
     cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=1))
+    scorer = FakeKaggleScorer(scores=[0.80, 0.85])
     asyncio.run(
         configure_fe_kaggle_task(
-            cp, backend=backend, scorer=FakeKaggleScorer(scores=[0.80, 0.85]),
+            cp, backend=backend,
+            make_verifier=loopback_fe_kaggle_factory(backend, scorer),
             split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
             poll_interval_s=0.0, wait_deadline_s=5.0,
         )
     )
 
     asyncio.run(cp.run(FE_KAGGLE_TASK_ID, goal="g"))
-    first = {s.labels.run for s in backend.launched}.pop()
+    first = {s.labels.run for s in backend.launched if s.labels.role == "sandbox"}.pop()
     asyncio.run(cp.run(FE_KAGGLE_TASK_ID, goal="g"))
-    run_ids = {s.labels.run for s in backend.launched}
+    run_ids = {s.labels.run for s in backend.launched if s.labels.role == "sandbox"}
     # task != run: the second run minted its own id, so the run records do not collide
     assert len(run_ids) == 2 and first in run_ids
     assert cp.run_records().get("default", first) is not None

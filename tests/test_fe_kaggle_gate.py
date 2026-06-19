@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._fe_offline import FeWorkers
+from tests._fe_offline import FeWorkers, loopback_fe_kaggle_factory
 from verity.composition.dataset import stratified_split, subsample
 from verity.composition.fe_kaggle import FE_KAGGLE_TASK_ID, configure_fe_kaggle_task
 from verity.contracts import ArtifactStatus, GateUnavailable
@@ -49,8 +49,9 @@ def _drive(
     cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=max_cycles))
     asyncio.run(
         configure_fe_kaggle_task(
-            cp, backend=backend, scorer=scorer, split=split,
-            full_train_csv=sub, real_test_csv=_REAL_TEST,
+            cp, backend=backend,
+            make_verifier=loopback_fe_kaggle_factory(backend, scorer),
+            split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
             poll_interval_s=poll_interval_s, wait_deadline_s=5.0,
         )
     )

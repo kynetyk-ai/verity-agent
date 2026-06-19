@@ -37,6 +37,7 @@ from verity.contracts.ports import (
     ServiceLifecycle,
     VerifierPort,
     VerifierRequest,
+    VerifierSetup,
 )
 from verity.contracts.run_context import RunContext, SupportsRunContext
 
@@ -55,6 +56,7 @@ __all__ = [
     "VerdictBundle",
     # ports
     "ServiceLifecycle",
+    "VerifierSetup",
     "VerifierRequest",
     "VerifierPort",
     "ProposalEnvelope",

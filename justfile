@@ -32,6 +32,7 @@ check: lint typecheck test
 cp-serve:
     docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
     docker build -f Dockerfile.coderunner -t verity-code-runner:latest .
+    docker build -f Dockerfile.verifier -t verity-verifier:latest .
     docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
     mkdir -p /tmp/verity-staging "${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/in" \
         "${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out" "${VERITY_STORE_HOST:-/tmp/verity-store}"
