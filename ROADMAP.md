@@ -716,36 +716,68 @@ added adapter, not a reshape.
 
 ### Open issues → roadmap home
 
-Where each tracked issue folds in (so the backlog and the plan stay linked):
+Where each open issue folds in (so the backlog and the plan stay linked). Grouped by theme; kept
+in sync with GitHub — the rows below are exactly the open set.
 
-Currently-open issues (kept in sync with GitHub):
+**Phase 9 — the dumb control plane (next priority):**
 
 | Issue | Folds into |
 | --- | --- |
-| **#3** standing control-plane data plane | **Phase 8** (ADR 0004) + the multi-tenancy engine; the over-the-wire file API (removes the exchange volume) |
-| **#5** spec sync: collapse §8.2 tool registry | *Further out* — spec housekeeping (already true in code) |
-| **#9** object retention / GC | multi-tenancy engine (with the store-engine upgrade) |
-| **#10** networked verifier transport | 7.2 — transport is live; residual: capability advertisement |
-| **#11** LLM-judge reproducibility (§5.8) | 5.1 — when a judge enters a live gate stack |
-| **#27** multi-tenancy epic | the Multi-tenancy & run-control track |
-| **#32** durable failure-provenance (record failed cycles in the store) | 5.1 reliability (split-out) |
-| **#40** revisit Docker Model Runner (vllm-metal) as the managed local-model host | Phase 6 (woven model-server hardening) |
-| **#42** extensible stop/continuation predicate (accumulate-to-K / optimize-until-plateau) | acceptance-modes extensibility on `OrchestrationPolicy` |
-| **#51** provision the in-flight *revised* submission on refine | object-provisioning (largely covered by `LAST_REVISED_OR_ACCEPTED`; confirm/close) |
-| **#55** re-audit `docs/context-and-data-flow.md` to the current build | docs housekeeping |
+| **#73** extricate verification logic into sibling verifier containers | **Phase 9.1** — also carries the residual of #10 (capability advertisement) |
+| **#74** remove task-specific data-prep from the control plane | **Phase 9.2** |
+
+*(The 9.3 plugin loader — runtime task/verifier registration without a rebuild — is roadmap-only,
+not a separate issue; it closes the "further out" runtime-registration item.)*
+
+**Multi-tenancy & run-control engine (epic #27):**
+
+| Issue | Folds into |
+| --- | --- |
+| **#27** multi-tenancy epic | the Multi-tenancy & run-control track (the umbrella) |
+| **#3** standing control-plane data plane | the over-the-wire file API (removes the exchange volume); seeded in **Phase 8** (ADR 0004) |
+| **#58** store-isolation tiers | per-task **done in Phase 8.1 ✅**; cross-tenant residual is the engine |
 | **#57** crash recovery for in-flight runs | Phase 8 deferred (durable run-status; Temporal at hardening) |
-| **#58** store-isolation tiers | per-task in **Phase 8.1 ✅**; cross-tenant in the multi-tenancy engine |
-| **#64** make the domain concept optional | architecture — a generic default domain + verifier-criteria in the prompt (§8 / §3.4) |
+| **#9** object retention / GC | the engine (with the store-engine upgrade) |
+| **#32** durable failure-provenance (record failed cycles in the store) | provenance data-model add (split out of 5.1) |
+
+**Domain & sandbox extensibility:**
+
+| Issue | Folds into |
+| --- | --- |
+| **#64** make the domain concept optional | a generic default domain + verifier-criteria in the prompt (§8 / §3.4) |
 | **#65** per-task agent skills in the sandbox (harness-agnostic) | 5.4 sandbox extensibility (successor to the `read_pdf` tool seam) |
+| **#42** extensible stop/continuation predicate (accumulate-to-K / optimize-until-plateau) | acceptance-modes extensibility on `OrchestrationPolicy` |
+| **#69** harden outbox harvest to declared objects (+ state the outbox invariant in the prompt) | sandbox/harness hardening — small, standalone |
+
+**Model hosting & gate reproducibility:**
+
+| Issue | Folds into |
+| --- | --- |
+| **#40** revisit Docker Model Runner (vllm-metal) as the managed local-model host | Phase 6 (woven model-server hardening) |
+| **#11** LLM-judge reproducibility (§5.8) | 5.1 — when a judge enters a live gate stack |
+
+**Docs:**
+
+| Issue | Folds into |
+| --- | --- |
+| **#55** re-audit `docs/context-and-data-flow.md` to the current build | docs housekeeping |
 | **#66** extender docs for sandboxes & verifiers | the woven "configuration guide" item (docs slice) |
-| **#73** extricate verification logic into sibling verifier containers | **Phase 9.1** (next priority) |
-| **#74** remove task-specific data-prep from the control plane | **Phase 9.2** (next priority) |
+
+**Spec housekeeping:**
+
+| Issue | Folds into |
+| --- | --- |
+| **#5** spec sync: collapse §8.2 tool registry | *Further out* — already true in code; sync back to NL-specs |
 
 **Already done (closed):** **#2** (CI gates `main`/`develop`), **#8** (supersede-on-beat, 4.2),
-**#6** (harness-bound executable tools — the `read_pdf` seam, 5.4), **#12** (workspace-contract/orientation
-version stamp, 5.1), **#13** (JSON-object proposal payloads, 5.1), and the early correctness fixes
-**#16/#17/#18/#20/#21** (naming, `refine_cap` enforcement, the dead manifest path, provisioned-object
-naming + manifest, and sandbox-cycle-failure-skips-not-aborts).
+**#6** (harness-bound executable tools — the `read_pdf` seam, 5.4), **#10** (networked verifier
+transport — the wire codec + transport seam landed in **7.2**; the capability-advertisement residual
+is carried by #73), **#12** (workspace-contract/orientation version stamp, 5.1), **#13** (JSON-object
+proposal payloads, 5.1), **#51** (provision the in-flight *revised* submission on refine — covered by
+`LAST_REVISED_OR_ACCEPTED`), **#68** (retired the basic local-hold-out `fe` task — `fe-kaggle` is the
+FE task; catalog is now `{fe-kaggle, code}`, the `fe_run`/`compose.fe.yml` batch path removed), and the
+early correctness fixes **#16/#17/#18/#20/#21** (naming, `refine_cap` enforcement, the dead manifest
+path, provisioned-object naming + manifest, and sandbox-cycle-failure-skips-not-aborts).
 
 ### Further out / seamed (spec §16)
 
