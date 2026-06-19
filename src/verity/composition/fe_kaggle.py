@@ -1,18 +1,18 @@
 """Apply the FE-Kaggle task to a generic control plane (the `fe-kaggle` task type).
 
 Reuses the §12 feature-engineering domain (schema / shape / instructions) and the
-worker-provisioning wiring of :mod:`verity.composition.fe`; the only swap is the **verifier**, whose
-authoritative gate is the real Kaggle leaderboard (`build_feature_engineering_kaggle_verifier`).
+worker-provisioning wiring of :mod:`verity.composition.fe`. Since §9.1 the verifier runs as a
+**sibling service** (its own image, carrying the gates + the ``kaggle`` extra): this module builds
+the per-task data split and ships it — plus the gate knobs — to that verifier as a
+:class:`VerifierSetup` (default: a `RemoteVerifier`, launched on demand; see
+:func:`launch_fe_kaggle_factory`). **No** gate code or Kaggle client is imported here.
 
-Data the gate holds (trusted, in-process): the labeled hold-out split of ``train.csv`` (for the
-cheap proxy) plus the full labeled subsample and the **real, unlabeled ``test.csv``** (for the
-Kaggle run). The agent's sandbox sees only ``agent_train`` (labeled, hold-out removed) + the real
-``test.csv`` (unlabeled) — never the reserved labels nor the real test's labels (Kaggle's). The
-Kaggle creds live on the verifier side (the control plane), never in a worker.
-
-``configure_fe_kaggle_task`` takes a ready-made `KaggleScorer` (a `FakeKaggleScorer` offline; the
-real client in the catalog builder, Sprint 2). ``describe_fe_kaggle_task`` publishes the contract
-for ``verity catalog``.
+The split the control plane prepares (the 9.2/#74 residual — it still routes the outputs to both
+roles): the labeled hold-out of ``train.csv`` (cheap proxy) + the full labeled subsample and the
+**real, unlabeled ``test.csv``** (the Kaggle run) go to the verifier; the agent's sandbox sees only
+``agent_train`` (hold-out removed) + the real ``test.csv`` — never the reserved labels nor the real
+test's labels. The Kaggle creds live on the verifier side, forwarded by name, never in an agent
+worker. ``describe_fe_kaggle_task`` publishes the contract for ``verity catalog``.
 """
 
 from __future__ import annotations
@@ -314,8 +314,8 @@ async def build_fe_kaggle_task(
     ``data.test_ref`` (the real, unlabeled ``test.csv`` for Kaggle). ``verifier.knobs.competition``
     is the competition slug (required); optional knobs tune polling/wait, and
     ``daily_submission_limit`` overrides the per-competition cap that is otherwise read from the
-    competition metadata. Constructs the live `RealKaggleScorer` (lazy `kaggle` import) and hands it
-    to `configure_fe_kaggle_task`.
+    competition metadata. Routes the slug + knobs to `configure_fe_kaggle_task`, which ships them to
+    the verifier sibling; the live `RealKaggleScorer` is built verifier-side (no `kaggle` import).
     """
     if request.data.data_ref is None:
         raise ValueError("the fe-kaggle task requires training data (create the task with `data=`)")
