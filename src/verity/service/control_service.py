@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -145,15 +145,17 @@ class ControlService:
     # -- task lifecycle -----------------------------------------------------------
 
     def create_task(
-        self, request: TaskRequest, *, data: bytes | None = None, test_data: bytes | None = None
+        self, request: TaskRequest, *, files: Mapping[str, Mapping[str, bytes]] | None = None
     ) -> str:
         """Create a durable task instance from a declarative request; returns its ``task_id``.
 
-        Mints a ``task_id``, creates the task's own store, optionally ingests ``data`` (the primary
-        training input → ``request.data.data_ref``) and ``test_data`` (a second input, e.g. the
-        fe-kaggle real test set → ``request.data.test_ref``) as immutable content-addressed roots,
-        and persists the request via the index. The control plane is **not** configured yet — that
-        is lazy, on ``run`` (so create-without-run and restart-then-run share one code path).
+        Mints a ``task_id``, creates the task's own store, ingests the **role-keyed** input
+        ``files`` (``{role: {filename: bytes}}``) as immutable content-addressed roots — stamping
+        each ``content_hash`` into ``request.data.roles[role][filename]`` — and persists it via
+        the index. The files are **opaque** to the control plane: data prep (splitting, the answer
+        key) is the user's responsibility, done outside Verity (ADR 0005); the CP only routes each
+        role's set into that role's worker. The control plane is **not** configured yet — that is
+        lazy, on ``run`` (so create-without-run and restart-then-run share one code path).
         """
         if not self._catalog.has(request.type_name):
             raise UnknownTask(
@@ -161,12 +163,16 @@ class ControlService:
             )
         task_id = self._task_id_source()
         store = self._open_store(task_id)
-        if data is not None:
-            request = request.with_data_ref(store.put_object(data).content_hash)
-        if test_data is not None:
-            request = request.with_test_ref(store.put_object(test_data).content_hash)
+        for role, named in (files or {}).items():
+            for name, blob in named.items():
+                request = request.with_role_file(role, name, store.put_object(blob).content_hash)
         self._index.put(task_id, request)
-        log.info("task_created", task_id=task_id, type=request.type_name, has_data=data is not None)
+        log.info(
+            "task_created",
+            task_id=task_id,
+            type=request.type_name,
+            roles=sorted((files or {}).keys()),
+        )
         return task_id
 
     def list_tasks(self) -> list[str]:

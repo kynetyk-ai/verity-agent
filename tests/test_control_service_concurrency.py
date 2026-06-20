@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from tests._fe_offline import FeWorkers, offline_catalog
-from verity.composition.dataset import stratified_split, subsample
+from tools.harness.dataset import stratified_split, subsample
+
+from tests._fe_offline import FeWorkers, offline_catalog, role_files_from_raw
 from verity.composition.task_request import DataRequest, PolicyRequest, TaskRequest
 from verity.contracts.jobqueue import JobStatus
 from verity.provisioning import FakeBackend
@@ -33,7 +34,11 @@ def _reserved() -> dict[str, str]:
 
 def _fe_request() -> TaskRequest:
     return TaskRequest(type_name="fe-kaggle", policy=PolicyRequest(stop_on_accept=True),
-                       data=DataRequest(per_class=100, reserved_fraction=0.5))
+                       data=DataRequest())
+
+
+def _fe_files() -> dict[str, dict[str, bytes]]:
+    return role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
 
 
 @dataclass
@@ -80,7 +85,7 @@ def test_submit_run_is_background_and_reads_are_concurrent() -> None:
                             by_marker={b"good": _reserved()})
         backend = _GatedBackend(inner=FakeBackend(script=workers))
         service = ControlService(backend=backend, root=None, catalog=offline_catalog())
-        task_id = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
+        task_id = service.create_task(_fe_request(), files=_fe_files())
 
         run_id = await service.submit_run(task_id)  # returns immediately, run still gated
         # The run is in-flight: status reads CLAIMED and results returns (None) WITHOUT blocking.
@@ -102,7 +107,7 @@ def test_unsatisfiable_run_fails_gracefully_and_informatively() -> None:
         # The agent proposes nothing each cycle -> repeated sandbox failure -> abort.
         backend = FakeBackend(script=FeWorkers(steps=[], by_marker={}))
         service = ControlService(backend=backend, root=None, catalog=offline_catalog())
-        task_id = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
+        task_id = service.create_task(_fe_request(), files=_fe_files())
 
         run_id = await service.run(task_id)  # never raises — degrade-don't-crash
 

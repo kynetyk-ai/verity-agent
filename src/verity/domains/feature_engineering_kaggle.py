@@ -60,9 +60,33 @@ from verity.verifier.kaggle import KaggleScorer
 __all__ = [
     "KAGGLE_VERIFIER_IDENTITY",
     "build_feature_engineering_kaggle_verifier",
+    "parse_label_csv",
 ]
 
 KAGGLE_VERIFIER_IDENTITY = "feature-engineering-kaggle-verifier"
+
+
+def parse_label_csv(data: bytes, *, id_column: str = "id", target: str = "class") -> dict[str, str]:
+    """Parse a ``holdout_labels.csv`` (the answer key) into an ``{id: target}`` map (verifier-side).
+
+    Domain knowledge that lives with the verifier: since ADR 0005 the answer key arrives as a
+    routed verifier-role *file* (not a control-plane-derived dict), and the verifier image — which
+    owns the domain — turns it back into the lookup the gates score against. Falls back to the first
+    two columns when the header names differ, so a prep tool need not match the gate's column names.
+    """
+    import csv
+    import io
+
+    reader = csv.reader(io.StringIO(data.decode("utf-8")))
+    rows = list(reader)
+    if not rows:
+        return {}
+    header = rows[0]
+    try:
+        id_idx, target_idx = header.index(id_column), header.index(target)
+    except ValueError:
+        id_idx, target_idx = 0, 1
+    return {r[id_idx]: r[target_idx] for r in rows[1:] if len(r) > max(id_idx, target_idx)}
 
 
 @dataclass

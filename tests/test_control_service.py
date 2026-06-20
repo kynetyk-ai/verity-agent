@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from tests._fe_offline import FeWorkers, offline_catalog
-from verity.composition.dataset import stratified_split, subsample
+from tools.harness.dataset import stratified_split, subsample
+
+from tests._fe_offline import FeWorkers, offline_catalog, role_files_from_raw
 from verity.composition.task_request import (
     DataRequest,
     PolicyRequest,
@@ -40,7 +41,11 @@ def _reserved() -> dict[str, str]:
 def _fe_request() -> TaskRequest:
     return TaskRequest(type_name="fe-kaggle", goal="improve balanced accuracy",
                        policy=PolicyRequest(stop_on_accept=True),
-                       data=DataRequest(per_class=100, reserved_fraction=0.5))
+                       data=DataRequest())
+
+
+def _fe_files() -> dict[str, dict[str, bytes]]:
+    return role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
 
 
 def _fe_workers() -> FeWorkers:
@@ -48,9 +53,9 @@ def _fe_workers() -> FeWorkers:
                      by_marker={b"good": _reserved()})
 
 
-def test_create_task_stamps_both_data_refs() -> None:
-    # The fe-kaggle task takes two inputs (train + the real test); create_task ingests both and
-    # stamps data_ref + test_ref on the persisted, durable request.
+def test_create_task_stamps_role_file_refs() -> None:
+    # The user prepares role-keyed inputs (ADR 0005); create_task ingests each blob and stamps its
+    # content hash onto the persisted, durable request, by role + filename.
     service = ControlService(
         backend=FakeBackend(script=FeWorkers(steps=[], by_marker={})), root=None
     )
@@ -58,19 +63,25 @@ def test_create_task_stamps_both_data_refs() -> None:
         type_name="fe-kaggle",
         verifier=VerifierRequest(approach="kaggle", knobs={"competition": "playground-s6e6"}),
     )
-    task_id = service.create_task(request, data=_RAW, test_data=b"id\n7\n8\n")
+    files = role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
+    task_id = service.create_task(request, files=files)
     persisted = service.get_request(task_id)
     assert persisted is not None
-    assert persisted.data.data_ref is not None
-    assert persisted.data.test_ref is not None
-    assert persisted.data.data_ref != persisted.data.test_ref
+    agent = persisted.data.files_for("agent")
+    verifier = persisted.data.files_for("verifier")
+    assert {"train.csv", "test.csv"} <= set(agent)
+    assert {"train.csv", "holdout.csv", "holdout_labels.csv", "full_train.csv", "test.csv"} <= set(
+        verifier
+    )
+    # Distinct-content files get distinct content hashes (the answer key isn't the agent's train).
+    assert agent["train.csv"] != verifier["holdout_labels.csv"]
 
 
 def test_create_run_results() -> None:
     service = ControlService(
         backend=FakeBackend(script=_fe_workers()), root=None, catalog=offline_catalog()
     )
-    task_id = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
+    task_id = service.create_task(_fe_request(), files=_fe_files())
     run_id = asyncio.run(service.run(task_id))
 
     assert asyncio.run(service.status(run_id)) is JobStatus.DONE
@@ -87,7 +98,7 @@ def test_task_definition_is_durable_across_restart(tmp_path) -> None:
     # Service 1 only *creates* the task (persisting its TaskRequest + ingesting data to disk).
     creator = ControlService(backend=FakeBackend(script=FeWorkers(steps=[], by_marker={})),
                              root=tmp_path, catalog=offline_catalog())
-    task_id = creator.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
+    task_id = creator.create_task(_fe_request(), files=_fe_files())
     assert task_id in creator.list_tasks()
 
     # Service 2 is a *fresh* process view over the same root: no resident tasks, no shared memory.
@@ -106,10 +117,12 @@ def test_task_request_json_round_trip() -> None:
         sandbox=SandboxRequest(model="anthropic:claude-sonnet-4-6", sandbox_memory="2g"),
         verifier=VerifierRequest(approach="balanced_accuracy", knobs={"margin": 0.01}),
         policy=PolicyRequest(max_cycles=7, stop_on_accept=True),
-        data=DataRequest(data_ref="abc123", per_class=50),
+        data=DataRequest(roles={"agent": {"train.csv": "abc123"}}),
         tenant_id="default",
     )
-    assert TaskRequest.from_dict(json.loads(json.dumps(request.to_dict()))) == request
+    round_tripped = TaskRequest.from_dict(json.loads(json.dumps(request.to_dict())))
+    assert round_tripped == request
+    assert round_tripped.data.files_for("agent")["train.csv"] == "abc123"
 
 
 def test_local_model_name_with_colons_is_not_split() -> None:
@@ -136,7 +149,7 @@ def test_catalog_dispatches_a_second_task_type() -> None:
     assert resident.in_cp_task_id == "code"
 
     # It is a distinct control plane + store from an FE instance on the same service.
-    fe_task = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
+    fe_task = service.create_task(_fe_request(), files=_fe_files())
     fe_resident = asyncio.run(service._resident_cp(fe_task))
     assert resident.cp is not fe_resident.cp
     assert resident.cp.store is not fe_resident.cp.store

@@ -40,12 +40,13 @@ bundled per task type (read `verifier_approach`), and the **sandbox configuratio
 ## `ingest` — stage an input file → a data handle
 
 ```bash
-verity ingest train.csv     # reads <exchange>/in/train.csv -> {"handle": "<sha256>"}
+verity ingest agent/train.csv   # reads <exchange>/in/agent/train.csv -> {"handle": "<sha256>"}
 ```
 
-Content-addresses the file into the daemon and returns a `handle` you pass to `create --data`. (File
-must be in the exchange `in/` dir — see setup.md. Remote/programmatic clients can instead upload raw
-bytes over HTTP; see *Network mode* below.)
+Content-addresses the file into the daemon and returns a `handle` you pass to `create --file`. Subdir
+paths are allowed (role bundles like `agent/train.csv`), as long as they stay inside the exchange.
+(File must be in the exchange `in/` dir — see setup.md. Remote/programmatic clients can instead upload
+raw bytes over HTTP; see *Network mode* below.)
 
 ## `create` — define a task instance → a `task_id`
 
@@ -56,43 +57,47 @@ verity create --type code \
   --goal "Write a submission script that runs cleanly." --max-cycles 4 --stop-on-accept
 # -> {"task_id": "..."}
 
-# data-bearing task (e.g. fe-kaggle: two inputs + a competition slug) — from a request file:
-verity create --request-file task.json --data <train-handle> --test-data <test-handle>
-# (task.json carries type/model/knobs; only --data/--test-data/--goal still apply) -> {"task_id": "..."}
+# data-bearing task (e.g. fe-kaggle: per-role files + a competition slug) — from a request file:
+verity create --request-file task.json \
+  --file agent:train.csv=<h1> --file agent:test.csv=<h2> \
+  --file verifier:train.csv=<h1> --file verifier:holdout.csv=<h3> ...   # repeatable, one per file
+# (task.json carries type/model/knobs; only --file/--goal still apply) -> {"task_id": "..."}
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--type` | — | task type from `verity catalog` (e.g. `fe`, `code`, `fe-kaggle`); required unless `--request-file` is given |
-| `--request-file` | — | path to a full `TaskRequest` JSON (e.g. a task package's `task.json`); supersedes the request-shaping flags — only `--data`/`--test-data`/`--goal` still apply |
-| `--data` | — | a handle from `verity ingest` (the primary/train input; omit for data-less types) |
-| `--test-data` | — | a second `verity ingest` handle — a task's second input (e.g. `fe-kaggle`'s real test set) |
+| `--type` | — | task type from `verity catalog` (e.g. `code`, `fe-kaggle`); required unless `--request-file` is given |
+| `--request-file` | — | path to a full `TaskRequest` JSON (e.g. a task package's `task.json`); supersedes the request-shaping flags — only `--file`/`--goal` still apply |
+| `--file` | — | `ROLE:NAME=HANDLE` — route a pre-prepared input (from `verity ingest`) to a worker role; **repeatable**. Data prep is yours (ADR 0005); the CP routes opaque blobs. |
 | `--goal` | `""` | the run goal (task instructions) |
 | `--model` | builder default (Anthropic) | the sandbox model. **With `--base-url`** it is a literal OpenAI-compatible name (Ollama `name:tag`); **without** it is a native `provider:model` string (`anthropic:claude-sonnet-4-6`). |
 | `--base-url` | — | OpenAI-compatible endpoint for a local/hosted model |
 | `--max-cycles` | `4` | refine cycles before the run stops |
 | `--stop-on-accept` | off | stop at the first accepted artifact (omit to keep improving / supersede) |
-| `--per-class` | `300` | FE: rows per class to subsample |
-| `--reserved-fraction` | `0.5` | FE: held-out share scored by the verifier |
 
 `--model`/`--base-url` (+ image/memory/runtime provisioning defaults) **are** the sandbox
 configuration. Task definitions are durable — a created task survives a daemon restart.
 
 ### Multi-input / request-file tasks (e.g. `fe-kaggle`)
 
-Some task types take more than one input or per-verifier knobs that aren't plain flags. Provide a full
-`TaskRequest` as JSON via `--request-file` (it supersedes the request-shaping flags; only
-`--data`/`--test-data`/`--goal` still apply), and ingest each input separately:
+Some task types take per-role input files or per-verifier knobs that aren't plain flags. **You
+prepare the data outside Verity** (ADR 0005 / #74): split it into per-role bundles — the control
+plane routes opaque, role-keyed blobs and interprets none of them. Provide a full `TaskRequest` via
+`--request-file` (it supersedes the request-shaping flags; only `--file`/`--goal` still apply),
+ingest each role file, and route it with `--file ROLE:NAME=HANDLE`:
 
 ```bash
-verity ingest train.csv                          # -> {handle-A}
-verity ingest test.csv                           # -> {handle-B}   (fe-kaggle: the real test set)
-verity create --request-file task.json --data {handle-A} --test-data {handle-B}   # -> {task_id}
+verity ingest agent/train.csv                    # -> {h1}
+verity ingest verifier/holdout_labels.csv        # -> {h2}  (the answer key — verifier role only)
+# ...ingest every agent/* and verifier/* file...
+verity create --request-file task.json \
+  --file agent:train.csv={h1} --file verifier:holdout_labels.csv={h2} ...   # -> {task_id}
 ```
 
-`fe-kaggle` (the real-leaderboard gate) needs exactly this: its `task.json` carries
-`verifier.knobs.competition` (the slug), and the daemon must have `KAGGLE_USERNAME`/`KAGGLE_KEY` in its
-env (setup.md → *Kaggle creds*). Read its live contract with `verity catalog --type fe-kaggle`.
+`fe-kaggle` (the real-leaderboard gate) needs exactly this: prepare the bundles with
+`tools/prepare_fe_data.py` (or let `feature-engineering-test/run.sh` do it), and its `task.json`
+carries `verifier.knobs.competition` (the slug); the daemon must have `KAGGLE_USERNAME`/`KAGGLE_KEY`
+in its env (setup.md → *Kaggle creds*). Read its live contract with `verity catalog --type fe-kaggle`.
 
 ## `run` — start a run (async) → a `run_id`
 

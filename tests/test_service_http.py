@@ -18,15 +18,16 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 
 import httpx
+from tools.harness.dataset import stratified_split, subsample
 
-from tests._fe_offline import FeWorkers, offline_catalog
-from verity.composition.dataset import stratified_split, subsample
+from tests._fe_offline import FeWorkers, offline_catalog, role_files_from_raw
 from verity.composition.task_request import DataRequest, PolicyRequest, TaskRequest
 from verity.provisioning import FakeBackend
 from verity.service.control_service import ControlService
 from verity.service.http import build_app
 
 _RAW = b"id,a,class\n0,0,X\n1,2,X\n2,4,X\n3,6,Y\n4,8,Y\n5,10,Y\n"
+_REAL_TEST = b"id\n100\n101\n102\n103\n"
 
 
 def _reserved() -> dict[str, str]:
@@ -36,11 +37,15 @@ def _reserved() -> dict[str, str]:
     ).reserved_labels
 
 
+def _role_files() -> dict[str, dict[str, bytes]]:
+    return role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
+
+
 def _fe_request_body() -> dict:
     return TaskRequest(
         type_name="fe-kaggle", goal="improve balanced accuracy",
         policy=PolicyRequest(stop_on_accept=True),
-        data=DataRequest(per_class=100, reserved_fraction=0.5),
+        data=DataRequest(),
     ).to_dict()
 
 
@@ -48,8 +53,12 @@ def _build(tmp_path):
     exchange_in, exchange_out = tmp_path / "in", tmp_path / "out"
     exchange_in.mkdir()
     exchange_out.mkdir()
-    (exchange_in / "train.csv").write_bytes(_RAW)
-    (exchange_in / "test.csv").write_bytes(b"id\n100\n101\n102\n103\n")
+    # The user's pre-prepared role bundles, laid out under the exchange (subdir per role).
+    for role, named in _role_files().items():
+        for name, blob in named.items():
+            path = exchange_in / role / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
     service = ControlService(
         backend=FakeBackend(script=FeWorkers(steps=[("submit", ("ds",), b"good", ["feat0"])],
                                              by_marker={b"good": _reserved()})),
@@ -57,6 +66,17 @@ def _build(tmp_path):
     )
     app = build_app(service, exchange_in=exchange_in, exchange_out=exchange_out)
     return app, exchange_out, service
+
+
+async def _ingest_role_files(client) -> dict[str, dict[str, str]]:
+    """Ingest each prepared role file from the exchange → a {role: {name: handle}} map."""
+    files: dict[str, dict[str, str]] = {}
+    for role, named in _role_files().items():
+        files[role] = {}
+        for name in named:
+            resp = await client.post("/objects", json={"name": f"{role}/{name}"})
+            files[role][name] = resp.json()["handle"]
+    return files
 
 
 async def _poll_terminal(client: httpx.AsyncClient, run_id: str) -> str:
@@ -77,15 +97,12 @@ def test_http_full_flow_in_process(tmp_path) -> None:
             cat = (await client.get("/catalog")).json()
             assert {t["type_name"] for t in cat["task_types"]} == {"fe-kaggle", "code"}
 
-            # ingest (train + the real test) -> create -> run
-            handle = (await client.post("/objects", json={"name": "train.csv"})).json()["handle"]
-            test_handle = (
-                await client.post("/objects", json={"name": "test.csv"})
-            ).json()["handle"]
+            # ingest the user's role-keyed files -> create -> run
+            files = await _ingest_role_files(client)
             task_id = (
                 await client.post(
                     "/tasks",
-                    json={"request": _fe_request_body(), "data": handle, "test_data": test_handle},
+                    json={"request": _fe_request_body(), "files": files},
                 )
             ).json()["task_id"]
             run_id = (await client.post(f"/tasks/{task_id}/runs", json={})).json()["run_id"]

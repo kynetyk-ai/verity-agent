@@ -7,14 +7,17 @@ slug, the gate timeouts) in a :class:`VerifierSetup`; this builder turns them in
 :class:`SdkVerifier`. Keeping it here is what lets the control-plane image drop ``--extra kaggle``
 and every gate module — a new verifier ships its own image + this kind of builder, no CP rebuild.
 
-**Setup contract** (mirrors `composition.fe_kaggle`'s in-process construction, now over the wire):
+**Setup contract** (ADR 0005: the verifier role's *files*, routed by filename, plus knobs):
 
-* ``objects`` — the four CSV blobs the gates run on:
-  ``agent_train`` / ``reserved_test`` (the cheap local-proxy split) and
-  ``full_train`` / ``real_test`` (the hard Kaggle run).
-* ``params`` — ``reserved_labels`` (the held answer key, never exposed), ``competition`` (the slug),
-  and the gate knobs (``timeout_s``, ``wait_deadline_s``, ``poll_interval_s``,
-  ``score_poll_interval_s``, ``submit_message``, optional ``daily_submission_limit``).
+* ``objects`` — the verifier role's pre-prepared CSV blobs, keyed by filename:
+  ``train.csv`` (the agent's training set — the cheap proxy re-runs the script on it) /
+  ``holdout.csv`` (the reserved features) / ``holdout_labels.csv`` (the answer key — present here,
+  never in the agent role) / ``full_train.csv`` + ``test.csv`` (the hard Kaggle run). This builder
+  maps those filenames onto the gate inputs and parses the answer key — the domain knowledge that
+  lives verifier-side, not in the control plane.
+* ``params`` — ``competition`` (the slug) and the gate knobs (``timeout_s``, ``wait_deadline_s``,
+  ``poll_interval_s``, ``score_poll_interval_s``, ``submit_message``, optional
+  ``daily_submission_limit``).
 
 The verifier's *own* code-runner provisioning (image / memory / staging) and the Kaggle creds come
 from the verifier service's environment — its deployment concern, not the control plane's. Set
@@ -37,7 +40,12 @@ log = get_logger("verity.verifier.fe_kaggle_service")
 FE_KAGGLE_CONFIG = "fe-kaggle"
 
 _DEFAULT_CODE_IMAGE = "python:3.12-slim"
-_DEFAULT_CODE_MEMORY = "512m"
+# The submitted FE script pip-installs a real ML stack (pandas/numpy/scipy/sklearn/xgboost) into a
+# RAM-backed exec tmpfs, then trains on the data. The runner's bare 64m tmpfs / 512m memory cannot
+# fit that — pip dies with "[Errno 28] No space left on device". Size for a normal ML dep set; each
+# overridable from the verifier service's env (VERITY_CODE_MEMORY / VERITY_CODE_TMPFS).
+_DEFAULT_CODE_MEMORY = "4g"
+_DEFAULT_CODE_TMPFS = "2g"
 
 
 def _require_object(objects: Mapping[str, bytes], key: str) -> bytes:
@@ -60,6 +68,7 @@ def build_fe_kaggle_verifier_from_setup(setup: VerifierSetup) -> VerifierPort:
     # module imports cleanly without them so the entrypoint test stays light.
     from verity.domains.feature_engineering_kaggle import (
         build_feature_engineering_kaggle_verifier,
+        parse_label_csv,
     )
     from verity.provisioning.docker import DockerBackend
     from verity.verifier import BackendCodeRunner, FakeKaggleScorer, RealKaggleScorer
@@ -72,6 +81,7 @@ def build_fe_kaggle_verifier_from_setup(setup: VerifierSetup) -> VerifierPort:
         backend=DockerBackend(),  # staging_root from VERITY_WORKER_STAGING (sibling-mount path)
         image=os.environ.get("VERITY_CODE_IMAGE", _DEFAULT_CODE_IMAGE),
         memory=os.environ.get("VERITY_CODE_MEMORY", _DEFAULT_CODE_MEMORY),
+        tmpfs_size=os.environ.get("VERITY_CODE_TMPFS", _DEFAULT_CODE_TMPFS),
         config=FE_KAGGLE_CONFIG,
     )
 
@@ -92,11 +102,11 @@ def build_fe_kaggle_verifier_from_setup(setup: VerifierSetup) -> VerifierPort:
     return build_feature_engineering_kaggle_verifier(
         runner,
         scorer=scorer,
-        agent_train_csv=_require_object(objects, "agent_train"),
-        reserved_test_csv=_require_object(objects, "reserved_test"),
-        reserved_labels=dict(_require_param(params, "reserved_labels")),
-        full_train_csv=_require_object(objects, "full_train"),
-        real_test_csv=_require_object(objects, "real_test"),
+        agent_train_csv=_require_object(objects, "train.csv"),
+        reserved_test_csv=_require_object(objects, "holdout.csv"),
+        reserved_labels=parse_label_csv(_require_object(objects, "holdout_labels.csv")),
+        full_train_csv=_require_object(objects, "full_train.csv"),
+        real_test_csv=_require_object(objects, "test.csv"),
         timeout_s=float(params.get("timeout_s", 900.0)),
         wait_deadline_s=float(params.get("wait_deadline_s", 86_400.0)),
         poll_interval_s=float(params.get("poll_interval_s", 60.0)),

@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._fe_offline import FeWorkers, offline_catalog, preds_csv
-from verity.composition.dataset import stratified_split, subsample
+from tools.harness.dataset import stratified_split, subsample
+
+from tests._fe_offline import FeWorkers, offline_catalog, preds_csv, role_files_from_raw
 from verity.composition.task_request import DataRequest, PolicyRequest, TaskRequest
 from verity.contracts.jobqueue import JobStatus
 from verity.domains.feature_engineering import ENTRYPOINT, SUBMISSION
@@ -44,7 +45,13 @@ def _fe_request() -> TaskRequest:
     return TaskRequest(
         type_name="fe-kaggle", goal="improve balanced accuracy",
         policy=PolicyRequest(max_cycles=1, stop_on_accept=True),
-        data=DataRequest(per_class=_PER_CLASS, reserved_fraction=_RESERVED_FRACTION),
+        data=DataRequest(),
+    )
+
+
+def _fe_files() -> dict[str, dict[str, bytes]]:
+    return role_files_from_raw(
+        _RAW, _REAL_TEST, per_class=_PER_CLASS, reserved_fraction=_RESERVED_FRACTION
     )
 
 
@@ -67,9 +74,10 @@ def test_neither_exchange_nor_store_reaches_a_worker(tmp_path) -> None:
     service = ControlService(backend=backend, root=store_root, catalog=offline_catalog())
 
     # The exchange flow: read the ingested file's bytes (as the daemon's ingest route does), then
-    # create the task from a declarative request — its data lands in the task's own on-disk store.
-    data = dataset.read_bytes()
-    task_id = service.create_task(_fe_request(), data=data, test_data=_REAL_TEST)
+    # create the task from a declarative request with the user's pre-prepared, role-keyed files —
+    # they land in the task's own on-disk store.
+    assert dataset.read_bytes() == _RAW
+    task_id = service.create_task(_fe_request(), files=_fe_files())
     run_id = asyncio.run(service.run(task_id))
 
     # The loop genuinely ran on the persistent store: an accepted Submission landed.

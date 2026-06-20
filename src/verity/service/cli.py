@@ -42,23 +42,24 @@ def _build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--type", help="describe just this task type")
 
     ing = sub.add_parser("ingest", help="ingest a file from the exchange; returns a data handle")
-    ing.add_argument("file", help="filename under the exchange's in/ directory")
+    ing.add_argument("file", help="path under the exchange's in/ directory (subdirs allowed)")
 
     create = sub.add_parser("create", help="create a task instance from a declarative request")
-    create.add_argument("--type", help="task type (fe/code/fe-kaggle); or from --request-file")
+    create.add_argument("--type", help="task type (code/fe-kaggle); or from --request-file")
     create.add_argument("--goal", default="", help="the run goal")
-    create.add_argument("--data", help="a data handle from `verity ingest` (the primary input)")
-    create.add_argument("--test-data", help="a second data handle (fe-kaggle: the real test set)")
+    create.add_argument(
+        "--file", action="append", default=[], metavar="ROLE:NAME=HANDLE", dest="files",
+        help="route a pre-prepared input file (from `verity ingest`) to a worker role, e.g. "
+             "`--file agent:train.csv=<handle>`; repeatable. Data prep is done by you (ADR 0005)."
+    )
     create.add_argument(
         "--request-file", help="path to a full TaskRequest JSON (e.g. a task package's task.json); "
-        "supersedes the request-shaping flags below (only --data/--test-data/--goal still apply)"
+        "supersedes the request-shaping flags below (only --file/--goal still apply)"
     )
     create.add_argument("--model", help="provider:model string (e.g. anthropic:claude-sonnet-4-6)")
     create.add_argument("--base-url", help="OpenAI-compatible endpoint for a local/hosted model")
     create.add_argument("--max-cycles", type=int, default=4)
     create.add_argument("--stop-on-accept", action="store_true")
-    create.add_argument("--per-class", type=int, default=300, help="FE: rows/class to subsample")
-    create.add_argument("--reserved-fraction", type=float, default=0.5, help="FE: held-out share")
 
     run = sub.add_parser("run", help="start a run (background); returns a run id")
     run.add_argument("task_id")
@@ -89,8 +90,20 @@ def _task_request(args: argparse.Namespace) -> TaskRequest:
         goal=args.goal,
         sandbox=SandboxRequest(model=args.model, base_url=args.base_url),
         policy=PolicyRequest(max_cycles=args.max_cycles, stop_on_accept=args.stop_on_accept),
-        data=DataRequest(per_class=args.per_class, reserved_fraction=args.reserved_fraction),
+        data=DataRequest(),
     )
+
+
+def _parse_file_args(entries: list[str]) -> dict[str, dict[str, str]]:
+    """Parse repeated ``--file ROLE:NAME=HANDLE`` into ``{role: {name: handle}}`` (ADR 0005)."""
+    files: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        role_name, sep, handle = entry.partition("=")
+        role, role_sep, name = role_name.partition(":")
+        if not (sep and role_sep and role and name and handle):
+            raise SystemExit(f"verity create: --file must be ROLE:NAME=HANDLE, got {entry!r}")
+        files.setdefault(role, {})[name] = handle
+    return files
 
 
 async def _dispatch(client: Any, args: argparse.Namespace) -> Any:
@@ -102,7 +115,7 @@ async def _dispatch(client: Any, args: argparse.Namespace) -> Any:
         return await client.ingest(args.file)
     if args.command == "create":
         return await client.create_task(
-            _task_request(args).to_dict(), data=args.data, test_data=args.test_data
+            _task_request(args).to_dict(), files=_parse_file_args(args.files)
         )
     if args.command == "run":
         return await client.run(args.task_id, goal=args.goal)
