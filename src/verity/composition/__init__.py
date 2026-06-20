@@ -26,6 +26,7 @@ from verity.composition.code import (
 )
 from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.fe import ProvisioningConfig, provisioning_config_from
+from verity.composition.loader import TASK_TYPES_GROUP, load_task_plugins
 from verity.composition.task_request import (
     DataRequest,
     PolicyRequest,
@@ -48,6 +49,8 @@ __all__ = [
     "Describer",
     "UnknownTaskType",
     "default_catalog",
+    "load_task_plugins",
+    "TASK_TYPES_GROUP",
     "TaskRequest",
     "SandboxRequest",
     "VerifierRequest",

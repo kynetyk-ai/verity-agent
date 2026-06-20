@@ -66,8 +66,9 @@ uses is the one you pass to `verity create`** (`--model` / `--base-url`).
 
 ## Moving data in and out
 
-- **In:** copy your file into `<VERITY_EXCHANGE_HOST>/in/`, then `verity ingest <filename>` → a content
-  handle you pass to `verity create --data <handle>`.
+- **In:** copy your (already-prepared) input files into `<VERITY_EXCHANGE_HOST>/in/` — subdirs allowed
+  for role bundles — then `verity ingest <path>` → a content handle you route with
+  `verity create --file ROLE:NAME=<handle>` (data prep is yours, ADR 0005; the CP routes opaque blobs).
 - **Out:** `verity export <run_id>` writes the run's durable artifacts (e.g. the accepted submission's
   code + each feature) to `<VERITY_EXCHANGE_HOST>/out/<run_id>/`.
 

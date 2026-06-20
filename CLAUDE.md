@@ -35,9 +35,9 @@ Three cooperating services (spec §3.3–§3.6):
 - **Sandbox** — the agent runtime + workspace where the loop runs and tools execute; ephemeral
   (regenerated each cycle); proposes but never writes; writes objects to the **outbox** for harvest.
 - **Verifier** — advisory; hosts the gate plugins; takes a shaped proposal + a declared store-slice
-  (+ object attachments) and returns a verdict; never writes. *(Per the spec, a separate service; in
-  the current deployment it runs **in-process** in the control plane and ships in its image — **Phase 9
-  / #73** extracts it to a sibling container.)*
+  (+ object attachments) and returns a verdict; never writes. *(Per the spec, a separate service; since
+  **Phase 9.1 / #73** it runs as a **sibling container** — its own image carries the gates + the
+  `kaggle` extra, launched on demand and reached over the wire; the CP image carries no gate code.)*
 
 The loop is **read → propose → gate → commit**. Load-bearing rules: **no implicit accept** (a type
 with no declared gate cannot be committed), the proposer is never its own gate, status is richer than
@@ -116,17 +116,18 @@ scoring, and the standalone verifier exercised by `tests/test_feature_engineerin
 emergent from verifier gate composition × `--stop-on-accept` × object-provisioning mode (README + the
 `verity-run-task` skill).
 
-**Phase 9 — the dumb control plane (next priority)** (epic #27): the service split left domain code
-**compiled into the control-plane image** and run **in the CP process**, so adding a verifier or a task
-type forces a **CP rebuild** — at odds with the founding concept (§3.3–§3.6) that the CP *dumbly*
-provisions containers and makes mechanical context updates. The *kernel* is already generic (an AST
-guard proves `verity.control_plane` imports no domain); Phase 9 makes the *image/process* match.
-Two filed issues + the enabler: **#73** extricate the verifier into **sibling containers** (wire the
-already-built `RemoteVerifier`/`Dockerfile.verifier` seam; drop `--extra kaggle` + gate code from the CP
-image); **#74** remove **task-specific data-prep** from the CP (today `build_fe_kaggle_task` splits the
-dataset in-process — the CP should only route files: "agent gets X, verifier gets Y"); and the
-**plugin loader** (ADR 0004 (i)) so types are discovered, not compiled in. Litmus test: a new verifier
-or task type ships a container + a catalog entry, **no CP rebuild**.
+**Phase 9 — the dumb control plane (complete)** (epic #27): the founding concept (§3.3–§3.6) that the
+CP *dumbly* provisions containers and makes mechanical context updates is now true of the *image and
+process*, not just the kernel. **#73 / 9.1** extracted the **verifier into a sibling container** (its
+own image carries the gates + `kaggle`; the CP image dropped `--extra kaggle` + gate code), reached
+over the wire via the `RemoteVerifier` seam. **#74 / 9.2** removed **task-specific data-prep** from the
+CP ([ADR 0005](docs/adr/0005-data-prep-out-of-the-control-plane.md)): the user prepares per-role inputs
+outside Verity and the CP routes opaque **role → {filename: blob}** maps (the split + answer-key
+derivation moved to `tools/`), so the answer-key isolation invariant holds **by construction at the prep
+boundary**. **9.3** built the **plugin loader** ([ADR 0006](docs/adr/0006-plugin-loader-entry-point-types.md)):
+task **and** verifier types are **discovered** from the `verity.task_types` / `verity.verifier_types`
+entry-point groups at boot (built-ins dogfooded through the same loader), not compiled in. Litmus test —
+now met: a new verifier or task type ships **a container + an installed entry point, no CP rebuild**.
 
 **Remaining / open tracks:** hosted-model live validation; the multi-tenancy engine (real queue +
 tenant isolation, issue #3); a `K8sBackend`; and three research-driven docs/feature tracks — making the

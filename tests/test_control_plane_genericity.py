@@ -51,6 +51,29 @@ def test_control_plane_imports_no_domain() -> None:
     assert not leaks, f"the control plane must stay task-agnostic; it imports: {leaks}"
 
 
+def _module_imports(module: object) -> set[str]:
+    """The top-level imports of a single module file (AST, like `_imported_modules` per-file)."""
+    tree = ast.parse(pathlib.Path(module.__file__).read_text(encoding="utf-8"))  # type: ignore[arg-type]
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            found.add(node.module)
+    return found
+
+
+def test_plugin_loaders_import_no_domain() -> None:
+    """ADR 0006: the loaders stay generic — a domain enters only through a discovered plugin's own
+    package (lazily, on `ep.load()`), never through the loader modules themselves."""
+    import verity.composition.loader as task_loader
+    import verity.verifier.registry as verifier_loader
+
+    for module in (task_loader, verifier_loader):
+        leaks = sorted(m for m in _module_imports(module) if m.startswith("verity.domains"))
+        assert not leaks, f"{module.__name__} must import no domain; it imports: {leaks}"
+
+
 def test_cp_image_imports_no_fe_gates_or_kaggle() -> None:
     """§9.1 litmus: importing the daemon's whole composition surface must NOT pull in the FE gate
     module or the third-party ``kaggle`` lib — those live in the verifier image now, so a new

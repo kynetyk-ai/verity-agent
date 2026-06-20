@@ -16,18 +16,17 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from verity.composition.code import CODE_TASK_ID, build_code_task, describe_code_task
 from verity.composition.description import TaskTypeDescription
-from verity.composition.fe_kaggle import (
-    FE_KAGGLE_TASK_ID,
-    build_fe_kaggle_task,
-    describe_fe_kaggle_task,
-)
 from verity.composition.task_request import TaskRequest
 from verity.control_plane.api import ControlPlane
 from verity.provisioning.backend import WorkerBackend
 
 __all__ = ["CatalogBuilder", "Describer", "TaskCatalog", "UnknownTaskType", "default_catalog"]
+
+# The built-in task types the core ``verity`` dist advertises as ``verity.task_types`` entry points
+# (see pyproject.toml). Literals here, so this module imports no domain at load time — the builders
+# are pulled lazily, only when the loader resolves their entry points (ADR 0006).
+_BUILTIN_TASK_TYPES = ("code", "fe-kaggle")
 
 #: A catalog builder: applies a task to a generic control plane and returns its in-CP task id.
 CatalogBuilder = Callable[..., Awaitable[str]]
@@ -53,6 +52,27 @@ class TaskCatalog:
         self._builders[type_name] = builder
         if describe is not None:
             self._describers[type_name] = describe
+
+    def merge(
+        self, other: TaskCatalog, *, on_collision: str = "skip", source: str = ""
+    ) -> list[str]:
+        """Fold ``other``'s registrations into self; returns the names actually added.
+
+        ``on_collision="skip"`` keeps self's existing entry (the **incumbent wins**) and skips the
+        incoming one; ``"error"`` raises. The plugin loader uses this to merge discovered builders
+        into the catalog without reaching into private state.
+        """
+        added: list[str] = []
+        for name in other.types():
+            if self.has(name):
+                if on_collision == "skip":
+                    continue
+                raise ValueError(f"task type {name!r} from {source!r} collides with an existing")
+            self._builders[name] = other._builders[name]
+            if name in other._describers:
+                self._describers[name] = other._describers[name]
+            added.append(name)
+        return added
 
     def types(self) -> list[str]:
         """The registered task-type names (what ``verity catalog`` renders)."""
@@ -93,8 +113,23 @@ class TaskCatalog:
 
 
 def default_catalog() -> TaskCatalog:
-    """The built-in catalog: the FE-Kaggle and trivial-`code` task types installed in the image."""
-    catalog = TaskCatalog()
-    catalog.register(FE_KAGGLE_TASK_ID, build_fe_kaggle_task, describe=describe_fe_kaggle_task)
-    catalog.register(CODE_TASK_ID, build_code_task, describe=describe_code_task)
+    """The catalog the daemon serves: every task type discovered from the ``verity.task_types``
+    entry-point group (ADR 0004 (i) / 0006), including the built-in ``code`` + ``fe-kaggle`` types,
+    which the core distribution advertises and which load first. A broken third-party plugin is
+    logged and skipped; the daemon still boots.
+
+    Discovery reads *installed* dist metadata (not live ``pyproject.toml``), so the built-ins must
+    be present. If they are missing the install lacks its entry-point metadata — we fail **loudly**
+    (run ``uv sync`` to regenerate it) rather than silently serve an empty catalog.
+    """
+    from verity.composition.loader import load_task_plugins  # local: keeps this module domain-free
+
+    catalog = load_task_plugins(TaskCatalog())
+    missing = sorted(set(_BUILTIN_TASK_TYPES) - set(catalog.types()))
+    if missing:
+        raise RuntimeError(
+            f"built-in task types {missing} were not discovered from the 'verity.task_types' "
+            "entry-point group — the install is missing its entry-point metadata; run `uv sync` "
+            "(or reinstall) to regenerate it"
+        )
     return catalog

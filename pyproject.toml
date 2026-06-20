@@ -15,6 +15,20 @@ dependencies = [
 verity = "verity.service.cli:main"
 verity-reaper = "verity.provisioning.reaper:main"
 
+# Plugin loaders (ROADMAP 9.3, ADR 0004 (i) / 0006): task & verifier types are DISCOVERED from these
+# entry-point groups at boot, not compiled into a hardcoded registry — a new type is added by
+# installing a package that advertises an entry point, with no control-plane rebuild. Each entry
+# point resolves to a `register(registry)` callable. The built-ins are dogfooded here (they flow
+# through the same loader); the core `verity` distribution's entries load first so they keep priority.
+# NOTE: entry points come from INSTALLED dist metadata — run `uv sync` after editing these.
+[project.entry-points."verity.task_types"]
+fe-kaggle = "verity.composition.fe_kaggle:register"
+code = "verity.composition.code:register"
+
+[project.entry-points."verity.verifier_types"]
+fake = "verity.domains.fake:register_verifier"
+fe-kaggle = "verity.verifier.fe_kaggle_service:register_verifier"
+
 [project.optional-dependencies]
 sandbox = [
     "deepagents>=0.6.8,<0.7",

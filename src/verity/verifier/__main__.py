@@ -20,24 +20,12 @@ imports without the ``service`` extra (the entrypoint test needs no socket and n
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
 
-from verity.contracts.ports import VerifierPort, VerifierSetup
-from verity.domains.fake import build_fake_verifier
 from verity.logging import configure_logging, get_logger
 from verity.transport.server import VerifierServer
-from verity.verifier.fe_kaggle_service import build_fe_kaggle_verifier_from_setup
+from verity.verifier.registry import VerifierRegistry, load_verifier_plugins
 
 log = get_logger("verity.verifier.service")
-
-# Dataless verifiers: ready as soon as the service starts (no per-task setup payload).
-_IMPL_BUILDERS: dict[str, Callable[[], VerifierPort]] = {
-    "fake": build_fake_verifier,
-}
-# Data-bearing verifiers: built server-side from the control-plane's per-task VerifierSetup (§9.1).
-_SETUP_BUILDERS: dict[str, Callable[[VerifierSetup], VerifierPort]] = {
-    "fe-kaggle": build_fe_kaggle_verifier_from_setup,
-}
 
 _DEFAULT_HOST = "0.0.0.0"  # noqa: S104 — a containerized service binds all interfaces by design
 _DEFAULT_PORT = 8001
@@ -46,17 +34,23 @@ _DEFAULT_PORT = 8001
 def build_server_from_env() -> VerifierServer:
     """Build the :class:`VerifierServer` named by ``VERITY_VERIFIER`` (default ``fake``).
 
-    A fixed-impl server for a dataless verifier, or a builder-backed server for a data-bearing one
-    (which receives its data via the ``setup`` handshake). ``VerifierServer`` imports no ``service``
-    extra, so this stays callable in the lightweight entrypoint test.
+    The available verifiers are **discovered** from the ``verity.verifier_types`` entry-point group
+    (ADR 0006) — the built-in ``fake`` (dataless impl) and ``fe-kaggle`` (data-bearing setup) are
+    dogfooded as entry points alongside any third-party verifier, so a new verifier ships its image
+    + an entry point with no edit to this module. A fixed-impl server for a dataless verifier, or a
+    builder-backed server for a data-bearing one (which receives its data via the ``setup``
+    handshake). Neither this nor the registry imports the ``service`` extra, so the lightweight
+    entrypoint test stays callable.
     """
+    registry = load_verifier_plugins(VerifierRegistry())
     name = os.environ.get("VERITY_VERIFIER", "fake")
-    if name in _IMPL_BUILDERS:
-        return VerifierServer(_IMPL_BUILDERS[name]())
-    if name in _SETUP_BUILDERS:
-        return VerifierServer(builder=_SETUP_BUILDERS[name])
-    known = ", ".join(sorted({*_IMPL_BUILDERS, *_SETUP_BUILDERS}))
-    raise SystemExit(f"unknown VERITY_VERIFIER={name!r}; known: {known}")
+    impl = registry.impl(name)
+    if impl is not None:
+        return VerifierServer(impl())
+    setup_builder = registry.setup(name)
+    if setup_builder is not None:
+        return VerifierServer(builder=setup_builder)
+    raise SystemExit(f"unknown VERITY_VERIFIER={name!r}; known: {', '.join(registry.names())}")
 
 
 def main() -> None:

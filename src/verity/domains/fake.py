@@ -19,6 +19,7 @@ pipeline itself lives in :func:`build_fake_verifier` (the opaque verifier packag
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from verity.contracts import JSONValue, VerifierRequest
 from verity.control_plane.commit import ShapeError, ShapeValidator
@@ -32,6 +33,9 @@ from verity.control_plane.registries import (
 from verity.control_plane.store import Artifact
 from verity.verifier import CheckOutcome, GateStep, SdkVerifier, deterministic_check
 
+if TYPE_CHECKING:
+    from verity.verifier.registry import VerifierRegistry
+
 __all__ = [
     "SOURCE",
     "NOTE",
@@ -40,8 +44,11 @@ __all__ = [
     "FakeDomain",
     "build_fake_domain",
     "build_fake_verifier",
+    "register_verifier",
     "declared_objects",
 ]
+
+FAKE_VERIFIER_NAME = "fake"
 
 SOURCE = "Source"
 NOTE = "Note"
@@ -97,6 +104,11 @@ def build_fake_verifier() -> SdkVerifier:
             )
         },
     )
+
+
+def register_verifier(registry: VerifierRegistry) -> None:
+    """Register the dataless ``fake`` verifier (a ``verity.verifier_types`` entry point)."""
+    registry.register_impl(FAKE_VERIFIER_NAME, build_fake_verifier)
 
 
 def _validate_shape(artifact: Artifact) -> ShapeError | None:

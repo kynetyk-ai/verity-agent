@@ -126,10 +126,11 @@ durable provenance store so a task builder can seed its **root inputs** (e.g. a 
 setup; the loop's own mutations still go only through the commit path. `register_sandbox`/
 `register_verifier` add a task's providers under the keys its `TaskConfig` names (`sandbox_key` /
 `verifier_key`). A task is *applied to* a generic control plane through these, never compiled into the
-**kernel** (`verity.control_plane` imports no domain — an AST guard enforces it). Caveat to the current
-deployment: the domain/verifier code and the per-task builder still ship in the control-plane **image**
-and the verifier runs **in-process**; extracting them so the image carries no domain code (verifier →
-sibling container, data-prep out of the CP) is **Phase 9** (#73 / #74).
+**kernel** (`verity.control_plane` imports no domain — an AST guard enforces it). Since **Phase 9** the
+*image* matches the kernel: the **verifier runs as a sibling container** (9.1), **data prep is
+user-side** (9.2, the CP routes opaque role-keyed blobs — ADR 0005), and task & verifier types are
+**discovered via entry-point plugins** (9.3, ADR 0006), so a new type ships a container + an installed
+entry point with **no control-plane rebuild**.
 
 ### `OrchestrationPolicy`
 
@@ -817,6 +818,32 @@ default), `run.sh` (which runs the prep + role routing for you), and the full se
 accepting the competition rules) — lives in
 [`feature-engineering-test/`](../feature-engineering-test/PROTOCOL.md). Read the live contract with
 `verity catalog --type fe-kaggle`.
+
+#### Adding a task or verifier type (a plugin) — no control-plane rebuild (Phase 9.3, ADR 0006)
+
+Task and verifier types are **discovered** from Python entry-point groups at boot, not compiled in, so
+a new type ships **a container + an installed package that advertises an entry point — with no
+control-plane rebuild**. Two groups: `verity.task_types` (read by the CP daemon) and
+`verity.verifier_types` (read by the verifier image). Each entry point resolves to a
+`register(registry)` callable (the same shape as `TaskCatalog.register`):
+
+```python
+# my_pkg/verity_plugin.py
+def register(catalog):
+    catalog.register("my-task", build_my_task, describe=describe_my_task)
+```
+
+```toml
+# the plugin package's own pyproject.toml
+[project.entry-points."verity.task_types"]
+my-task = "my_pkg.verity_plugin:register"
+```
+
+Install the package into the daemon image (or alongside it) and `verity catalog` lists `my-task` — no
+`verity` source edit. The built-ins (`code`, `fe-kaggle`; `fake`, `fe-kaggle` verifiers) are themselves
+declared this way and load **first**, so they keep priority under the **incumbent-wins** collision
+policy; a broken plugin is logged and skipped (the daemon still boots). **Note:** entry points come
+from *installed* dist metadata — run `uv sync` (or reinstall) after declaring them.
 
 ### D. External HTTP/REST — the network control API (Phase 8.4, ADR 0004 (e))
 

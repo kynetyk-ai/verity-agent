@@ -23,6 +23,7 @@ import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.fe import ProvisioningConfig, provisioning_config_from
@@ -46,6 +47,9 @@ from verity.provisioning.backend import Labels, WorkerBackend, WorkerSpec
 from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
 
+if TYPE_CHECKING:
+    from verity.composition.catalog import TaskCatalog
+
 __all__ = [
     "FE_KAGGLE_TASK_ID",
     "FE_KAGGLE_GOAL",
@@ -54,6 +58,7 @@ __all__ = [
     "configure_fe_kaggle_task",
     "build_fe_kaggle_task",
     "describe_fe_kaggle_task",
+    "register",
 ]
 
 FE_KAGGLE_TASK_ID = "fe-kaggle"
@@ -396,3 +401,8 @@ def describe_fe_kaggle_task() -> TaskTypeDescription:
         verifier_approach=_FE_KAGGLE_VERIFIER_APPROACH,
         sandbox_notes=_FE_KAGGLE_SANDBOX_NOTES,
     )
+
+
+def register(catalog: TaskCatalog) -> None:
+    """Register the built-in ``fe-kaggle`` task type (a ``verity.task_types`` entry point)."""
+    catalog.register(FE_KAGGLE_TASK_ID, build_fe_kaggle_task, describe=describe_fe_kaggle_task)

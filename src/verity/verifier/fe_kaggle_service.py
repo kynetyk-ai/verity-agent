@@ -29,10 +29,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from verity.contracts.ports import VerifierPort, VerifierSetup
 from verity.logging import get_logger
+
+if TYPE_CHECKING:
+    from verity.verifier.registry import VerifierRegistry
 
 log = get_logger("verity.verifier.fe_kaggle_service")
 
@@ -112,3 +115,8 @@ def build_fe_kaggle_verifier_from_setup(setup: VerifierSetup) -> VerifierPort:
         poll_interval_s=float(params.get("poll_interval_s", 60.0)),
         submit_message=str(params.get("submit_message", "verity fe-kaggle")),
     )
+
+
+def register_verifier(registry: VerifierRegistry) -> None:
+    """Register the ``fe-kaggle`` verifier (a ``verity.verifier_types`` entry point)."""
+    registry.register_setup(FE_KAGGLE_CONFIG, build_fe_kaggle_verifier_from_setup)
