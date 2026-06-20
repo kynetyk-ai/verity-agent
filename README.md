@@ -8,18 +8,23 @@ is *git + a type system + a verifier-aware lifecycle for agent artifacts.*
 The name carries the point: **verity** = truth, and *verify*. The system exists to answer one
 question — *can you trust, and audit, what the system believes?*
 
-> **Status: post-MVP; Phase 8 v1 complete.** Phases 0–5 are complete — the control plane, the opaque
-> verifier, the real Deep Agents sandbox, and the feature-engineering domain (spec §12) reached MVP with
-> the **twelve §13 acceptance criteria passing**, plus the Phase 5 reliability & observability hardening.
-> **Phase 6 (model breadth)** is code-complete and live-validated on a local open model (`good proposals
-> from cheap models` — the thesis; hosted-OpenAI live still pending a key). **Phase 7 (service split &
-> full containerization)** reached its done-line. **Phase 8 (the long-lived, configurable control-plane
-> service)** is **v1 complete**: one image serves a standing daemon over a local Unix socket **and** an
-> authenticated (bearer-token) network HTTP API, configured + run via the `verity` CLI with no image
-> rebuild and durable across restart. A **`fe-kaggle`** variant has been validated **live on the real
-> Kaggle leaderboard** (0.92253 with a local model). See [ROADMAP.md](ROADMAP.md) for the live plan and
-> *Run the feature-engineering demo* below. Stack: Python, managed with
-> [uv](https://docs.astral.sh/uv/) (see *Coding habits* in [CLAUDE.md](CLAUDE.md)).
+> **Status: post-MVP; Phase 9 complete (the dumb control plane).** Phases 0–5 are complete — the
+> control plane, the opaque verifier, the real Deep Agents sandbox, and the feature-engineering domain
+> (spec §12) reached MVP with the **twelve §13 acceptance criteria passing**, plus the Phase 5
+> reliability & observability hardening. **Phase 6 (model breadth)** is code-complete and live-validated
+> on both a local open model and hosted OpenAI (`good proposals from cheap models` — the thesis).
+> **Phase 7 (service split & full containerization)** reached its done-line. **Phase 8 (the long-lived,
+> configurable control-plane service)** is **v1 complete**: one image serves a standing daemon over a
+> local Unix socket **and** an authenticated (bearer-token) network HTTP API, configured + run via the
+> `verity` CLI with no image rebuild and durable across restart. **Phase 9 (the dumb control plane)** is
+> complete: the verifier runs as a **sibling container**, **data prep is user-side** (the CP routes
+> opaque role-keyed blobs — [ADR 0005](docs/adr/0005-data-prep-out-of-the-control-plane.md)), and task
+> & verifier types are **discovered via entry-point plugins**
+> ([ADR 0006](docs/adr/0006-plugin-loader-entry-point-types.md)) — so a new type ships a container + an
+> installed entry point with **no control-plane rebuild**. A **`fe-kaggle`** variant has been validated
+> **live on the real Kaggle leaderboard** (best public score **0.93945**). See
+> [ROADMAP.md](ROADMAP.md) for the live plan and *Run the feature-engineering demo* below. Stack:
+> Python, managed with [uv](https://docs.astral.sh/uv/) (see *Coding habits* in [CLAUDE.md](CLAUDE.md)).
 
 ## The specification (self-contained)
 
@@ -132,9 +137,9 @@ you define tasks, ingest data, run, and pull results — all without rebuilding 
 ```
 just cp-serve                                   # build images + start the verity-cp daemon
 just cp catalog                                 # list task types and their published contracts
-cp <inputs> "$VERITY_EXCHANGE_HOST/in/"         # default host exchange: /tmp/verity-exchange
-just cp ingest train.csv                        # -> a data handle (ingest each input separately)
-just cp create --request-file task.json --data <handle> …   # define a task (e.g. fe-kaggle, see #5) -> a task id
+cp -r <role-bundles> "$VERITY_EXCHANGE_HOST/in/"  # prep is yours (ADR 0005); e.g. agent/ + verifier/
+just cp ingest agent/train.csv                   # -> a data handle (ingest each role file separately)
+just cp create --request-file task.json --file agent:train.csv=<handle> …  # route role files -> a task id
 just cp run <task_id>                            # -> a run id (runs in the background)
 just cp results <run_id>                         # the RunReport + accepted-artifact ids
 just cp export  <run_id>                         # durable artifacts -> $VERITY_EXCHANGE_HOST/out/<run_id>/

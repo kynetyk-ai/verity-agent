@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.fe import ProvisioningConfig, provisioning_config_from
@@ -26,10 +26,14 @@ from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
 from verity.verifier import BackendCodeRunner, CodeRunner, FakeCodeRunner
 
+if TYPE_CHECKING:
+    from verity.composition.catalog import TaskCatalog
+
 __all__ = [
     "configure_code_task",
     "build_code_task",
     "describe_code_task",
+    "register",
     "CODE_TASK_ID",
     "CODE_GOAL",
 ]
@@ -128,3 +132,8 @@ def describe_code_task() -> TaskTypeDescription:
             "needs the container sandbox image."
         ),
     )
+
+
+def register(catalog: TaskCatalog) -> None:
+    """Register the built-in ``code`` task type (a ``verity.task_types`` entry point, ADR 0006)."""
+    catalog.register(CODE_TASK_ID, build_code_task, describe=describe_code_task)

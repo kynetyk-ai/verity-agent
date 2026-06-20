@@ -25,7 +25,7 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > exchange + store volumes provably off every worker. Remaining beyond v1 (deferred engine tracks):
 > hosted-model live validation, the multi-tenancy/concurrency engine (#58), crash recovery (#57), the
 > full #3 networked data plane, and a `K8sBackend`.
-> **Phase 9 🚧 is underway:** extract the last domain code out of the control-plane image so adding a
+> **Phase 9 ✅ (complete):** the last domain code is out of the control-plane image — adding a
 > verifier or task type needs **no CP rebuild**. **9.1 ✅** — the verifier runs as a **sibling
 > container** (its own image carries the gates + `kaggle`; the CP image drops `--extra kaggle`), built
 > per task from a `VerifierSetup` shipped over the wire and reached via a **minimal on-demand launch**
@@ -33,8 +33,11 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > ([ADR 0005](docs/adr/0005-data-prep-out-of-the-control-plane.md)): the user prepares per-role
 > inputs outside Verity and the CP routes opaque **role → {filename: blob}** maps (the split +
 > answer-key derivation moved to `tools/`; the CP holds no `target`/`id_column`/split), so the
-> answer-key isolation invariant now holds **by construction at the prep boundary**. Next: **9.3** the
-> plugin loader (discover task/verifier types, no compiled-in catalog). The **control-plane API
+> answer-key isolation invariant now holds **by construction at the prep boundary**. **9.3 ✅** — the
+> **plugin loader** ([ADR 0006](docs/adr/0006-plugin-loader-entry-point-types.md)): task **and**
+> verifier types are **discovered** from the `verity.task_types` / `verity.verifier_types` entry-point
+> groups at boot (built-ins dogfooded through the same loader, incumbent-wins, degrade-don't-crash), so
+> a new type ships **a container + an installed entry point, no CP rebuild**. The **control-plane API
 > reference** (with a worked FE example) is [`docs/api-surface.md`](docs/api-surface.md).
 
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
@@ -628,7 +631,7 @@ entrypoint + `infra/compose.fe.yml` were removed with the basic-`fe` task (#68);
   shared exchange volume — #3 proper); the **plugin loader** for runtime domain-code registration (now
   scheduled — Phase 9.3); and **auth/authz** on the external HTTP surface.
 
-### Phase 9 — The dumb control plane: domain code out of the CP image 🚧 *(in progress)*
+### Phase 9 — The dumb control plane: domain code out of the CP image ✅ *(complete)*
 
 The architectural debt the service split left standing: domain logic still **compiled into the
 control-plane image** and run **in the CP process**, so adding a verifier or a task type forces a
@@ -673,15 +676,26 @@ the genericity guard and the sandbox byte-provenance isolation invariant hold th
   `verity.composition.dataset` is gone. The example FE package ships the prep (`run.sh` runs it;
   `agent/` + `verifier/` role bundles). *(End-to-end `@kaggle @live` validation is the manual step;
   the offline suite + mypy + the import guards are green.)*
-- **9.3 Plugin loader — register task/verifier types without a rebuild ⬜** — the completing piece that
-  makes 9.1/9.2 fully real: the `catalog.py` entry-point plugin-loader seam (ADR 0004 (i), today
-  *placed but unbuilt*), so task and verifier builders are **discovered**, not compiled into the CP
-  image. Without it, even an extracted verifier/prep still needs the CP rebuilt to add the catalog
-  entry. Closes the "Further out — runtime registration of new domain code" item.
-- **Exit ⬜:** the control-plane image carries the kernel + provisioning + transport only — **zero**
-  domain / verifier / data-prep code — and a new verifier *or* task type is added by deploying a
-  container and registering a catalog entry, **with no control-plane rebuild**. Unblocks the clean
-  multi-tenancy engine (a tenant's task/verifier set becomes deploy-time config, not an image).
+- **9.3 Plugin loader — register task/verifier types without a rebuild ✅** — task **and** verifier
+  builders are now **discovered** from Python entry-point groups at boot, not compiled into a hardcoded
+  registry (ADR 0004 (i) seam, now built; settled by
+  [ADR 0006](docs/adr/0006-plugin-loader-entry-point-types.md)). Two groups: `verity.task_types`
+  (read by the CP daemon — `composition/loader.py`) and `verity.verifier_types` (read by the verifier
+  image — `verifier/registry.py`). Each entry point resolves to a `register(registry)` callable (the
+  existing `register` shape). The built-ins are **dogfooded** as entry points and flow through the same
+  loader (`default_catalog()` and `build_server_from_env()` are now pure discovery), with the core
+  distribution's entries loading **first** so they keep priority under a **lenient, incumbent-wins**
+  collision policy; every load failure is logged and skipped (degrade-don't-crash, scratch-probe
+  isolated), and a loud guard fails if the built-ins' metadata is absent (run `uv sync`). The loaders
+  import no domain (guarded). Proven offline by an out-of-tree fixture plugin reachable purely via
+  discovery with no `verity` edit. Closes the "Further out — runtime registration of new domain code"
+  item. *(Verifier-side discovery shipped here too, so a new verifier needs no edit to the verifier
+  image's selector.)*
+- **Exit ✅:** the control-plane image carries the kernel + provisioning + transport (+ a generic,
+  domain-free loader) — **zero** hardcoded domain / verifier / data-prep registration — and a new
+  verifier *or* task type is added by **deploying a container and installing a package that advertises
+  an entry point, with no control-plane rebuild**. Unblocks the clean multi-tenancy engine (a tenant's
+  task/verifier set becomes deploy-time config, not an image).
 
 ### Woven through Phases 6–7
 
@@ -738,15 +752,16 @@ added adapter, not a reshape.
 Where each open issue folds in (so the backlog and the plan stay linked). Grouped by theme; kept
 in sync with GitHub — the rows below are exactly the open set.
 
-**Phase 9 — the dumb control plane (next priority):**
+**Phase 9 — the dumb control plane (complete; issues delivered, pending close):**
 
 | Issue | Folds into |
 | --- | --- |
-| **#73** extricate verification logic into sibling verifier containers | **Phase 9.1** — also carries the residual of #10 (capability advertisement) |
-| **#74** remove task-specific data-prep from the control plane | **Phase 9.2** |
+| **#73** extricate verification logic into sibling verifier containers | **Phase 9.1 ✅** (delivered; also carried the residual of #10) — the full fleet lifecycle lives on in **#77** |
+| **#74** remove task-specific data-prep from the control plane | **Phase 9.2 ✅** (delivered) |
 
 *(The 9.3 plugin loader — runtime task/verifier registration without a rebuild — is roadmap-only,
-not a separate issue; it closes the "further out" runtime-registration item.)*
+not a separate issue; it built the ADR 0004 (i) seam and closed the "further out" runtime-registration
+item. **#77** (full verifier fleet lifecycle) is the live Phase-9-adjacent remainder.)*
 
 **Multi-tenancy & run-control engine (epic #27):**
 
