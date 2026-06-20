@@ -29,6 +29,9 @@ npm-debug.log*
 # task.json, run.sh, overview.md); only the large datasets + generated output stay out of git.
 /feature-engineering-test/*.csv
 /feature-engineering-test/out/
+# Role-keyed bundles produced by the user-side prep (tools/prepare_fe_data.py) — derived data.
+/feature-engineering-test/agent/
+/feature-engineering-test/verifier/
 
 # OS / editor
 .DS_Store

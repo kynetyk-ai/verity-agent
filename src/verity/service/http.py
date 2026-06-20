@@ -109,7 +109,9 @@ def build_app(
             name = body.get("name")
             if not isinstance(name, str):
                 raise HTTPException(status_code=422, detail="'name' (an exchange file) is required")
-            if "/" in name or "\\" in name or ".." in name:  # no traversal out of the exchange
+            # Subdirs are allowed (role bundles like `agent/train.csv`), but the resolved path must
+            # stay inside the exchange — no `..`/absolute traversal out of it.
+            if "\\" in name or ".." in name.split("/") or name.startswith("/"):
                 raise HTTPException(status_code=422, detail=f"invalid exchange filename: {name}")
             path = exchange_in / name
             if not path.is_file():
@@ -136,17 +138,22 @@ def build_app(
             raise HTTPException(status_code=422, detail="'request' (a TaskRequest) is required")
         task_request = TaskRequest.from_dict(spec)
 
-        def _resolve(field: str) -> bytes | None:
-            handle = body.get(field)
-            if handle is None:
-                return None
-            if handle not in staging:
-                raise HTTPException(status_code=404, detail=f"unknown data handle: {handle}")
-            return staging[handle]
+        # `files` maps role -> {filename: ingest-handle}; resolve each handle to its staged bytes.
+        # The files are opaque to the service — it routes a role's set into that role's worker.
+        raw_files = body.get("files") or {}
+        if not isinstance(raw_files, dict):
+            raise HTTPException(status_code=422, detail="'files' must be {role:{name:handle}}")
+        files: dict[str, dict[str, bytes]] = {}
+        for role, named in raw_files.items():
+            if not isinstance(named, dict):
+                raise HTTPException(status_code=422, detail=f"files[{role!r}] must be a name->handle map")  # noqa: E501
+            files[role] = {}
+            for name, handle in named.items():
+                if handle not in staging:
+                    raise HTTPException(status_code=404, detail=f"unknown data handle: {handle}")
+                files[role][name] = staging[handle]
 
-        task_id = service.create_task(
-            task_request, data=_resolve("data"), test_data=_resolve("test_data")
-        )
+        task_id = service.create_task(task_request, files=files)
         return {"task_id": task_id}
 
     @app.get("/tasks")

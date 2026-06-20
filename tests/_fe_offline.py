@@ -10,7 +10,11 @@ This mirrors the capstone in ``tests/test_fe_via_config_acceptance.py`` but is r
 
 from __future__ import annotations
 
+import csv
+import io
 from dataclasses import dataclass
+
+from tools.harness.dataset import stratified_split, subsample
 
 from verity.domains.feature_engineering import ENTRYPOINT, PREDICTIONS_OUTPUT, REQUIREMENTS
 from verity.provisioning.backend import CompletedWorker, WorkerSpec
@@ -22,6 +26,42 @@ from verity.verifier.kaggle import KaggleScorer
 
 def preds_csv(preds: dict[str, str]) -> bytes:
     return ("id,class\n" + "\n".join(f"{k},{v}" for k, v in preds.items()) + "\n").encode()
+
+
+def role_files_from_raw(
+    train: bytes,
+    test: bytes,
+    *,
+    per_class: int = 300,
+    reserved_fraction: float = 0.5,
+    target: str = "class",
+    id_column: str = "id",
+) -> dict[str, dict[str, bytes]]:
+    """Build the role-keyed ``{role: {filename: bytes}}`` the user's prep produces (ADR 0005).
+
+    The in-memory twin of ``tools/prepare_fe_data.py`` for offline tests: it runs the same
+    user-side split and returns the agent + verifier bundles to pass as ``create_task(files=...)``.
+    The control plane never does this — the test plays the user preparing data.
+    """
+    sub = subsample(train, per_class=per_class, target=target)
+    split = stratified_split(
+        sub, target=target, id_column=id_column, reserved_fraction=reserved_fraction
+    )
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([id_column, target])
+    w.writerows(split.reserved_labels.items())
+    labels_csv = buf.getvalue().encode()
+    return {
+        "agent": {"train.csv": split.agent_train_csv, "test.csv": test},
+        "verifier": {
+            "train.csv": split.agent_train_csv,
+            "holdout.csv": split.reserved_test_csv,
+            "holdout_labels.csv": labels_csv,
+            "full_train.csv": sub,
+            "test.csv": test,
+        },
+    }
 
 
 def entrypoint_bytes(marker: bytes, names: list[str]) -> bytes:
@@ -90,6 +130,7 @@ def loopback_fe_kaggle_factory(backend, scorer):  # type: ignore[no-untyped-def]
     from verity.contracts.ports import VerifierSetup
     from verity.domains.feature_engineering_kaggle import (
         build_feature_engineering_kaggle_verifier,
+        parse_label_csv,
     )
     from verity.transport import LoopbackTransport, RemoteVerifier, VerifierServer
     from verity.verifier import BackendCodeRunner
@@ -98,11 +139,11 @@ def loopback_fe_kaggle_factory(backend, scorer):  # type: ignore[no-untyped-def]
         runner = BackendCodeRunner(backend=backend, config="fe-kaggle")
         return build_feature_engineering_kaggle_verifier(
             runner, scorer=scorer,
-            agent_train_csv=setup.objects["agent_train"],
-            reserved_test_csv=setup.objects["reserved_test"],
-            reserved_labels=setup.params["reserved_labels"],
-            full_train_csv=setup.objects["full_train"],
-            real_test_csv=setup.objects["real_test"],
+            agent_train_csv=setup.objects["train.csv"],
+            reserved_test_csv=setup.objects["holdout.csv"],
+            reserved_labels=parse_label_csv(setup.objects["holdout_labels.csv"]),
+            full_train_csv=setup.objects["full_train.csv"],
+            real_test_csv=setup.objects["test.csv"],
             timeout_s=float(setup.params.get("timeout_s", 900.0)),
             wait_deadline_s=float(setup.params.get("wait_deadline_s", 86_400.0)),
             poll_interval_s=float(setup.params.get("poll_interval_s", 60.0)),
@@ -127,7 +168,6 @@ def offline_catalog(scorer: KaggleScorer | None = None):  # type: ignore[no-unty
     """
     from verity.composition.catalog import TaskCatalog
     from verity.composition.code import CODE_TASK_ID, build_code_task, describe_code_task
-    from verity.composition.dataset import stratified_split, subsample
     from verity.composition.fe import provisioning_config_from
     from verity.composition.fe_kaggle import (
         FE_KAGGLE_TASK_ID,
@@ -139,17 +179,17 @@ def offline_catalog(scorer: KaggleScorer | None = None):  # type: ignore[no-unty
     active_scorer: KaggleScorer = scorer if scorer is not None else FakeKaggleScorer()
 
     async def _build_offline_fe_kaggle(cp, *, backend, request):  # type: ignore[no-untyped-def]
-        raw = cp.store.get_object(request.data.data_ref)
-        real_test = cp.store.get_object(request.data.test_ref)
-        sub = subsample(raw, per_class=request.data.per_class, target=request.data.target)
-        split = stratified_split(
-            sub, target=request.data.target, id_column=request.data.id_column,
-            reserved_fraction=request.data.reserved_fraction,
-        )
+        # The control plane routes the pre-prepared, role-keyed blobs unchanged (ADR 0005).
+        agent_files = {
+            n: cp.store.get_object(r) for n, r in request.data.files_for("agent").items()
+        }
+        verifier_files = {
+            n: cp.store.get_object(r) for n, r in request.data.files_for("verifier").items()
+        }
         return await configure_fe_kaggle_task(
             cp, backend=backend,
             make_verifier=loopback_fe_kaggle_factory(backend, active_scorer),
-            split=split, full_train_csv=sub, real_test_csv=real_test,
+            agent_files=agent_files, verifier_files=verifier_files,
             provisioning=provisioning_config_from(request.sandbox),
             poll_interval_s=0.0, wait_deadline_s=5.0,
         )

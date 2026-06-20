@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._fe_offline import FeWorkers, loopback_fe_kaggle_factory
-from verity.composition.dataset import stratified_split, subsample
+from tools.harness.dataset import stratified_split, subsample
+
+from tests._fe_offline import FeWorkers, loopback_fe_kaggle_factory, role_files_from_raw
 from verity.composition.fe_kaggle import FE_KAGGLE_TASK_ID, configure_fe_kaggle_task
 from verity.contracts import ArtifactStatus, GateUnavailable
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
@@ -35,6 +36,9 @@ def _drive(
     via the fake runner's predictions (``"perfect"`` -> 1.0, ``"half"`` -> 0.5 by predicting one
     class), since the broadened domain no longer derives proxy score from a feature count. Defaults
     to all-perfect when omitted."""
+    # The user prepares the role-keyed inputs (ADR 0005); the deterministic split also gives us the
+    # reserved labels we use to script the fake runner's proxy accuracy.
+    rf = role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
     sub = subsample(_RAW, per_class=100, target="class")
     split = stratified_split(sub, target="class", id_column="id", reserved_fraction=0.5)
     reserved = dict(split.reserved_labels)
@@ -51,7 +55,7 @@ def _drive(
         configure_fe_kaggle_task(
             cp, backend=backend,
             make_verifier=loopback_fe_kaggle_factory(backend, scorer),
-            split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
+            agent_files=rf["agent"], verifier_files=rf["verifier"],
             poll_interval_s=poll_interval_s, wait_deadline_s=5.0,
         )
     )

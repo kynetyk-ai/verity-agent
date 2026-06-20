@@ -790,24 +790,33 @@ no rebuild — is `tests/test_daemon_live.py`.
 `fe-kaggle` is the feature-engineering task with the **live competition leaderboard** as its
 authoritative gate (a two-tier ladder: a cheap local-hold-out proxy filters every cycle; the hard gate
 regenerates the submission on the full train + the real `test.csv`, submits to Kaggle, and accepts only
-what **beats our best prior public score**). The Kaggle submit happens on the **trusted control-plane
-side** — `KAGGLE_USERNAME`/`KAGGLE_KEY` are read by the in-process verifier and are **never** forwarded
-to a worker; the competition's daily submission cap is read from its Kaggle metadata (default 5,
-overridable via the `daily_submission_limit` knob) and the gate **blocks** until budget frees. It needs **two** inputs (the labeled `train.csv` and the real unlabeled `test.csv`) and the
-competition slug, so it is created from a declarative request file:
+what **beats our best prior public score**). The Kaggle submit happens on the **trusted verifier
+side** — `KAGGLE_USERNAME`/`KAGGLE_KEY` are forwarded to the verifier sibling only and are **never**
+sent to a worker; the competition's daily submission cap is read from its Kaggle metadata (default 5,
+overridable via the `daily_submission_limit` knob) and the gate **blocks** until budget frees.
+
+**Data prep is the user's, not the control plane's** (ADR 0005 / #74): you split the data into
+per-role bundles *outside* Verity and the CP routes opaque **role → {filename: blob}** maps — it reads
+no `target`/`id_column` and derives no answer key. Prepare with `tools/prepare_fe_data.py` (it writes
+an `agent/` bundle and a `verifier/` bundle), ingest each role file, and route it with
+`--file ROLE:NAME=HANDLE`:
 
 ```bash
-verity ingest train.csv            # -> {handle-A}
-verity ingest test.csv             # -> {handle-B}
-verity create --request-file task.json --data {handle-A} --test-data {handle-B}   # -> {task_id}
+verity ingest agent/train.csv                 # -> {h1}  (subdir paths allowed)
+verity ingest verifier/holdout_labels.csv     # -> {h2}  (the answer key — verifier role only)
+# ...ingest every agent/* and verifier/* file...
+verity create --request-file task.json \
+  --file agent:train.csv={h1} --file verifier:holdout_labels.csv={h2} ...   # repeatable -> {task_id}
 ```
 
 `--request-file` reads a full `TaskRequest` JSON (the catalog's declarative form, e.g. a task package's
-`task.json`; it supersedes the request-shaping flags, only `--data`/`--test-data`/`--goal` still
-apply); `--test-data` ingests the second input (→ `data.test_ref`). The committed, runnable package —
-data, `task.json` (local-agent default), `run.sh`, and the full setup protocol (token, accepting the
-competition rules) — lives in [`feature-engineering-test/`](../feature-engineering-test/PROTOCOL.md).
-Read the live contract with `verity catalog --type fe-kaggle`.
+`task.json`; it supersedes the request-shaping flags, only `--file`/`--goal` still apply). The
+answer-key isolation invariant holds **by construction**: `holdout_labels.csv` is a verifier-role
+file the CP cannot route to the agent. The committed, runnable package — `task.json` (local-agent
+default), `run.sh` (which runs the prep + role routing for you), and the full setup protocol (token,
+accepting the competition rules) — lives in
+[`feature-engineering-test/`](../feature-engineering-test/PROTOCOL.md). Read the live contract with
+`verity catalog --type fe-kaggle`.
 
 ### D. External HTTP/REST — the network control API (Phase 8.4, ADR 0004 (e))
 

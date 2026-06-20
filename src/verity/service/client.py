@@ -107,10 +107,11 @@ class Client:
         return (await self._request("GET", f"/artifacts/{run_id}/{object_path}")).content
 
     async def create_task(
-        self, request: dict[str, Any], *, data: str | None = None, test_data: str | None = None
+        self, request: dict[str, Any], *, files: dict[str, dict[str, str]] | None = None
     ) -> Any:
+        """Create a task; ``files`` maps role -> {filename: ingest-handle} (ADR 0005)."""
         return await self._call(
-            "POST", "/tasks", json={"request": request, "data": data, "test_data": test_data}
+            "POST", "/tasks", json={"request": request, "files": files or {}}
         )
 
     async def list_tasks(self) -> Any:

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Run the stellar fe-kaggle task end to end against the standing Verity daemon.
 #
-# Drives the verity CLI inside the running control-plane container:
-#   ingest train + test -> create (from task.json) -> run -> poll -> results -> export
+# Prepares the data USER-SIDE (ADR 0005 — the control plane does no splitting), then drives the
+# verity CLI inside the running control-plane container:
+#   prepare (split -> agent/ + verifier/ bundles) -> ingest each role file -> create (--file) ->
+#   run -> poll -> results -> export
 # The hard gate submits the regenerated predictions to the REAL Kaggle leaderboard (see PROTOCOL.md).
 #
 # PREREQUISITES (see PROTOCOL.md):
@@ -12,10 +14,12 @@
 #   - train.csv + test.csv present in THIS directory (gitignored; download from the competition)
 #
 # Usage:   ./feature-engineering-test/run.sh [path/to/task.json]
-# Env:     VERITY_CP (container, default verity-cp), VERITY_EXCHANGE_HOST (default /tmp/verity-exchange)
+# Env:     VERITY_CP (container, default verity-cp), VERITY_EXCHANGE_HOST (default /tmp/verity-exchange),
+#          PER_CLASS (default 300), RESERVED_FRACTION (default 0.5) — the user-side prep knobs.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HERE/.." && pwd)"
 CP="${VERITY_CP:-verity-cp}"
 EXCHANGE_HOST="${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}"
 TASK_JSON="${1:-$HERE/task.json}"
@@ -31,17 +35,31 @@ fi
 jget() { python3 -c 'import sys,json; print(json.load(sys.stdin)["'"$1"'"])'; }
 cli()  { docker exec "$CP" verity "$@"; }
 
-# Stage the data + task.json into the exchange in/ dir the daemon reads (mounted at /exchange).
-mkdir -p "$EXCHANGE_HOST/in"
-cp "$HERE/train.csv" "$HERE/test.csv" "$EXCHANGE_HOST/in/"
+# User-side prep (ADR 0005): split train.csv into role-keyed bundles. The CP never sees the split.
+echo "==> prepare role-keyed data (agent/ + verifier/)"
+( cd "$REPO_ROOT" && python3 -m tools.prepare_fe_data \
+    --train "$HERE/train.csv" --test "$HERE/test.csv" --out "$HERE" \
+    --per-class "${PER_CLASS:-300}" --reserved-fraction "${RESERVED_FRACTION:-0.5}" )
+
+# Stage the role bundles + task.json into the exchange in/ dir the daemon reads (mounted at /exchange).
+mkdir -p "$EXCHANGE_HOST/in/agent" "$EXCHANGE_HOST/in/verifier"
+cp "$HERE/agent/"*.csv "$EXCHANGE_HOST/in/agent/"
+cp "$HERE/verifier/"*.csv "$EXCHANGE_HOST/in/verifier/"
 cp "$TASK_JSON" "$EXCHANGE_HOST/in/task.json"
 
-echo "==> ingest train + test"
-TRAIN="$(cli ingest train.csv | jget handle)"
-TEST="$(cli ingest test.csv | jget handle)"
+echo "==> ingest role files -> handles"
+FILE_ARGS=()
+for role in agent verifier; do
+  for path in "$HERE/$role/"*.csv; do
+    name="$(basename "$path")"
+    handle="$(cli ingest "$role/$name" | jget handle)"
+    FILE_ARGS+=( --file "$role:$name=$handle" )
+    echo "    $role/$name"
+  done
+done
 
 echo "==> create (fe-kaggle, from task.json)"
-TID="$(cli create --request-file /exchange/in/task.json --data "$TRAIN" --test-data "$TEST" | jget task_id)"
+TID="$(cli create --request-file /exchange/in/task.json "${FILE_ARGS[@]}" | jget task_id)"
 echo "    task_id=$TID"
 
 echo "==> run (async; the Kaggle gate may block on the daily cap — that's expected)"

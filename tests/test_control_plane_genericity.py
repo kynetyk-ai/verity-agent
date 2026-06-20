@@ -16,10 +16,10 @@ import ast
 import asyncio
 import pathlib
 
+import verity.composition
 import verity.control_plane
-from tests._fe_offline import loopback_fe_kaggle_factory
+from tests._fe_offline import loopback_fe_kaggle_factory, role_files_from_raw
 from verity.composition import configure_code_task
-from verity.composition.dataset import stratified_split, subsample
 from verity.composition.fe_kaggle import configure_fe_kaggle_task
 from verity.control_plane.api import ControlPlane
 from verity.control_plane.store import SqliteStore
@@ -105,6 +105,35 @@ def test_cp_daemon_imports_without_the_kaggle_extra() -> None:
     assert done.stdout.strip() == "ok"
 
 
+def test_cp_image_carries_no_data_prep() -> None:
+    """ADR 0005 / §9.2 litmus: the control-plane composition surface holds **no** dataset split.
+
+    Data prep is the user's responsibility (``tools/prepare_fe_data.py``); the CP routes opaque,
+    role-keyed blobs. So (a) the old in-CP split module is gone, and (b) no module under
+    ``verity.composition`` imports a split helper (``subsample``/``stratified_split``) or the
+    user-side prep package. This is what makes "the CP interprets no dataset semantics" enforceable.
+    """
+    import importlib.util
+
+    assert importlib.util.find_spec("verity.composition.dataset") is None, (
+        "verity.composition.dataset must not exist — the split moved user-side (ADR 0005)"
+    )
+    leaks: list[str] = []
+    pkg_dir = pathlib.Path(verity.composition.__file__).parent  # type: ignore[arg-type]
+    banned_names = {"subsample", "stratified_split"}
+    banned_modules = {"tools.harness.dataset", "verity.composition.dataset"}
+    for path in pkg_dir.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in banned_modules:
+                leaks.append(f"{path.name}: from {node.module}")
+            if isinstance(node, ast.ImportFrom) and any(
+                a.name in banned_names for a in node.names
+            ):
+                leaks.append(f"{path.name}: imports {[a.name for a in node.names]}")
+    assert not leaks, f"the control plane must carry no data prep; found: {leaks}"
+
+
 def test_one_generic_control_plane_runs_two_different_tasks() -> None:
     # The identical construction — a bare ControlPlane(store) — accepts either task via its API.
     code_cp = ControlPlane(SqliteStore())
@@ -112,13 +141,12 @@ def test_one_generic_control_plane_runs_two_different_tasks() -> None:
 
     kaggle_cp = ControlPlane(SqliteStore())
     backend = FakeBackend()
-    sub = subsample(_RAW, per_class=100, target="class")
-    split = stratified_split(sub, target="class", id_column="id", reserved_fraction=0.5)
+    files = role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
     task_id = asyncio.run(
         configure_fe_kaggle_task(
             kaggle_cp, backend=backend,
             make_verifier=loopback_fe_kaggle_factory(backend, FakeKaggleScorer()),
-            split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
+            agent_files=files["agent"], verifier_files=files["verifier"],
         )
     )
     assert task_id == "fe-kaggle"

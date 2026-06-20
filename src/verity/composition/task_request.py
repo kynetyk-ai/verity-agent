@@ -154,34 +154,35 @@ class PolicyRequest:
 
 @dataclass(frozen=True, slots=True)
 class DataRequest:
-    """References + knobs for the task's input data.
+    """References to the task's **pre-prepared, role-keyed** input files (ADR 0005 / #74).
 
-    ``data_ref`` is a content hash of an ingested object in the task's store (immutable, set by
-    ``ControlService.create_task``); the builder reads it via ``cp.store.get_object``. The remaining
-    fields are the split knobs the FE builder needs for the carve-out (the ``code`` task ignores
-    them). ``None`` ``data_ref`` means the task needs no client data.
+    ``roles`` maps a worker role (``"agent"`` / ``"verifier"``) to ``{filename: content_hash}`` —
+    each value the content hash of an ingested object in the task's store (immutable, set by
+    ``ControlService.create_task``). The control plane routes a role's file set, by name, into that
+    role's worker and **interprets none of it**: data preparation (splitting, the answer key) is the
+    user's responsibility, performed outside Verity, so the CP holds no dataset semantics (no
+    ``target``/``id_column``, no split). An empty map means the task needs no client data.
     """
 
-    data_ref: str | None = None
-    test_ref: str | None = None
-    target: str = "class"
-    id_column: str = "id"
-    per_class: int = 300
-    reserved_fraction: float = 0.5
+    roles: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def files_for(self, role: str) -> dict[str, str]:
+        """The ``{filename: content_hash}`` map for ``role`` (empty if the role has no files)."""
+        return dict(self.roles.get(role, {}))
+
+    def with_role_file(self, role: str, name: str, ref: str) -> DataRequest:
+        """Return a copy with ``ref`` stamped at ``roles[role][name]`` (used at ingest time)."""
+        roles = {r: dict(files) for r, files in self.roles.items()}
+        roles.setdefault(role, {})[name] = ref
+        return replace(self, roles=roles)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "data_ref": self.data_ref,
-            "test_ref": self.test_ref,
-            "target": self.target,
-            "id_column": self.id_column,
-            "per_class": self.per_class,
-            "reserved_fraction": self.reserved_fraction,
-        }
+        return {"roles": {r: dict(files) for r, files in self.roles.items()}}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> DataRequest:
-        return cls(**{k: v for k, v in d.items() if k in cls.__slots__})
+        roles = d.get("roles", {})
+        return cls(roles={r: dict(files) for r, files in roles.items()})
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,13 +202,9 @@ class TaskRequest:
     data: DataRequest = field(default_factory=DataRequest)
     tenant_id: str = "default"
 
-    def with_data_ref(self, data_ref: str) -> TaskRequest:
-        """Return a copy whose (primary/train) data reference is stamped (used at ingest time)."""
-        return replace(self, data=replace(self.data, data_ref=data_ref))
-
-    def with_test_ref(self, test_ref: str) -> TaskRequest:
-        """Return a copy whose secondary (real test set) data reference is stamped (fe-kaggle)."""
-        return replace(self, data=replace(self.data, test_ref=test_ref))
+    def with_role_file(self, role: str, name: str, ref: str) -> TaskRequest:
+        """Return a copy with ``ref`` stamped at ``data.roles[role][name]`` (at ingest time)."""
+        return replace(self, data=self.data.with_role_file(role, name, ref))
 
     def to_dict(self) -> dict[str, Any]:
         return {

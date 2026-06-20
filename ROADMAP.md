@@ -29,10 +29,13 @@ acceptance criteria pass** — the MVP finish line (Phase 4). The arc then conti
 > verifier or task type needs **no CP rebuild**. **9.1 ✅** — the verifier runs as a **sibling
 > container** (its own image carries the gates + `kaggle`; the CP image drops `--extra kaggle`), built
 > per task from a `VerifierSetup` shipped over the wire and reached via a **minimal on-demand launch**
-> (full fleet lifecycle deferred to **#77**); the dataset **split still happens CP-side** as the
-> explicit 9.2 residual. Next: **9.2** in-CP data-prep out (#74), then **9.3** the plugin loader.
-> The **control-plane API reference** (with a worked FE example) is
-> [`docs/api-surface.md`](docs/api-surface.md).
+> (full fleet lifecycle deferred to **#77**). **9.2 ✅** — **data prep left the control plane**
+> ([ADR 0005](docs/adr/0005-data-prep-out-of-the-control-plane.md)): the user prepares per-role
+> inputs outside Verity and the CP routes opaque **role → {filename: blob}** maps (the split +
+> answer-key derivation moved to `tools/`; the CP holds no `target`/`id_column`/split), so the
+> answer-key isolation invariant now holds **by construction at the prep boundary**. Next: **9.3** the
+> plugin loader (discover task/verifier types, no compiled-in catalog). The **control-plane API
+> reference** (with a worked FE example) is [`docs/api-surface.md`](docs/api-surface.md).
 
 The shape of the path: build the **control plane first** — the hard part, the sole mutator that owns
 every invariant — and prove it works against *bespoke, throwaway* agent/workspace and verifier
@@ -70,7 +73,8 @@ These hold in every phase (see `CLAUDE.md` → *Coding habits*):
 - **Container-per-service readiness** — the architecture keeps each service independently imageable
   (async ports, no shared mutable state). The **sandbox**, the **verifier** (its own image since
   Phase 9.1 / #73 — gates + `kaggle`, launched as a sibling), and the **control plane** each ship as a
-  container; the remaining domain code in the CP image is the dataset **split** (#74, Phase 9.2).
+  container. Since Phase 9.2 (#74 / ADR 0005) the CP image carries **no domain data-prep** either —
+  data prep is user-side and the CP routes opaque role-keyed blobs.
 - **Spec-traceability** — implementation decisions cite the spec section (`§N`) they realize; the
   vendored `spec/` tree is authoritative.
 - **Invariants are property tests**, not prose aspirations (spec §5).
@@ -652,16 +656,23 @@ the genericity guard and the sandbox byte-provenance isolation invariant hold th
   deferred to **#77**. Folds in the residual of **#10** (capability advertisement). *(End-to-end
   `@kaggle @live` validation is the manual step; the offline suite + argv-pins + the import guards are
   green.)*
-- **9.2 Task-prep out of the control plane (#74) ⬜** — the CP must hold **no** task-specific
-  data-preparation. Today `build_fe_kaggle_task` splits the dataset (`subsample` + `stratified_split`,
-  deriving the answer key) **in the CP** (ADR 0004 itself calls this "the riskiest new logic"). Move the
-  prep to the **task/verifier side** (or a task-package build step) so the CP only routes opaque blobs
-  to roles — "agent gets {file: ref}, verifier gets {file: ref}." The answer-key isolation invariant is
-  then preserved **by construction at the prep boundary**, not by CP-side carving. **Done:** no
-  CP-image-resident code interprets dataset/domain semantics (no split, no `target`/`id_column`); a new
-  task type supplies its own prep and the CP routes the result unchanged. **Open (spec-question):** the
-  exact prep boundary — verifier container vs. a dedicated task-package build step — overlaps **#3**
-  (data plane) and **#64** (domain optional); a short written decision precedes code.
+- **9.2 Task-prep out of the control plane (#74) ✅** — the CP now holds **no** task-specific
+  data-preparation. The open spec-question is settled by
+  [ADR 0005](docs/adr/0005-data-prep-out-of-the-control-plane.md): **data prep is the user's
+  responsibility, performed outside Verity** (not the verifier container, not an in-Verity build
+  step). `build_fe_kaggle_task` no longer splits — `subsample`/`stratified_split` left the CP import
+  path entirely (`composition/dataset.py` deleted → moved to the user-side `tools/harness/dataset.py`
+  + a runnable `tools/prepare_fe_data.py`). `DataRequest` lost `target`/`id_column`/`per_class`/
+  `reserved_fraction` and now carries a **role → {filename: content_hash}** map; `create_task` / the
+  `ingest` + HTTP data plane / the `verity create --file ROLE:NAME=HANDLE` CLI accept **named,
+  role-tagged** blobs; the verifier image maps filenames → gate inputs (and parses the answer key
+  CSV). The **answer-key isolation invariant now holds by construction at the prep boundary** —
+  `holdout_labels.csv` is simply a verifier-role file the CP can't route to the agent — pinned by
+  `test_dataset_split_carveout` + the byte-provenance tests. A new guard
+  (`test_cp_image_carries_no_data_prep`) asserts the composition surface imports no split helper and
+  `verity.composition.dataset` is gone. The example FE package ships the prep (`run.sh` runs it;
+  `agent/` + `verifier/` role bundles). *(End-to-end `@kaggle @live` validation is the manual step;
+  the offline suite + mypy + the import guards are green.)*
 - **9.3 Plugin loader — register task/verifier types without a rebuild ⬜** — the completing piece that
   makes 9.1/9.2 fully real: the `catalog.py` entry-point plugin-loader seam (ADR 0004 (i), today
   *placed but unbuilt*), so task and verifier builders are **discovered**, not compiled into the CP

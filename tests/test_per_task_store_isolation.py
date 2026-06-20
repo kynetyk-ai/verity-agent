@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._fe_offline import FeWorkers, offline_catalog
-from verity.composition.dataset import stratified_split, subsample
+from tools.harness.dataset import stratified_split, subsample
+
+from tests._fe_offline import FeWorkers, offline_catalog, role_files_from_raw
 from verity.composition.task_request import DataRequest, PolicyRequest, TaskRequest
 from verity.domains.feature_engineering import SUBMISSION
 from verity.provisioning import FakeBackend
@@ -27,8 +28,12 @@ def _fe_request() -> TaskRequest:
     return TaskRequest(
         type_name="fe-kaggle",
         policy=PolicyRequest(stop_on_accept=True),
-        data=DataRequest(per_class=100, reserved_fraction=0.5),
+        data=DataRequest(),
     )
+
+
+def _fe_files() -> dict[str, dict[str, bytes]]:
+    return role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
 
 
 def test_two_fe_instances_do_not_share_incumbents() -> None:
@@ -46,8 +51,8 @@ def test_two_fe_instances_do_not_share_incumbents() -> None:
         backend=FakeBackend(script=workers), root=None, catalog=offline_catalog()
     )
 
-    task_a = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
-    task_b = service.create_task(_fe_request(), data=_RAW, test_data=_REAL_TEST)
+    task_a = service.create_task(_fe_request(), files=_fe_files())
+    task_b = service.create_task(_fe_request(), files=_fe_files())
     assert task_a != task_b
 
     asyncio.run(service.run(task_a))

@@ -20,7 +20,14 @@ Two-tier ladder (the gate re-runs your *script* on gold data — it never trusts
    score. When the daily cap is spent the gate **blocks** until it frees (the control plane is
    long-lived); a Kaggle API failure degrades the cycle (recorded, fed back), it doesn't crash the run.
 
-The Kaggle submit happens on the **trusted control-plane side** — credentials never reach a worker.
+The Kaggle submit happens on the **trusted verifier side** — credentials never reach a worker.
+
+**Data prep is yours, done outside Verity (ADR 0005).** The control plane does *no* splitting — it
+routes opaque, role-keyed blobs. `run.sh` runs the reference prep (`tools/prepare_fe_data.py`) for
+you: it splits `train.csv` into two role bundles — `agent/` (the training set with the hold-out
+removed + the real `test.csv`) and `verifier/` (the same training set, the hold-out features +
+**answer key**, the full train, and `test.csv`). The answer key lives **only** in the `verifier/`
+bundle, so it structurally cannot reach the agent.
 
 ## Setup (once)
 
@@ -58,7 +65,8 @@ just cp-serve
 just cp-down
 ```
 
-`run.sh` stages the data + `task.json` into the daemon's exchange, then drives the verity CLI. Runs
+`run.sh` prepares the role bundles (host-side, pure stdlib), stages them + `task.json` into the
+daemon's exchange, ingests each role file, then drives the verity CLI. Runs
 are asynchronous and may take a while (local model + the Kaggle daily cap); the run keeps going on the
 daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `just cp results <run_id>`.
 
@@ -73,10 +81,13 @@ daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `
 
 - `sandbox.model` / `sandbox.base_url` — the agent's model (local by default).
 - `policy.max_cycles` — refine cycles per run. `policy.stop_on_accept` — stop at the first accept.
-- `data.per_class` — rows/class subsampled for speed (raise for a serious attempt; full data is slow
-  on a local model). `data.reserved_fraction` — the cheap-proxy hold-out share.
 - `verifier.knobs.competition` — the competition slug. Optional: `budget_poll_interval_s`,
   `score_poll_interval_s`, `wait_deadline_s`, `submit_message`, `daily_submission_limit`.
+
+**Prep knobs** (env vars to `run.sh`, *not* `task.json` — prep is user-side now): `PER_CLASS`
+(rows/class subsampled for speed — raise for a serious attempt; full data is slow on a local model)
+and `RESERVED_FRACTION` (the cheap-proxy hold-out share). To prepare data yourself without `run.sh`:
+`python3 -m tools.prepare_fe_data --train train.csv --test test.csv --out feature-engineering-test`.
 
 Mind the **daily submission cap** (the competition's own limit, read from its Kaggle metadata —
 typically ~5/day, shared across all runs) — keep concurrent runs to a handful.

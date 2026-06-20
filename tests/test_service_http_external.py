@@ -19,9 +19,14 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 
 import httpx
+from tools.harness.dataset import stratified_split, subsample
 
-from tests._fe_offline import FeWorkers, entrypoint_bytes, offline_catalog
-from verity.composition.dataset import stratified_split, subsample
+from tests._fe_offline import (
+    FeWorkers,
+    entrypoint_bytes,
+    offline_catalog,
+    role_files_from_raw,
+)
 from verity.composition.task_request import DataRequest, PolicyRequest, TaskRequest
 from verity.domains.feature_engineering import ENTRYPOINT
 from verity.provisioning import FakeBackend
@@ -44,8 +49,21 @@ def _fe_request_body() -> dict:
     return TaskRequest(
         type_name="fe-kaggle", goal="improve balanced accuracy",
         policy=PolicyRequest(stop_on_accept=True),
-        data=DataRequest(per_class=100, reserved_fraction=0.5),
+        data=DataRequest(),
     ).to_dict()
+
+
+async def _upload_role_files(client: httpx.AsyncClient, headers: dict) -> dict[str, dict[str, str]]:
+    """Upload each prepared role file as raw bytes over the wire → a {role: {name: handle}} map."""
+    role_files = role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
+    files: dict[str, dict[str, str]] = {}
+    for role, named in role_files.items():
+        files[role] = {}
+        for name, blob in named.items():
+            resp = await client.post("/objects", content=blob, headers=headers)
+            assert resp.status_code == 200
+            files[role][name] = resp.json()["handle"]
+    return files
 
 
 def _build(tmp_path: Path, *, auth_token: str | None = None, max_upload_bytes: int = 50_000_000):
@@ -104,18 +122,13 @@ def test_byte_upload_and_artifact_download_round_trip(tmp_path) -> None:
     async def scenario() -> None:
         transport = httpx.ASGITransport(app=_build(tmp_path, auth_token=_TOKEN))
         async with httpx.AsyncClient(transport=transport, base_url="http://verity") as c:
-            # Upload raw bytes over the wire (no shared volume) -> content-addressed handles.
-            up = await c.post("/objects", content=_RAW, headers=octet)
-            assert up.status_code == 200
-            handle = up.json()["handle"]
-            test_handle = (await c.post("/objects", content=_REAL_TEST, headers=octet)).json()[
-                "handle"
-            ]
+            # Upload the user's role-keyed files as raw bytes over the wire (no shared volume).
+            files = await _upload_role_files(c, octet)
 
-            # create (train + the real test) -> run -> an accepted Submission lands.
+            # create (role-keyed inputs) -> run -> an accepted Submission lands.
             task_id = (await c.post(
                 "/tasks",
-                json={"request": _fe_request_body(), "data": handle, "test_data": test_handle},
+                json={"request": _fe_request_body(), "files": files},
                 headers=auth,
             )).json()["task_id"]
             started = await c.post(f"/tasks/{task_id}/runs", json={}, headers=auth)

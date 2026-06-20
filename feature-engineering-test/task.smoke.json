@@ -14,11 +14,5 @@
   "policy": {
     "max_cycles": 1,
     "stop_on_accept": false
-  },
-  "data": {
-    "target": "class",
-    "id_column": "id",
-    "per_class": 300,
-    "reserved_fraction": 0.5
   }
 }

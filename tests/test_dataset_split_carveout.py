@@ -1,11 +1,14 @@
-"""The carve-out's core derivation: the stratified split + answer-key (ROADMAP 8.1, ADR 0004 (b)).
+"""The user-side data-prep derivation: the stratified split + answer-key (ADR 0005 / §9.2).
 
-In 8.1 the dataset split + ``reserved_labels`` derivation moves from the caller into the FE builder,
-against client-supplied data. These tests pin the derivation itself (`composition.dataset`) — the
-piece a bad split or an answer-key leak would corrupt — independent of the control plane: agent and
-reserved rows are disjoint and exhaustive, ``reserved_labels`` exactly matches the reserved rows'
-true targets, the target column is dropped from the reserved set the agent's script will predict,
-and the split is deterministic (reproducible verdicts, §5.8).
+Since #74 the dataset split + ``reserved_labels`` derivation is the **user's** responsibility, done
+outside Verity by ``tools/prepare_fe_data.py`` over the ``tools.harness.dataset`` helper — the
+control plane does no splitting (it routes opaque role-keyed blobs). These tests pin the derivation
+itself — the piece a bad split or an answer-key leak would corrupt — independent of the control
+plane: agent and reserved rows are disjoint and exhaustive, ``reserved_labels`` exactly matches the
+reserved rows' true targets, the target column is dropped from the reserved set the agent's script
+will predict, and the split is deterministic (reproducible verdicts, §5.8). A final test pins the
+**prep boundary**: the prepared agent bundle never carries the answer key (§3.5 isolation by
+construction).
 """
 
 from __future__ import annotations
@@ -13,7 +16,8 @@ from __future__ import annotations
 import csv
 import io
 
-from verity.composition.dataset import stratified_split, subsample
+from tools.harness.dataset import stratified_split, subsample
+from tools.prepare_fe_data import prepare
 
 
 def _make_csv(n_per_class: int, classes: tuple[str, ...]) -> bytes:
@@ -80,3 +84,38 @@ def test_subsample_caps_per_class() -> None:
     for r in csv.DictReader(io.StringIO(capped.decode())):
         counts[r["class"]] = counts.get(r["class"], 0) + 1
     assert counts == {"STAR": 3, "GALAXY": 3, "QSO": 3}
+
+
+def test_prep_isolates_the_answer_key_in_the_verifier_bundle(tmp_path: object) -> None:
+    """ADR 0005: the user-side prep places the answer key **only** in the verifier role bundle.
+
+    Isolation by construction at the prep boundary — the agent bundle the control plane will route
+    to the sandbox carries no labels file, and the agent's ``train.csv`` has the target dropped from
+    no rows it shares with the hold-out (the hold-out rows are simply absent). The verifier's
+    ``holdout_labels.csv`` matches the reserved rows' true targets.
+    """
+    import pathlib
+
+    raw = _make_csv(6, ("STAR", "GALAXY"))
+    real_test = b"id,a\n100,200\n101,202\n"
+    out = pathlib.Path(str(tmp_path))
+    written = prepare(
+        train=raw, test=real_test, out=out,
+        target="class", id_column="id", per_class=100, reserved_fraction=0.5,
+    )
+
+    # The agent bundle never contains the answer key.
+    assert "holdout_labels.csv" not in written["agent"]
+    assert set(written["agent"]) == {"train.csv", "test.csv"}
+    assert "holdout_labels.csv" in written["verifier"]
+
+    # The verifier's answer key matches truth for exactly the reserved rows; the agent's train rows
+    # are disjoint from the hold-out rows (the leak surface is empty by construction).
+    truth = {r["id"]: r["class"] for r in csv.DictReader(io.StringIO(raw.decode()))}
+    labels = {
+        r["id"]: r["class"]
+        for r in csv.DictReader(io.StringIO((out / "verifier" / "holdout_labels.csv").read_text()))
+    }
+    assert labels and all(labels[i] == truth[i] for i in labels)
+    agent_train_ids = set(_ids((out / "agent" / "train.csv").read_bytes()))
+    assert agent_train_ids.isdisjoint(labels), "a hold-out row leaked into the agent's train set"

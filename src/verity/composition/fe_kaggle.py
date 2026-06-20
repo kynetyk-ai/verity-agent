@@ -21,11 +21,9 @@ import asyncio
 import os
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Any
 
-from verity.composition.dataset import stratified_split, subsample
 from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.fe import ProvisioningConfig, provisioning_config_from
 from verity.composition.task_request import TaskRequest
@@ -63,13 +61,30 @@ FE_KAGGLE_GOAL = (
     "Climb the real Kaggle leaderboard for this competition with a fast, self-contained pipeline."
 )
 
+# The canonical role-keyed input files the user's prep produces (ADR 0005; see
+# ``tools/prepare_fe_data.py``). The control plane validates only their *presence* — it never reads
+# their contents. The verifier image maps these filenames onto its gate inputs.
+AGENT_INPUT_FILES = ("train.csv", "test.csv")
+VERIFIER_INPUT_FILES = (
+    "train.csv", "holdout.csv", "holdout_labels.csv", "full_train.csv", "test.csv",
+)
+
 _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 _DEFAULT_VERIFIER_URL = "http://verifier:8001"
 _DEFAULT_VERIFIER_IMAGE = "verity-verifier:latest"
 _DEFAULT_VERIFIER_PORT = 8001
+# The CP→verifier dispatch is one blocking HTTP call held open for the WHOLE gate evaluation: the
+# cheap proxy pip-installs an ML stack + trains (minutes), and the hard gate regenerates + submits
+# to Kaggle + polls the public score. The 30s transport default times out well before that, so be
+# generous; override with VERITY_VERIFIER_TIMEOUT. (A cap-blocked Kaggle wait can exceed even this —
+# that legitimately long synchronous hold wants the async verify-job redesign, tracked separately.)
+_DEFAULT_VERIFIER_TIMEOUT_S = 1800.0
 # Creds the verifier service needs, forwarded by NAME (values stay in the daemon env, never the CP
 # image or an agent worker): the Kaggle credentials the trusted final-test gate submits with.
 _VERIFIER_CRED_ENV = ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_CONFIG_DIR")
+# Code-runner sizing knobs the verifier's own runner reads (it pip-installs the FE ML stack into a
+# tmpfs); forwarded by NAME so an operator can override the verifier image's defaults from the CP.
+_VERIFIER_RUNNER_ENV = ("VERITY_CODE_IMAGE", "VERITY_CODE_MEMORY", "VERITY_CODE_TMPFS")
 
 # How the control plane obtains the verifier for a task: it builds the per-task `VerifierSetup` and
 # hands it to a factory that returns a (typically remote) `VerifierPort`. The default ships the
@@ -87,7 +102,8 @@ async def _http_verifier(setup: VerifierSetup) -> VerifierPort:
     from verity.transport.http import build_remote_verifier
 
     url = os.environ.get("VERITY_VERIFIER_URL", _DEFAULT_VERIFIER_URL)
-    return build_remote_verifier(url, setup_payload=setup)
+    timeout = float(os.environ.get("VERITY_VERIFIER_TIMEOUT", _DEFAULT_VERIFIER_TIMEOUT_S))
+    return build_remote_verifier(url, timeout_s=timeout, setup_payload=setup)
 
 
 def _verifier_service_spec(network: str, *, image: str, staging: str | None) -> WorkerSpec:
@@ -110,7 +126,8 @@ def _verifier_service_spec(network: str, *, image: str, staging: str | None) -> 
         image=image, command=(),
         labels=Labels(role="verifier", config=FE_KAGGLE_TASK_ID),
         service_name=name, network_name=network, mount_docker_socket=True,
-        host_mounts=host_mounts, env=env, env_passthrough=_VERIFIER_CRED_ENV,
+        host_mounts=host_mounts, env=env,
+        env_passthrough=_VERIFIER_CRED_ENV + _VERIFIER_RUNNER_ENV,
     )
 
 
@@ -142,6 +159,7 @@ def launch_fe_kaggle_factory(
     port: int = _DEFAULT_VERIFIER_PORT,
     health_timeout_s: float = 60.0,
     health_poll_interval_s: float = 1.0,
+    verify_timeout_s: float = _DEFAULT_VERIFIER_TIMEOUT_S,
 ) -> VerifierFactory:
     """A `VerifierFactory` that **launches** the verifier sibling on demand (the §9.1 default).
 
@@ -157,7 +175,9 @@ def launch_fe_kaggle_factory(
 
         spec = _verifier_service_spec(network, image=image, staging=staging)
         handle = await backend.launch(spec)
-        verifier = build_remote_verifier(f"http://{spec.service_name}:{port}", setup_payload=setup)
+        verifier = build_remote_verifier(
+            f"http://{spec.service_name}:{port}", timeout_s=verify_timeout_s, setup_payload=setup
+        )
         verifier.on_teardown = lambda: backend.destroy(handle)
         await _await_verifier_ready(
             verifier, timeout_s=health_timeout_s, poll_interval_s=health_poll_interval_s
@@ -179,6 +199,9 @@ def _verifier_factory_from_env(backend: WorkerBackend) -> VerifierFactory:
             image=os.environ.get("VERITY_VERIFIER_IMAGE", _DEFAULT_VERIFIER_IMAGE),
             staging=os.environ.get("VERITY_WORKER_STAGING"),
             port=int(os.environ.get("VERITY_VERIFIER_PORT", str(_DEFAULT_VERIFIER_PORT))),
+            verify_timeout_s=float(
+                os.environ.get("VERITY_VERIFIER_TIMEOUT", str(_DEFAULT_VERIFIER_TIMEOUT_S))
+            ),
         )
     return _http_verifier
 
@@ -214,9 +237,8 @@ async def configure_fe_kaggle_task(
     cp: ControlPlane,
     *,
     backend: WorkerBackend,
-    split: Any,
-    full_train_csv: bytes,
-    real_test_csv: bytes,
+    agent_files: Mapping[str, bytes],
+    verifier_files: Mapping[str, bytes],
     make_verifier: VerifierFactory | None = None,
     competition: str = "",
     daily_submission_limit: int | None = None,
@@ -228,13 +250,16 @@ async def configure_fe_kaggle_task(
 ) -> str:
     """Configure the `fe-kaggle` task onto a generic ``cp`` via its API. Returns the task id.
 
-    The verifier runs as a **sibling service** (§9.1 / #73): this assembles the per-task
-    :class:`VerifierSetup` — the split CSVs the gates run on plus the gate knobs — and hands it to
-    ``make_verifier`` (default :func:`_http_verifier`, a `RemoteVerifier` over HTTP). The gates,
-    the `kaggle` extra, and the Kaggle creds all live in the verifier image; **no** gate code is
-    imported here. ``split`` is the labeled hold-out split (the cheap proxy: ``agent_train_csv`` /
-    ``reserved_test_csv`` / ``reserved_labels``); ``full_train_csv`` is the full labeled subsample
-    and ``real_test_csv`` the competition's real (unlabeled) test set (the Kaggle run).
+    The data arrives **pre-prepared and role-keyed** (ADR 0005 / #74): ``agent_files`` is the
+    ``{filename: bytes}`` set routed into the agent's sandbox ``data/`` directory, and
+    ``verifier_files`` is the set shipped verbatim to the verifier as the :class:`VerifierSetup`
+    objects. The control plane splits nothing and reads no ``target``/``id_column`` — the answer key
+    is simply one of the verifier-role files, so it structurally cannot reach the agent.
+
+    The verifier runs as a **sibling service** (§9.1 / #73): this hands the per-task
+    :class:`VerifierSetup` (the verifier-role blobs + the gate knobs) to ``make_verifier`` (default
+    :func:`_http_verifier`, a `RemoteVerifier` over HTTP). The gates, the `kaggle` extra, and the
+    Kaggle creds all live in the verifier image; **no** gate code is imported here.
     """
     provisioning = provisioning or ProvisioningConfig()
     spec = provisioning.model_spec
@@ -257,23 +282,18 @@ async def configure_fe_kaggle_task(
             runtime=provisioning.runtime,
         ),
         proposer_identity=f"deepagents-worker:{model}",
-        # The agent develops against the REAL (unlabeled) test set; agent_train has the reserved
-        # rows removed, so it can never see the hold-out labels (nor the real test's labels).
-        static_contents={"data": {"train.csv": split.agent_train_csv, "test.csv": real_test_csv}},
+        # The agent role's pre-prepared files, routed verbatim into data/. The user's prep removed
+        # the hold-out rows from train.csv, so the agent can never see the hold-out labels.
+        static_contents={"data": dict(agent_files)},
     )
 
-    # The opaque per-task inputs the (remote) verifier builds its gate stack from. The control plane
-    # treats these as routed blobs + knobs — it does not interpret them (verifier opacity, §3.6).
+    # The opaque per-task inputs the (remote) verifier builds its gate stack from: the verifier
+    # role's files, routed by filename. The control plane treats these as blobs + knobs — it does
+    # not interpret them (verifier opacity, §3.6); the answer key is one of these files.
     setup = VerifierSetup(
-        objects={
-            "agent_train": split.agent_train_csv,
-            "reserved_test": split.reserved_test_csv,
-            "full_train": full_train_csv,
-            "real_test": real_test_csv,
-        },
+        objects=dict(verifier_files),
         params={
             "competition": competition,
-            "reserved_labels": dict(split.reserved_labels),
             "timeout_s": provisioning.code_timeout_s,
             "wait_deadline_s": wait_deadline_s,
             "poll_interval_s": poll_interval_s,
@@ -304,42 +324,52 @@ async def configure_fe_kaggle_task(
     return FE_KAGGLE_TASK_ID
 
 
+def _require_role_files(role: str, refs: Mapping[str, str], expected: tuple[str, ...]) -> None:
+    """Fail fast (misuse) if the user's prep did not supply ``role``'s expected files.
+
+    A presence-only check — the control plane validates that the named blobs exist, never their
+    contents (ADR 0005: prep is the user's responsibility, the CP routes opaque blobs).
+    """
+    missing = [name for name in expected if name not in refs]
+    if missing:
+        raise ValueError(
+            f"the fe-kaggle {role} role is missing prepared file(s) {missing}; "
+            f"run tools/prepare_fe_data.py and ingest the {role}/ bundle "
+            f"(create the task with files={{'{role}': {{...}}}})"
+        )
+
+
 async def build_fe_kaggle_task(
     cp: ControlPlane, *, backend: WorkerBackend, request: TaskRequest
 ) -> str:
     """The `fe-kaggle` catalog builder: configure the task from a declarative `TaskRequest`.
 
-    Needs two ingested inputs: ``data.data_ref`` (the labeled ``train.csv``, subsampled and split
-    here into the agent's train + the reserved hold-out for the cheap proxy) and
-    ``data.test_ref`` (the real, unlabeled ``test.csv`` for Kaggle). ``verifier.knobs.competition``
-    is the competition slug (required); optional knobs tune polling/wait, and
-    ``daily_submission_limit`` overrides the per-competition cap that is otherwise read from the
-    competition metadata. Routes the slug + knobs to `configure_fe_kaggle_task`, which ships them to
-    the verifier sibling; the live `RealKaggleScorer` is built verifier-side (no `kaggle` import).
+    Consumes **pre-prepared, role-keyed** inputs (ADR 0005 / #74): ``data.roles['agent']`` and
+    ``data.roles['verifier']``, each ``{filename: content_hash}`` of files the user prepared outside
+    Verity (see ``tools/prepare_fe_data.py``). The control plane fetches the blobs by hash and
+    routes them to the two roles **without interpreting them** — no split, no target/id column.
+    ``verifier.knobs.competition`` is the competition slug (required); optional knobs tune
+    polling/wait, and ``daily_submission_limit`` overrides the per-competition cap otherwise read
+    from the competition metadata. The slug + knobs ride to the verifier sibling; the live
+    `RealKaggleScorer` is built verifier-side (no `kaggle` import here).
     """
-    if request.data.data_ref is None:
-        raise ValueError("the fe-kaggle task requires training data (create the task with `data=`)")
-    if request.data.test_ref is None:
-        raise ValueError("the fe-kaggle task requires the real test set (`data.test_ref`)")
+    agent_refs = request.data.files_for("agent")
+    verifier_refs = request.data.files_for("verifier")
+    _require_role_files("agent", agent_refs, AGENT_INPUT_FILES)
+    _require_role_files("verifier", verifier_refs, VERIFIER_INPUT_FILES)
     knobs = request.verifier.knobs
     competition = knobs.get("competition")
     if not competition:
         raise ValueError("fe-kaggle requires verifier.knobs['competition'] (the competition slug)")
 
-    raw = cp.store.get_object(request.data.data_ref)
-    real_test = cp.store.get_object(request.data.test_ref)
-    sub = subsample(raw, per_class=request.data.per_class, target=request.data.target)
-    split = stratified_split(
-        sub, target=request.data.target, id_column=request.data.id_column,
-        reserved_fraction=request.data.reserved_fraction,
-    )
+    agent_files = {name: cp.store.get_object(ref) for name, ref in agent_refs.items()}
+    verifier_files = {name: cp.store.get_object(ref) for name, ref in verifier_refs.items()}
 
     # The Kaggle scorer + the gates are constructed on the verifier side (#73): we route the
     # competition slug + knobs in the setup payload; no `kaggle` import lives in the control plane.
     limit_knob = knobs.get("daily_submission_limit")
     return await configure_fe_kaggle_task(
-        cp, backend=backend, split=split,
-        full_train_csv=sub, real_test_csv=real_test,
+        cp, backend=backend, agent_files=agent_files, verifier_files=verifier_files,
         competition=str(competition),
         daily_submission_limit=int(limit_knob) if limit_knob is not None else None,
         provisioning=provisioning_config_from(request.sandbox),

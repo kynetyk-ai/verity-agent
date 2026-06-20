@@ -46,12 +46,14 @@ docker exec $CP verity catalog                       # step 0: discover task typ
 docker exec $CP verity create --type code \
   --model anthropic:claude-sonnet-4-6 --max-cycles 2 --stop-on-accept   # -> {"task_id": "..."}
 
-# or a data-bearing task like `fe-kaggle` (two inputs + a competition slug → a request file).
-# Put the input files where the daemon's exchange in/ dir is mounted, then:
-docker exec $CP verity ingest train.csv              # -> {"handle": "<train-sha>"}
-docker exec $CP verity ingest test.csv               # second input -> {"handle": "<test-sha>"}
+# or a data-bearing task like `fe-kaggle`. Data prep is YOURS (ADR 0005): you split it into
+# per-role bundles outside Verity (the CP routes opaque blobs). Ingest each role file, then create
+# with `--file ROLE:NAME=HANDLE`. Put the files under the daemon's exchange in/ dir, then:
+docker exec $CP verity ingest agent/train.csv        # -> {"handle": "<h1>"} (subdir paths allowed)
+docker exec $CP verity ingest verifier/holdout_labels.csv  # -> {"handle": "<h2>"} (answer key, verifier-only)
+# ...ingest every agent/* and verifier/* file, then:
 docker exec $CP verity create --request-file /exchange/in/task.json \
-  --data <train-sha> --test-data <test-sha>          # task.json carries type/model/competition
+  --file agent:train.csv=<h1> --file verifier:holdout_labels.csv=<h2> ...  # repeatable per file
 
 docker exec $CP verity run <task_id>                 # -> {"run_id": "..."}  (async)
 docker exec $CP verity status <run_id>               # poll until "done" / "failed"
@@ -66,8 +68,8 @@ the bundled orchestrator (daemon must already be up):
 
 ```bash
 bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type code --goal "write a script that runs"
-# data-bearing tasks (two inputs + a request file), e.g. fe-kaggle:
-bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --request-file task.json --data train.csv --test-data test.csv
+# data-bearing tasks, e.g. fe-kaggle: prepare role bundles first (tools/prepare_fe_data.py), then
+# point the package's own run.sh at them (feature-engineering-test/run.sh does the prep for you).
 ```
 
 ## Guardrails (read before running)
@@ -83,9 +85,11 @@ bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --request-file task.json --data tra
   pass `--url`/`--token`. The default Unix-socket (`docker exec`) path is local-only and unauthenticated.
 - **Degrade-don't-crash.** A failed cycle is recorded and fed back, not fatal — a run can finish with a
   mix of accept / refine / reject / sandbox-fail outcomes (see `results`).
-- **Multi-input tasks** (e.g. `fe-kaggle`, which takes a train set + a real test set, and a competition
-  slug) are created from a JSON request: `verity create --request-file task.json --data <train-handle>
-  --test-data <test-handle>`. `--request-file` reads a full `TaskRequest`; see the CLI ref.
+- **Data prep is the user's, not the control plane's** (ADR 0005 / #74). You split inputs into
+  per-role bundles *outside* Verity; the CP routes opaque, role-keyed blobs and interprets none of
+  them (no `target`/`id_column`/split). Multi-input tasks (e.g. `fe-kaggle`) are created from a JSON
+  request plus repeated `--file ROLE:NAME=HANDLE` flags (one per ingested file); `--request-file`
+  reads a full `TaskRequest`. See the CLI ref.
 
 ## More detail
 

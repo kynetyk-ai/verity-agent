@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._fe_offline import FeWorkers, loopback_fe_kaggle_factory
-from verity.composition.dataset import stratified_split, subsample
+from tools.harness.dataset import stratified_split, subsample
+
+from tests._fe_offline import FeWorkers, loopback_fe_kaggle_factory, role_files_from_raw
 from verity.composition.fe_kaggle import FE_KAGGLE_TASK_ID, configure_fe_kaggle_task
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.store import SqliteStore
@@ -31,6 +32,7 @@ _REAL_TEST = b"id\n100\n101\n102\n103\n"
 
 def _run_kaggle_loop(*, max_cycles: int) -> tuple[FakeBackend, ControlPlane, str]:
     """Config-driven FE-Kaggle cycles over a FakeBackend; returns the backend, cp, and run id."""
+    rf = role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
     sub = subsample(_RAW, per_class=100, target="class")
     split = stratified_split(sub, target="class", id_column="id", reserved_fraction=0.5)
     reserved = dict(split.reserved_labels)
@@ -44,7 +46,7 @@ def _run_kaggle_loop(*, max_cycles: int) -> tuple[FakeBackend, ControlPlane, str
         configure_fe_kaggle_task(
             cp, backend=backend,
             make_verifier=loopback_fe_kaggle_factory(backend, scorer),
-            split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
+            agent_files=rf["agent"], verifier_files=rf["verifier"],
             poll_interval_s=0.0, wait_deadline_s=5.0,
         )
     )
@@ -92,6 +94,7 @@ def test_run_emits_a_run_record_pointing_into_the_store() -> None:
 
 
 def test_a_second_run_of_the_same_task_gets_a_fresh_run_id() -> None:
+    rf = role_files_from_raw(_RAW, _REAL_TEST, per_class=100, reserved_fraction=0.5)
     sub = subsample(_RAW, per_class=100, target="class")
     split = stratified_split(sub, target="class", id_column="id", reserved_fraction=0.5)
     reserved = dict(split.reserved_labels)
@@ -105,7 +108,7 @@ def test_a_second_run_of_the_same_task_gets_a_fresh_run_id() -> None:
         configure_fe_kaggle_task(
             cp, backend=backend,
             make_verifier=loopback_fe_kaggle_factory(backend, scorer),
-            split=split, full_train_csv=sub, real_test_csv=_REAL_TEST,
+            agent_files=rf["agent"], verifier_files=rf["verifier"],
             poll_interval_s=0.0, wait_deadline_s=5.0,
         )
     )

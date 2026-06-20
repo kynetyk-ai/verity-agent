@@ -158,13 +158,16 @@ model, a Kaggle token).** The §12 FE domain with a **two-tier gate**: a cheap l
 filters every cycle (so no Kaggle submission is wasted on a locally-worse attempt), then the hard gate
 regenerates the submission on the full train + the real `test.csv`, **submits to a live Kaggle
 competition**, and accepts only what beats our best **public-leaderboard** score (the competition's
-daily submission cap is read from its Kaggle metadata — default 5; the gate blocks until budget frees). The submit happens on the trusted control
-plane — `KAGGLE_USERNAME`/`KAGGLE_KEY` never reach a worker. It's a new task type in the catalog
-(`verity catalog --type fe-kaggle`), created with two inputs via `verity create --request-file
-task.json --data <train> --test-data <test>`. The committed, runnable package — data slot, `task.json`
-(local-agent default), `run.sh`, and the full setup protocol (token, accepting the competition rules)
-— lives in [`feature-engineering-test/PROTOCOL.md`](feature-engineering-test/PROTOCOL.md). Validated
-live on `playground-series-s6e6` with a local model at **0.92253 balanced accuracy**.
+daily submission cap is read from its Kaggle metadata — default 5; the gate blocks until budget frees). The submit happens on the trusted verifier
+sibling — `KAGGLE_USERNAME`/`KAGGLE_KEY` never reach a worker. It's a new task type in the catalog
+(`verity catalog --type fe-kaggle`). **You prepare the data** (ADR 0005): split it into per-role
+bundles outside Verity (`tools/prepare_fe_data.py`), then create with role-keyed
+`verity create --request-file task.json --file agent:train.csv=<h> --file verifier:holdout_labels.csv=<h> …`
+— the control plane routes opaque blobs and interprets no dataset semantics. The committed, runnable
+package — `task.json` (local-agent default), `run.sh` (which runs the prep for you), and the full
+setup protocol (token, accepting the competition rules) — lives in
+[`feature-engineering-test/PROTOCOL.md`](feature-engineering-test/PROTOCOL.md). Validated live on
+`playground-series-s6e6` with a local model at **0.92253 balanced accuracy**.
 
 ## Acceptance modes
 
