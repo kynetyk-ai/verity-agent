@@ -211,25 +211,32 @@ def _verifier_factory_from_env(backend: WorkerBackend) -> VerifierFactory:
     return _http_verifier
 
 _FE_KAGGLE_INSTRUCTIONS = (
-    "Improve balanced accuracy by any means that fits in one script — features, model choice, a "
-    "small ensemble, calibration, imbalance handling — then submit. If there's no incumbent yet, "
-    "explore the data with code first; if there is one (under scratch/provided/), read it and "
-    "target its weakness. Predict EVERY row of test.csv: your predictions are scored first on a "
-    "hidden hold-out, then submitted to the REAL Kaggle leaderboard, which decides acceptance. "
-    "Anything that leaks the target inflates your own number but fails on the held-out and real "
-    "data. Keep it fast enough to finish the time budget."
+    "Climb into the TOP TIER of the real Kaggle leaderboard. Improve balanced accuracy by any "
+    "means that fits in one script — features, model choice, a small ensemble, calibration, "
+    "imbalance handling — and TRAIN ON THE FULL data. If there's no prior work yet, explore the "
+    "data with code first; otherwise read your prior/just-revised script under scratch/provided/ "
+    "and target its weakness. Each cycle your hold-out score is checked against a competitive "
+    "target read live from the leaderboard: below it you're told the gap and asked to REVISE (no "
+    "submission spent); at or above it the script is regenerated on the full data and submitted to "
+    "the REAL leaderboard, accepted only if its public score beats your best. Predict EVERY row of "
+    "test.csv. Anything that leaks the target inflates your own number but fails on the held-out "
+    "and real data."
 )
 
 _FE_KAGGLE_VERIFIER_APPROACH = (
-    "Two-tier ladder over the regenerated script (the gate re-runs the script on gold data; the "
-    "agent's own CSV is never trusted). CHEAP, per-cycle: the script runs on a labeled hold-out "
-    "carved from train.csv and is scored on balanced accuracy; a submission that does not beat the "
-    "best ACCEPTED proxy is rejected before any Kaggle call. HARD, rate-limited (the competition's "
-    "daily submission cap, read from its Kaggle metadata; overridable): the "
-    "survivor is regenerated on the full train + real test set and submitted to the live Kaggle "
-    "competition; it is ACCEPTED only if the public score beats our best prior Kaggle-confirmed "
-    "score (the real leaderboard is the incumbent ladder). When the daily cap is spent the gate "
-    "blocks until it frees; a Kaggle API failure degrades the cycle (recorded), not crash the run."
+    "A goal-seeking ladder over the regenerated script (the gate re-runs the script on gold data; "
+    "the agent's own CSV is never trusted). CHEAP, per-cycle: the script runs on a labeled "
+    "hold-out carved from train.csv and is scored on balanced accuracy; a submission that does not "
+    "beat the best ACCEPTED proxy by a noise margin is rejected before any Kaggle call. "
+    "COMPETITIVE, per-cycle (no budget spent): the live leaderboard is read and the score at the "
+    "top-N% rank computed; if our calibrated hold-out estimate is below it the submission is "
+    "REFINED (rests revised, the gap fed back) so a real submission is spent only on a competitive "
+    "attempt. HARD, rate-limited (the competition's daily submission cap, read from its Kaggle "
+    "metadata; overridable): a survivor is regenerated on the full train + real test set and "
+    "submitted to the live competition; ACCEPTED only if the public score beats our best prior "
+    "Kaggle-confirmed score (the real leaderboard is the incumbent ladder), recording the (proxy, "
+    "public) pair to calibrate future estimates. When the daily cap is spent the gate blocks until "
+    "it frees; a Kaggle API failure degrades the cycle (recorded), not crash the run."
 )
 _FE_KAGGLE_SANDBOX_NOTES = (
     "A general-purpose coding agent that writes and runs Python in an isolated worker; needs the "
