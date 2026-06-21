@@ -68,6 +68,10 @@ services:
       # §9.1 verifier sibling: the image to launch + the shared network the CP reaches it on by name.
       VERITY_VERIFIER_IMAGE: "verity-verifier:latest"
       VERITY_VERIFIER_NETWORK: "verity-net"
+      # Memory cap for the verifier sibling. It is shipped the whole verifier-role dataset as its
+      # setup payload over HTTP and buffers it, so this must clear the dataset size (full-data
+      # fe-kaggle is ~230 MB of CSV); the 512 MB worker default OOM-kills it on a real run.
+      VERITY_VERIFIER_MEMORY: "${VERITY_VERIFIER_MEMORY:-4g}"
       # Model credentials — the CP forwards the selected model's key env to the agent worker
       # (sandbox env-passthrough). Empty unless a hosted model is used; a local model needs none.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
