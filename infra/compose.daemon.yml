@@ -60,6 +60,11 @@ services:
       VERITY_SANDBOX_IMAGE: "verity-sandbox:latest"
       VERITY_MODEL: "${VERITY_MODEL:-qwen3.6:27b-coding-mxfp8}"
       VERITY_LOCAL_BASE_URL: "${VERITY_LOCAL_BASE_URL:-http://host.docker.internal:11434/v1}"
+      # The image the verifier's code-runner runs untrusted submissions in. Forwarded to the verifier
+      # sibling (composition/fe_kaggle _VERIFIER_RUNNER_ENV). MUST be the purpose-built runner, not a
+      # bare python:3.12-slim — the slim image lacks the system .so's (libgomp etc.) that LightGBM /
+      # XGBoost link at runtime, so those submissions would crash with `OSError: libgomp.so.1`.
+      VERITY_CODE_IMAGE: "${VERITY_CODE_IMAGE:-verity-code-runner:latest}"
       # §9.1 verifier sibling: the image to launch + the shared network the CP reaches it on by name.
       VERITY_VERIFIER_IMAGE: "verity-verifier:latest"
       VERITY_VERIFIER_NETWORK: "verity-net"
