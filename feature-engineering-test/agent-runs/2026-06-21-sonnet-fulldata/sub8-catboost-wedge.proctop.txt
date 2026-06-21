@@ -1,0 +1,4 @@
+PID                 %CPU                TIME                CMD
+26671               0.0                 00:00:00            sh -c pip install --no-cache-dir --target=/tmp/site -r /work/requirements.txt && PYTHONPATH=/tmp/site python /work/submission.py
+26698               1304                08:45:55            python /work/submission.py
+27264               0.0                 00:00:00            /bin/sh
