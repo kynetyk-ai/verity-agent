@@ -439,6 +439,11 @@ Data + speed (the amount of training data is the real lever here — use ALL of 
   LightGBM) and `thread_count=-1` (CatBoost) so training is parallel. A single-threaded fit (the
   library default for some estimators) on the full data WILL time out — this is the most common
   reason a good model fails to finish.
+- The runner is an automated, isolated sandbox — not your interactive workspace, and with tighter
+  limits. If you combine libraries that each run their OWN parallelism (e.g. more than one
+  gradient-boosting library in one script), they can contend for the cores and STALL the run. When
+  you mix components like that, train each in its own process (`multiprocessing` /
+  `ProcessPoolExecutor`) and combine their predictions, rather than co-loading them in one process.
 - Optimize for BALANCED accuracy, not raw accuracy: validate with stratified cross-validation and
   handle the class imbalance (class weights / resampling / threshold tuning).
 - The gate runs your script under a generous time budget, but a model that does not finish scores
