@@ -43,7 +43,7 @@ from verity.domains.feature_engineering import (
     build_feature_engineering_domain,
     declared_objects,
 )
-from verity.provisioning.backend import Labels, WorkerBackend, WorkerSpec
+from verity.provisioning.backend import Labels, ResourceLimits, WorkerBackend, WorkerSpec
 from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
 
@@ -84,6 +84,12 @@ _DEFAULT_VERIFIER_PORT = 8001
 # generous; override with VERITY_VERIFIER_TIMEOUT. (A cap-blocked Kaggle wait can exceed even this —
 # that legitimately long synchronous hold wants the async verify-job redesign, tracked separately.)
 _DEFAULT_VERIFIER_TIMEOUT_S = 1800.0
+# The verifier sibling is shipped the whole verifier-role dataset as its setup payload over HTTP and
+# buffers + parses it in memory, so the cap must clear the dataset size (full-data fe-kaggle is
+# ~230 MB of CSV → a few hundred MB peak while receiving). The 512 MB worker default OOM-kills it on
+# a real run; default generously and let an operator override with VERITY_VERIFIER_MEMORY. (Removing
+# the over-the-wire bulk transfer entirely is the networked-data-plane track, tracked separately.)
+_DEFAULT_VERIFIER_MEMORY = "4g"
 # Creds the verifier service needs, forwarded by NAME (values stay in the daemon env, never the CP
 # image or an agent worker): the Kaggle credentials the trusted final-test gate submits with.
 _VERIFIER_CRED_ENV = ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_CONFIG_DIR")
@@ -133,6 +139,9 @@ def _verifier_service_spec(network: str, *, image: str, staging: str | None) -> 
         service_name=name, network_name=network, mount_docker_socket=True,
         host_mounts=host_mounts, env=env,
         env_passthrough=_VERIFIER_CRED_ENV + _VERIFIER_RUNNER_ENV,
+        limits=ResourceLimits(
+            memory=os.environ.get("VERITY_VERIFIER_MEMORY", _DEFAULT_VERIFIER_MEMORY)
+        ),
     )
 
 
