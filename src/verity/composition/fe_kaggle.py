@@ -252,6 +252,10 @@ async def configure_fe_kaggle_task(
     poll_interval_s: float = 60.0,
     score_poll_interval_s: float = 20.0,
     submit_message: str = "verity fe-kaggle",
+    target_fraction: float = 0.10,
+    proxy_margin: float = 0.0,
+    min_calibration_points: int = 2,
+    pessimism: float = 0.0,
 ) -> str:
     """Configure the `fe-kaggle` task onto a generic ``cp`` via its API. Returns the task id.
 
@@ -304,6 +308,10 @@ async def configure_fe_kaggle_task(
             "poll_interval_s": poll_interval_s,
             "score_poll_interval_s": score_poll_interval_s,
             "submit_message": submit_message,
+            "target_fraction": target_fraction,
+            "proxy_margin": proxy_margin,
+            "min_calibration_points": min_calibration_points,
+            "pessimism": pessimism,
             **(
                 {"daily_submission_limit": daily_submission_limit}
                 if daily_submission_limit is not None
@@ -373,6 +381,8 @@ async def build_fe_kaggle_task(
     # The Kaggle scorer + the gates are constructed on the verifier side (#73): we route the
     # competition slug + knobs in the setup payload; no `kaggle` import lives in the control plane.
     limit_knob = knobs.get("daily_submission_limit")
+    # ``target_percentile`` is the human-facing knob (top-N%); the gate works in a fraction.
+    target_fraction = float(knobs.get("target_percentile", 10.0)) / 100.0
     return await configure_fe_kaggle_task(
         cp, backend=backend, agent_files=agent_files, verifier_files=verifier_files,
         competition=str(competition),
@@ -382,6 +392,10 @@ async def build_fe_kaggle_task(
         poll_interval_s=float(knobs.get("budget_poll_interval_s", 60.0)),
         score_poll_interval_s=float(knobs.get("score_poll_interval_s", 20.0)),
         submit_message=str(knobs.get("submit_message", "verity fe-kaggle")),
+        target_fraction=target_fraction,
+        proxy_margin=float(knobs.get("proxy_margin", 0.0)),
+        min_calibration_points=int(knobs.get("min_calibration_points", 2)),
+        pessimism=float(knobs.get("pessimism", 0.0)),
     )
 
 

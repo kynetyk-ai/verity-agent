@@ -2,19 +2,28 @@
 authoritative final test (the `fe-kaggle` task type).
 
 Reuses the §12 feature-engineering domain wholesale (schema / shape / instructions and the shared
-scoring helpers) and only swaps the verifier's gate stack. The ladder becomes two-tier:
+scoring helpers) and only swaps the verifier's gate stack. The ladder climbs toward a **top-N%
+leaderboard bar**, spending a real Kaggle submission only on an attempt we believe is competitive:
 
-* **cheap, per-cycle, unlimited (local proxy):** the gate re-runs the agent's *script* on a labeled
-  hold-out carved from ``train.csv`` (never the agent's CSV — trusted regeneration) and scores
-  balanced accuracy; a submission that doesn't beat our best **accepted** proxy is a cheap reject
-  (so we never spend a Kaggle submission on a locally-worse attempt).
-* **expensive, rate-limited (the real test):** for a survivor, regenerate the submission on the
-  **full train + the real `test.csv`**, then submit to Kaggle and read the public score. Accept iff
-  it **beats our best prior Kaggle-confirmed score** (the leaderboard is the incumbent ladder). The
-  Kaggle cap is the competition's own daily limit (read from its metadata, default 5); when the
-  budget is spent the gate **blocks** (polls) until it frees, up to
-  ``wait_deadline_s`` (then a recoverable `GateUnavailable`). The control plane imposes no dispatch
-  backstop by default, so the wait is legitimate, not a hang.
+* **runs-clean (cheap):** re-run the agent's *script* on a labeled hold-out carved from
+  ``train.csv`` (never the agent's CSV — trusted regeneration); a crash / timeout / missing
+  prediction is a reject.
+* **proxy-improves (cheap):** score balanced accuracy on the hold-out; a submission that doesn't
+  beat our best **accepted** proxy *by a noise margin* is a cheap reject (no Kaggle submission
+  wasted on a locally-worse-or-equal attempt). With no accept yet the bar is 0, so early attempts
+  iterate freely.
+* **competitive (cheap, the goal-seeking rung):** read the **live leaderboard** (read-only, no
+  budget spent), compute the score at the top-``target_fraction`` rank, and compare it to our
+  *calibrated* hold-out estimate. Below the bar → **refine** (the artifact rests ``revised`` and the
+  gap is fed back to the agent — *no submission spent*); at/above the bar → proceed to submit. An
+  empty leaderboard skips the bar (can't gate ⇒ proceed); an API failure degrades the cycle.
+* **kaggle (expensive, rate-limited — the real test):** regenerate on the **full train + the real
+  `test.csv`**, submit, read the public score, and record the ``(proxy, public)`` pair (it
+  calibrates the competitive estimate — self-improving as submissions accrue). Accept iff it
+  **beats our best prior Kaggle-confirmed score**. The Kaggle cap is the competition's own daily
+  limit (metadata,
+  default 5); when spent the gate **blocks** (polls) until it frees, up to ``wait_deadline_s`` (then
+  a recoverable `GateUnavailable`).
 
 The submit happens here, in the **trusted in-process verifier** — creds never reach a worker; the
 code-runner worker only produces predictions (`KaggleScorer`).
@@ -55,7 +64,7 @@ from verity.verifier import (
     RunResult,
     SdkVerifier,
 )
-from verity.verifier.kaggle import KaggleScorer
+from verity.verifier.kaggle import KaggleScorer, top_fraction_threshold
 
 __all__ = [
     "KAGGLE_VERIFIER_IDENTITY",
@@ -112,6 +121,15 @@ class _KaggleGates:
     wait_deadline_s: float = 86_400.0
     poll_interval_s: float = 60.0
     submit_message: str = "verity"
+    # the competitive bar: be in the top ``target_fraction`` of the live leaderboard.
+    target_fraction: float = 0.10
+    # the hold-out balanced-accuracy improvement a submission must clear to count as real (≈ a few
+    # std-errors on the hold-out), so sub-noise wobble isn't read as progress.
+    proxy_margin: float = 0.0
+    # how many (proxy, public) pairs before we trust the proxy→public calibration; below this the
+    # competitive estimate degrades to the raw proxy minus ``pessimism``.
+    min_calibration_points: int = 2
+    pessimism: float = 0.0
     _run_cache: dict[str, RunResult] = field(default_factory=dict)
     _proxy_scores: dict[str, float] = field(default_factory=dict)
     _real_scores: dict[str, float] = field(default_factory=dict)
@@ -183,8 +201,10 @@ class _KaggleGates:
         return GateVerdict(VerdictKind.ACCEPT, "runs clean on the hold-out")
 
     async def proxy_improves(self, request: VerifierRequest) -> GateVerdict | None:
-        """Cheap rung: the local proxy score must beat our best **accepted** proxy, else reject —
-        the budget-saving filter so a Kaggle call is never spent on a locally-worse attempt."""
+        """Cheap rung: the local proxy score must beat our best **accepted** proxy *by a noise
+        margin*, else reject — the budget-saving filter so a Kaggle call is never spent on a
+        locally-worse-or-equal attempt. With no accept yet the bar is 0, so early attempts pass and
+        iterate against the competitive bar instead."""
         _, result = await self._proxy_run(request)
         preds = _parse_predictions(result.output) if result is not None else None
         if preds is None:
@@ -192,10 +212,62 @@ class _KaggleGates:
         net = balanced_accuracy(self.reserved_labels, preds)
         self._proxy_scores[request.proposal.id] = net
         _, best = self._best(self._proxy_scores, request.store_slice)
-        detail = f"local proxy balanced-accuracy {net:.4f} vs best accepted {best:.4f}"
-        if net <= best:
+        detail = (
+            f"local proxy balanced-accuracy {net:.4f} vs best accepted {best:.4f} "
+            f"(margin {self.proxy_margin:.4f})"
+        )
+        if net <= best + self.proxy_margin:
             return GateVerdict(VerdictKind.REJECT, f"no local improvement: {detail}")
         return GateVerdict(VerdictKind.ACCEPT, f"local improvement: {detail}")
+
+    async def competitive(self, request: VerifierRequest) -> GateVerdict | None:
+        """Cheap, goal-seeking rung: only spend a Kaggle submission on an attempt we believe is
+        **top-``target_fraction``** on the live leaderboard. Compares our *calibrated* hold-out
+        estimate to the score at that rank; below the bar → ``refine`` (rest ``revised``, feed the
+        gap back, spend nothing); at/above → accept and proceed to submit. An empty leaderboard
+        can't gate, so we proceed; an API failure raises `GateUnavailable` (the cycle degrades)."""
+        proxy = self._proxy_scores.get(request.proposal.id)
+        if proxy is None:  # proxy-improves normally caches it first; recompute defensively
+            _, result = await self._proxy_run(request)
+            preds = _parse_predictions(result.output) if result is not None else None
+            if preds is None:
+                return GateVerdict(VerdictKind.REJECT, "no scorable hold-out predictions")
+            proxy = balanced_accuracy(self.reserved_labels, preds)
+            self._proxy_scores[request.proposal.id] = proxy
+        scores = await self.scorer.leaderboard_scores()
+        target = top_fraction_threshold(scores, self.target_fraction)
+        if target is None:
+            return GateVerdict(
+                VerdictKind.ACCEPT, "leaderboard unavailable; competitive bar skipped"
+            )
+        estimate = self._calibrated_estimate(proxy)
+        bar = f"top-{self.target_fraction:.0%} bar"
+        if estimate < target:
+            gap = target - estimate
+            msg = (
+                f"below the {bar}: estimated public score {estimate:.4f} vs target {target:.4f} "
+                f"(gap {gap:.4f}); keep improving the held-out score before we spend a submission"
+            )
+            return GateVerdict(VerdictKind.REFINE, msg, defects=(msg,))
+        return GateVerdict(
+            VerdictKind.ACCEPT,
+            f"clears the {bar}: estimated public score {estimate:.4f} >= target {target:.4f}",
+        )
+
+    def _calibrated_estimate(self, proxy: float) -> float:
+        """Map a hold-out proxy to an expected public score using accumulated ``(proxy, public)``
+        pairs (the gate's own measurement history). With ``>= min_calibration_points`` pairs, apply
+        the mean proxy→public offset; below that, degrade to the raw proxy minus ``pessimism``.
+        Clamped to ``[0, 1]`` (balanced accuracy)."""
+        pairs = [
+            (self._proxy_scores[i], self._real_scores[i])
+            for i in self._real_scores
+            if i in self._proxy_scores
+        ]
+        if len(pairs) >= self.min_calibration_points:
+            offset = sum(real - p for p, real in pairs) / len(pairs)
+            return max(0.0, min(1.0, proxy + offset))
+        return max(0.0, min(1.0, proxy - self.pessimism))
 
     async def kaggle(self, request: VerifierRequest) -> GateVerdict | None:
         """Hard rung: regenerate on full/real data, submit to Kaggle, accept iff the public score
@@ -257,8 +329,13 @@ def build_feature_engineering_kaggle_verifier(
     wait_deadline_s: float = 86_400.0,
     poll_interval_s: float = 60.0,
     submit_message: str = "verity",
+    target_fraction: float = 0.10,
+    proxy_margin: float = 0.0,
+    min_calibration_points: int = 2,
+    pessimism: float = 0.0,
 ) -> SdkVerifier:
-    """The opaque FE-Kaggle verifier: cheap local proxy gates + the hard Kaggle leaderboard gate."""
+    """The opaque FE-Kaggle verifier: cheap local proxy + competitive gates, then the hard Kaggle
+    leaderboard gate (submit only at/above the top-``target_fraction`` bar)."""
     gates = _KaggleGates(
         runner=runner, scorer=scorer,
         agent_train_csv=agent_train_csv, reserved_test_csv=reserved_test_csv,
@@ -267,6 +344,8 @@ def build_feature_engineering_kaggle_verifier(
         timeout_s=timeout_s,
         wait_deadline_s=wait_deadline_s, poll_interval_s=poll_interval_s,
         submit_message=submit_message,
+        target_fraction=target_fraction, proxy_margin=proxy_margin,
+        min_calibration_points=min_calibration_points, pessimism=pessimism,
     )
     sinks = (runner,) if isinstance(runner, SupportsRunContext) else ()
     return SdkVerifier(
@@ -276,6 +355,7 @@ def build_feature_engineering_kaggle_verifier(
             SUBMISSION: (
                 GateStep("runs-clean", gates.runnable, is_hard=False),
                 GateStep("proxy-improves", gates.proxy_improves, is_hard=False),
+                GateStep("competitive", gates.competitive, is_hard=False),
                 GateStep("kaggle", gates.kaggle, is_hard=True),
             ),
         },

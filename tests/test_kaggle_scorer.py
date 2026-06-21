@@ -1,9 +1,9 @@
 """The Kaggle scorer seam's pure pieces — the top-N% leaderboard threshold + the fake's read.
 
 Offline, no network/creds: ``top_fraction_threshold`` is the competitive gate's bar (the score you
-must beat-or-match to sit in the top fraction of the standings), and ``FakeKaggleScorer`` scripts the
-leaderboard the gate reads. The live ``competition_leaderboard_view`` path is exercised only by the
-read-only ``@kaggle`` test in ``test_fe_kaggle_live.py``.
+must beat-or-match to sit in the top fraction of the standings), and ``FakeKaggleScorer`` scripts
+the leaderboard the gate reads. The live ``competition_leaderboard_view`` path is exercised only by
+the read-only ``@kaggle`` test in ``test_fe_kaggle_live.py``.
 """
 
 from __future__ import annotations

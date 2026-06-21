@@ -168,7 +168,8 @@ class RealKaggleScorer:
 
 def _leaderboard_view(api: Any, competition: str) -> Any:
     """Call whichever leaderboard-view method the installed kaggle client exposes (name has drifted
-    across releases). Raises ``AttributeError`` if none is present — caught as ``GateUnavailable``."""
+    across releases). Raises ``AttributeError`` if none is present — caught as ``GateUnavailable``.
+    """
     for name in ("competition_leaderboard_view", "competition_view_leaderboard"):
         fn = getattr(api, name, None)
         if fn is not None:

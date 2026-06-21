@@ -92,7 +92,11 @@ def build_fe_kaggle_verifier_from_setup(setup: VerifierSetup) -> VerifierPort:
     scorer: KaggleScorer
     if fake:
         fake_scores = params.get("fake_scores") or [1.0]
-        scorer = FakeKaggleScorer(scores=[float(s) for s in fake_scores])
+        fake_board = params.get("fake_leaderboard") or []
+        scorer = FakeKaggleScorer(
+            scores=[float(s) for s in fake_scores],
+            leaderboard=[float(s) for s in fake_board],
+        )
     else:
         limit = params.get("daily_submission_limit")
         scorer = RealKaggleScorer(
@@ -114,6 +118,10 @@ def build_fe_kaggle_verifier_from_setup(setup: VerifierSetup) -> VerifierPort:
         wait_deadline_s=float(params.get("wait_deadline_s", 86_400.0)),
         poll_interval_s=float(params.get("poll_interval_s", 60.0)),
         submit_message=str(params.get("submit_message", "verity fe-kaggle")),
+        target_fraction=float(params.get("target_fraction", 0.10)),
+        proxy_margin=float(params.get("proxy_margin", 0.0)),
+        min_calibration_points=int(params.get("min_calibration_points", 2)),
+        pessimism=float(params.get("pessimism", 0.0)),
     )
 
 
