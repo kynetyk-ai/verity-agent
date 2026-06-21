@@ -435,6 +435,10 @@ Data + speed (the amount of training data is the real lever here — use ALL of 
   problem the quantity of training data is the dominant driver of the score, and a gradient-boosted
   tree model (LightGBM / XGBoost / CatBoost) fits the whole set in a couple of minutes — comfortably
   within the time budget.
+- USE ALL THE CPU CORES. The runner has ~16 cores — set `n_jobs=-1` (scikit-learn / XGBoost /
+  LightGBM) and `thread_count=-1` (CatBoost) so training is parallel. A single-threaded fit (the
+  library default for some estimators) on the full data WILL time out — this is the most common
+  reason a good model fails to finish.
 - Optimize for BALANCED accuracy, not raw accuracy: validate with stratified cross-validation and
   handle the class imbalance (class weights / resampling / threshold tuning).
 - The gate runs your script under a generous time budget, but a model that does not finish scores
