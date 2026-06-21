@@ -789,9 +789,12 @@ no rebuild — is `tests/test_daemon_live.py`.
 #### The `fe-kaggle` task type — the real Kaggle leaderboard as the final-test gate
 
 `fe-kaggle` is the feature-engineering task with the **live competition leaderboard** as its
-authoritative gate (a two-tier ladder: a cheap local-hold-out proxy filters every cycle; the hard gate
-regenerates the submission on the full train + the real `test.csv`, submits to Kaggle, and accepts only
-what **beats our best prior public score**). The Kaggle submit happens on the **trusted verifier
+authoritative gate (a goal-seeking ladder: a cheap local-hold-out proxy filters every cycle, then a
+**competitive** rung reads the live leaderboard and only lets through an attempt whose *calibrated*
+hold-out estimate would reach the top-`target_percentile`% — below the bar the attempt is **refined**,
+the gap fed back, spending no submission; the hard gate then regenerates the submission on the full
+train + the real `test.csv`, submits to Kaggle, and accepts only what **beats our best prior public
+score**). The Kaggle submit happens on the **trusted verifier
 side** — `KAGGLE_USERNAME`/`KAGGLE_KEY` are forwarded to the verifier sibling only and are **never**
 sent to a worker; the competition's daily submission cap is read from its Kaggle metadata (default 5,
 overridable via the `daily_submission_limit` knob) and the gate **blocks** until budget frees.

@@ -100,14 +100,16 @@ def parse_label_csv(data: bytes, *, id_column: str = "id", target: str = "class"
 
 @dataclass
 class _KaggleGates:
-    """The two-tier Submission gates over the agent's regenerated script (one cached run per role).
+    """The goal-seeking Submission gates over the agent's regenerated script (one cached run/role).
 
     Two evaluations of the *same* script, on different data the gate controls:
     - **proxy** (cheap): train on ``agent_train_csv``, predict ``reserved_test_csv``; scored vs the
-      held ``reserved_labels`` (never exposed) — the local generalization estimate.
+      held ``reserved_labels`` (never exposed) — the local generalization estimate. The competitive
+      rung turns this (calibrated) into a top-``target_fraction`` call against the live leaderboard.
     - **kaggle** (hard): train on ``full_train_csv``, predict ``real_test_csv`` → the submission
       sent to Kaggle. ``_proxy_scores`` / ``_real_scores`` are the verifier's measurement ledgers
-      (proposal id → score), read for incumbents by the store-slice's accepted ids (independence).
+      (proposal id → score), read for incumbents by the store-slice's accepted ids (independence),
+      and paired into the proxy→public calibration.
     """
 
     runner: CodeRunner
