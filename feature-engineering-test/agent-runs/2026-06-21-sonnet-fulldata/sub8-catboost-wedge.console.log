@@ -1,0 +1,104 @@
+Collecting pandas==2.2.2 (from -r /work/requirements.txt (line 1))
+  Downloading pandas-2.2.2-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl.metadata (19 kB)
+Collecting numpy==1.26.4 (from -r /work/requirements.txt (line 2))
+  Downloading numpy-1.26.4-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl.metadata (62 kB)
+Collecting scikit-learn==1.5.0 (from -r /work/requirements.txt (line 3))
+  Downloading scikit_learn-1.5.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl.metadata (11 kB)
+Collecting lightgbm==4.3.0 (from -r /work/requirements.txt (line 4))
+  Downloading lightgbm-4.3.0-py3-none-manylinux2014_aarch64.whl.metadata (19 kB)
+Collecting catboost==1.2.5 (from -r /work/requirements.txt (line 5))
+  Downloading catboost-1.2.5-cp312-cp312-manylinux2014_aarch64.whl.metadata (1.2 kB)
+Collecting python-dateutil>=2.8.2 (from pandas==2.2.2->-r /work/requirements.txt (line 1))
+  Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Collecting pytz>=2020.1 (from pandas==2.2.2->-r /work/requirements.txt (line 1))
+  Downloading pytz-2026.2-py2.py3-none-any.whl.metadata (22 kB)
+Collecting tzdata>=2022.7 (from pandas==2.2.2->-r /work/requirements.txt (line 1))
+  Downloading tzdata-2026.2-py2.py3-none-any.whl.metadata (1.4 kB)
+Collecting scipy>=1.6.0 (from scikit-learn==1.5.0->-r /work/requirements.txt (line 3))
+  Downloading scipy-1.18.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl.metadata (62 kB)
+Collecting joblib>=1.2.0 (from scikit-learn==1.5.0->-r /work/requirements.txt (line 3))
+  Downloading joblib-1.5.3-py3-none-any.whl.metadata (5.5 kB)
+Collecting threadpoolctl>=3.1.0 (from scikit-learn==1.5.0->-r /work/requirements.txt (line 3))
+  Downloading threadpoolctl-3.6.0-py3-none-any.whl.metadata (13 kB)
+Collecting graphviz (from catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading graphviz-0.21-py3-none-any.whl.metadata (12 kB)
+Collecting matplotlib (from catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading matplotlib-3.11.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl.metadata (80 kB)
+Collecting plotly (from catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading plotly-6.8.0-py3-none-any.whl.metadata (9.0 kB)
+Collecting six (from catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+INFO: pip is looking at multiple versions of scipy to determine which version is compatible with other requirements. This could take a while.
+Collecting scipy>=1.6.0 (from scikit-learn==1.5.0->-r /work/requirements.txt (line 3))
+  Downloading scipy-1.17.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl.metadata (62 kB)
+Collecting contourpy>=1.0.1 (from matplotlib->catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading contourpy-1.3.3-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl.metadata (5.5 kB)
+Collecting cycler>=0.10 (from matplotlib->catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading cycler-0.12.1-py3-none-any.whl.metadata (3.8 kB)
+Collecting fonttools>=4.22.0 (from matplotlib->catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading fonttools-4.63.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (118 kB)
+Collecting kiwisolver>=1.3.1 (from matplotlib->catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading kiwisolver-1.5.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl.metadata (5.1 kB)
+Collecting packaging>=20.0 (from matplotlib->catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading packaging-26.2-py3-none-any.whl.metadata (3.5 kB)
+Collecting pillow>=9 (from matplotlib->catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading pillow-12.2.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl.metadata (8.8 kB)
+Collecting pyparsing>=3 (from matplotlib->catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading pyparsing-3.3.2-py3-none-any.whl.metadata (5.8 kB)
+Collecting narwhals>=1.15.1 (from plotly->catboost==1.2.5->-r /work/requirements.txt (line 5))
+  Downloading narwhals-2.22.1-py3-none-any.whl.metadata (15 kB)
+Downloading pandas-2.2.2-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl (15.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 15.2/15.2 MB 57.4 MB/s eta 0:00:00
+Downloading numpy-1.26.4-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl (13.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.9/13.9 MB 60.6 MB/s eta 0:00:00
+Downloading scikit_learn-1.5.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl (12.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 12.1/12.1 MB 60.7 MB/s eta 0:00:00
+Downloading lightgbm-4.3.0-py3-none-manylinux2014_aarch64.whl (3.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.1/3.1 MB 60.2 MB/s eta 0:00:00
+Downloading catboost-1.2.5-cp312-cp312-manylinux2014_aarch64.whl (97.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 97.7/97.7 MB 58.9 MB/s eta 0:00:00
+Downloading joblib-1.5.3-py3-none-any.whl (309 kB)
+Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+Downloading pytz-2026.2-py2.py3-none-any.whl (510 kB)
+Downloading scipy-1.17.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl (32.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 32.9/32.9 MB 60.7 MB/s eta 0:00:00
+Downloading six-1.17.0-py2.py3-none-any.whl (11 kB)
+Downloading threadpoolctl-3.6.0-py3-none-any.whl (18 kB)
+Downloading tzdata-2026.2-py2.py3-none-any.whl (349 kB)
+Downloading graphviz-0.21-py3-none-any.whl (47 kB)
+Downloading matplotlib-3.11.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl (10.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.8/10.8 MB 57.7 MB/s eta 0:00:00
+Downloading plotly-6.8.0-py3-none-any.whl (9.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 9.9/9.9 MB 58.2 MB/s eta 0:00:00
+Downloading contourpy-1.3.3-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl (332 kB)
+Downloading cycler-0.12.1-py3-none-any.whl (8.3 kB)
+Downloading fonttools-4.63.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (5.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.0/5.0 MB 50.2 MB/s eta 0:00:00
+Downloading kiwisolver-1.5.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 60.8 MB/s eta 0:00:00
+Downloading narwhals-2.22.1-py3-none-any.whl (454 kB)
+Downloading packaging-26.2-py3-none-any.whl (100 kB)
+Downloading pillow-12.2.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl (6.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.4/6.4 MB 59.8 MB/s eta 0:00:00
+Downloading pyparsing-3.3.2-py3-none-any.whl (122 kB)
+Installing collected packages: pytz, tzdata, threadpoolctl, six, pyparsing, pillow, packaging, numpy, narwhals, kiwisolver, joblib, graphviz, fonttools, cycler, scipy, python-dateutil, plotly, contourpy, scikit-learn, pandas, matplotlib, lightgbm, catboost
+Successfully installed catboost-1.2.5 contourpy-1.3.3 cycler-0.12.1 fonttools-4.63.0 graphviz-0.21 joblib-1.5.3 kiwisolver-1.5.0 lightgbm-4.3.0 matplotlib-3.11.0 narwhals-2.22.1 numpy-1.26.4 packaging-26.2 pandas-2.2.2 pillow-12.2.0 plotly-6.8.0 pyparsing-3.3.2 python-dateutil-2.9.0.post0 pytz-2026.2 scikit-learn-1.5.0 scipy-1.17.1 six-1.17.0 threadpoolctl-3.6.0 tzdata-2026.2
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.1.2
+[notice] To update, run: pip install --upgrade pip
+Train shape: (490746, 12), Test shape: (86601, 11)
+Class distribution:
+class
+GALAXY    320858
+QSO        99572
+STAR       70316
+Name: count, dtype: int64
+Classes: ['GALAXY' 'QSO' 'STAR']
+Features: 70
+Class weights: {'GALAXY': 0.5098267769542913, 'QSO': 1.6428514040091593, 'STAR': 2.3263837533420557}
+Training LightGBM...
+LightGBM done.
+Training CatBoost...
+0:	learn: 0.9243481	total: 119ms	remaining: 2m 58s
+200:	learn: 0.9596214	total: 10.6s	remaining: 1m 8s

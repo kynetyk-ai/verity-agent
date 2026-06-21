@@ -97,9 +97,11 @@ daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `
 - The submitted script exported to `${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out/<run_id>/`.
 - Your submissions appear on the competition's public leaderboard under your Kaggle account.
 
-A **recorded first end-to-end run** (full data, hosted gpt-5.4 — the data we saw across 10 cycles,
-plus all nine agent submissions) lives in
-[`agent-runs/2026-06-21-gpt5.4-fulldata/`](agent-runs/2026-06-21-gpt5.4-fulldata/README.md).
+**Recorded end-to-end runs** (the data we saw across 10 cycles each, plus every agent submission) live
+under `agent-runs/`:
+[`2026-06-21-gpt5.4-fulldata/`](agent-runs/2026-06-21-gpt5.4-fulldata/README.md) (hosted gpt-5.4) and
+[`2026-06-21-sonnet-fulldata/`](agent-runs/2026-06-21-sonnet-fulldata/README.md) (claude-sonnet-4-6) —
+an apples-to-apples model comparison on the same task/data/infra.
 
 ## Knobs (`task.json`)
 
