@@ -97,6 +97,10 @@ daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `
 - The submitted script exported to `${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out/<run_id>/`.
 - Your submissions appear on the competition's public leaderboard under your Kaggle account.
 
+A **recorded first end-to-end run** (full data, hosted gpt-5.4 — the data we saw across 10 cycles,
+plus all nine agent submissions) lives in
+[`agent-runs/2026-06-21-gpt5.4-fulldata/`](agent-runs/2026-06-21-gpt5.4-fulldata/README.md).
+
 ## Knobs (`task.json`)
 
 - `sandbox.model` / `sandbox.base_url` — the agent's model (local by default). `sandbox.code_timeout_s`
