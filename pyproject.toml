@@ -73,6 +73,8 @@ packages = ["src/verity"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests", "tools"]
+# Recorded agent submissions (verbatim model output kept as run artifacts, not maintained source).
+extend-exclude = ["feature-engineering-test/agent-runs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
