@@ -159,11 +159,13 @@ Reach it with the same CLI: `verity --url http://host:8080 --token <secret> cata
 *External HTTP/REST* section of [docs/api-surface.md](docs/api-surface.md).
 
 **5. The `fe-kaggle` task — the real Kaggle leaderboard as the final-test gate (needs Docker, a
-model, a Kaggle token).** The §12 FE domain with a **two-tier gate**: a cheap local-hold-out proxy
-filters every cycle (so no Kaggle submission is wasted on a locally-worse attempt), then the hard gate
-regenerates the submission on the full train + the real `test.csv`, **submits to a live Kaggle
-competition**, and accepts only what beats our best **public-leaderboard** score (the competition's
-daily submission cap is read from its Kaggle metadata — default 5; the gate blocks until budget frees). The submit happens on the trusted verifier
+model, a Kaggle token).** The §12 FE domain with a **goal-seeking gate**: a cheap local-hold-out
+proxy filters every cycle, then a **competitive** rung reads the live leaderboard and only submits an
+attempt whose calibrated hold-out estimate would reach the top-N% (below the bar it **refines** — the
+gap fed back, no submission spent); the hard gate then regenerates the submission on the full train +
+the real `test.csv`, **submits to a live Kaggle competition**, and accepts only what climbs our best
+**public-leaderboard** score (the competition's daily submission cap is read from its Kaggle
+metadata — default 5; the gate blocks until budget frees). The submit happens on the trusted verifier
 sibling — `KAGGLE_USERNAME`/`KAGGLE_KEY` never reach a worker. It's a new task type in the catalog
 (`verity catalog --type fe-kaggle`). **You prepare the data** (ADR 0005): split it into per-role
 bundles outside Verity (`tools/prepare_fe_data.py`), then create with role-keyed

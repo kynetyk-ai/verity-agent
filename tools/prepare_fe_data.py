@@ -20,12 +20,12 @@ in the agent bundle, so the §3.5 isolation invariant holds by construction at t
 by any control-plane carving. ``agent/train.csv`` and ``verifier/train.csv`` are byte-identical (and
 likewise the two ``test.csv``), so the content-addressed store dedupes them.
 
-Usage:
+Usage (competitive defaults — full train, ~15% stratified hold-out):
     uv run python tools/prepare_fe_data.py \
         --train feature-engineering-test/train.csv \
         --test  feature-engineering-test/test.csv \
-        --out   feature-engineering-test \
-        --target class --id-column id --per-class 300 --reserved-fraction 0.5
+        --out   feature-engineering-test
+    # add --per-class N for a quick smaller smoke; --reserved-fraction F to resize the hold-out
 """
 
 from __future__ import annotations
@@ -53,10 +53,17 @@ def prepare(
     out: Path,
     target: str = "class",
     id_column: str = "id",
-    per_class: int = 300,
-    reserved_fraction: float = 0.5,
+    per_class: int | None = None,
+    reserved_fraction: float = 0.15,
 ) -> dict[str, dict[str, Path]]:
-    """Write the agent + verifier role bundles under ``out``; return {role: {name: path}}."""
+    """Write the agent + verifier role bundles under ``out``; return {role: {name: path}}.
+
+    Competitive sizing by default: ``per_class=None`` trains on the **full** labelled train (the
+    data is the bottleneck for a top-N% score) and ``reserved_fraction=0.15`` reserves a stratified
+    hold-out — big enough that its balanced accuracy is a tight, well-calibrated estimate of the
+    public score (the competitive gate compares against it). Pass a ``per_class`` cap for a quick
+    manual smoke; the gate logic is identical, just noisier.
+    """
     sub = subsample(train, per_class=per_class, target=target)
     split = stratified_split(
         sub, target=target, id_column=id_column, reserved_fraction=reserved_fraction
@@ -94,8 +101,11 @@ def main() -> None:
     p.add_argument("--out", type=Path, required=True, help="output dir (holds agent/ + verifier/)")
     p.add_argument("--target", default="class")
     p.add_argument("--id-column", default="id")
-    p.add_argument("--per-class", type=int, default=300)
-    p.add_argument("--reserved-fraction", type=float, default=0.5)
+    p.add_argument(
+        "--per-class", type=int, default=None,
+        help="rows/class to keep (omit = full competitive train; set for a quick smoke)",
+    )
+    p.add_argument("--reserved-fraction", type=float, default=0.15)
     args = p.parse_args()
 
     written = prepare(

@@ -1,18 +1,21 @@
 {
   "type_name": "fe-kaggle",
-  "goal": "Climb the real Kaggle leaderboard for the stellar competition with a fast, self-contained pipeline.",
+  "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
   "sandbox": {
     "model": "qwen3.6:27b-coding-mxfp8",
-    "base_url": "http://host.docker.internal:11434/v1"
+    "base_url": "http://host.docker.internal:11434/v1",
+    "code_timeout_s": 900
   },
   "verifier": {
     "approach": "kaggle",
     "knobs": {
-      "competition": "playground-series-s6e6"
+      "competition": "playground-series-s6e6",
+      "target_percentile": 10,
+      "proxy_margin": 0.001
     }
   },
   "policy": {
-    "max_cycles": 4,
+    "max_cycles": 10,
     "stop_on_accept": false
   }
 }

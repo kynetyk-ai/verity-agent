@@ -1,11 +1,13 @@
 """Live Kaggle scorer checks (``@kaggle``/``@live``) — auto-skip without the client + creds.
 
-Two levels, both real-network:
+Levels, all real-network:
 * **budget (safe, read-only):** authenticate and read the remaining daily budget from the API. This
   also confirms the competition's rules are accepted (the API 403s otherwise). Spends nothing.
+* **leaderboard (safe, read-only):** read the public standings and compute the top-10% bar — the
+  live exercise of the competitive gate's target source. Spends nothing.
 * **submit (opt-in, spends 1 of the competition's daily allowance):** gated behind
-  ``VERITY_KAGGLE_SUBMIT=1`` and the real
-  ``test.csv`` — submits a trivial constant-class submission and reads back its public score,
+  ``VERITY_KAGGLE_SUBMIT=1`` and the real ``test.csv`` — submits a trivial constant-class submission
+  and asserts its public score is ≈ 1/num_classes (the balanced accuracy of a constant predictor),
   proving the full submit→poll path end to end.
 
 The full fe-kaggle task through the daemon on a local model is a manual run (see the package
@@ -65,6 +67,26 @@ def test_remaining_budget_is_readable() -> None:
 @pytest.mark.kaggle
 @pytest.mark.live
 @pytest.mark.skipif(not _READY, reason=_WHY)
+def test_leaderboard_is_readable_and_yields_a_target() -> None:
+    """Read the public leaderboard (read-only — spends NO submission) and compute the competitive
+    bar. This is the live exercise of the new ``leaderboard_scores`` path + the top-N% math."""
+    from verity.verifier.kaggle import top_fraction_threshold
+    from verity.verifier.kaggle_client import RealKaggleScorer
+
+    scorer = RealKaggleScorer(competition=_COMPETITION)
+    try:
+        scores = asyncio.run(scorer.leaderboard_scores())
+    except GateUnavailable as exc:
+        pytest.skip(f"Kaggle leaderboard unavailable (accepted the competition rules?): {exc}")
+    assert scores, "the competition leaderboard should have at least one entry"
+    assert all(isinstance(s, float) and 0.0 <= s <= 1.0 for s in scores)  # balanced accuracy
+    target = top_fraction_threshold(scores, 0.10)  # the top-10% bar
+    assert target is not None and 0.0 <= target <= 1.0
+
+
+@pytest.mark.kaggle
+@pytest.mark.live
+@pytest.mark.skipif(not _READY, reason=_WHY)
 @pytest.mark.skipif(
     os.environ.get("VERITY_KAGGLE_SUBMIT") != "1",
     reason="opt-in: set VERITY_KAGGLE_SUBMIT=1 to spend one of the day's submissions",
@@ -86,4 +108,7 @@ def test_submit_and_score_round_trip() -> None:
         )
     )
     assert isinstance(score, float)
-    assert 0.0 <= score <= 1.0  # balanced accuracy
+    # A constant single-class prediction earns recall 1 on that class and 0 on the others, so its
+    # balanced accuracy is exactly 1/num_classes — here 1/3 (GALAXY / STAR / QSO). Asserting that
+    # (not just 0..1) confirms the metric really is balanced accuracy and the round-trip is honest.
+    assert abs(score - 1.0 / 3.0) < 0.02

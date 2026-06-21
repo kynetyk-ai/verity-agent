@@ -148,6 +148,10 @@ def loopback_fe_kaggle_factory(backend, scorer):  # type: ignore[no-untyped-def]
             wait_deadline_s=float(setup.params.get("wait_deadline_s", 86_400.0)),
             poll_interval_s=float(setup.params.get("poll_interval_s", 60.0)),
             submit_message=str(setup.params.get("submit_message", "verity")),
+            target_fraction=float(setup.params.get("target_fraction", 0.10)),
+            proxy_margin=float(setup.params.get("proxy_margin", 0.0)),
+            min_calibration_points=int(setup.params.get("min_calibration_points", 2)),
+            pessimism=float(setup.params.get("pessimism", 0.0)),
         )
 
     async def make(setup: VerifierSetup):  # type: ignore[no-untyped-def]

@@ -109,6 +109,24 @@ class RealKaggleScorer:
         log.info("kaggle_daily_limit", competition=self.competition, limit=limit, source=source)
         return limit
 
+    async def leaderboard_scores(self) -> list[float]:
+        """Every public-leaderboard score (read-only — spends no submission budget).
+
+        Uses the client's leaderboard-view method; the exact bound name has drifted across kaggle
+        releases (``competition_leaderboard_view`` vs ``competition_view_leaderboard``), so we
+        resolve whichever the installed client exposes. A read failure degrades the cycle
+        (recoverable ``GateUnavailable``); an empty/garbage leaderboard yields ``[]`` so the gate
+        skips the competitive bar rather than inventing a target.
+        """
+        api = self._client()
+        try:
+            rows = await asyncio.to_thread(_leaderboard_view, api, self.competition)
+        except Exception as exc:  # noqa: BLE001 — API/IO failure → recoverable
+            raise GateUnavailable(f"could not read the Kaggle leaderboard: {exc}") from exc
+        scores = [s for s in (_entry_score(r) for r in rows or ()) if s is not None]
+        log.info("kaggle_leaderboard", competition=self.competition, entries=len(scores))
+        return scores
+
     async def submit_and_score(
         self, submission_csv: bytes, *, message: str, wait_deadline_s: float
     ) -> float:
@@ -146,6 +164,27 @@ class RealKaggleScorer:
                 raise GateUnavailable(f"Kaggle did not score within {wait_deadline_s}s")
             await asyncio.sleep(self.poll_interval_s)
             waited += self.poll_interval_s
+
+
+def _leaderboard_view(api: Any, competition: str) -> Any:
+    """Call whichever leaderboard-view method the installed kaggle client exposes (name has drifted
+    across releases). Raises ``AttributeError`` if none is present — caught as ``GateUnavailable``.
+    """
+    for name in ("competition_leaderboard_view", "competition_view_leaderboard"):
+        fn = getattr(api, name, None)
+        if fn is not None:
+            return fn(competition)
+    raise AttributeError("the Kaggle client exposes no leaderboard-view method")
+
+
+def _entry_score(entry: Any) -> float | None:
+    raw: Any = getattr(entry, "score", None)
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _submitted_on(submission: Any) -> Any:

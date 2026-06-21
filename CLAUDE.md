@@ -107,10 +107,13 @@ an authenticated **network HTTP API** (`verity serve --http HOST:PORT` + bearer 
 plus a **byte data plane** (raw `POST /objects`, `GET /artifacts/{run_id}/{path}`). Tasks are created,
 run (async — poll `status`, read `results`, `export` artifacts), and survive daemon restart; no rebuild
 to drive a new task. A **task catalog** self-describes each installed type's output-shape contract,
-`verifier_approach`, and `sandbox_notes`. The feature-engineering task is **`fe-kaggle`**: a two-tier
-gate (cheap local hold-out proxy + a hard real **Kaggle-leaderboard** gate, trusted-submitter so creds
-never reach a worker), **live-validated** at 0.92253 balanced accuracy on `playground-series-s6e6` with
-local Qwen. (The earlier single-tier basic-`fe` task type was removed; its §12 domain — schema, shape,
+`verifier_approach`, and `sandbox_notes`. The feature-engineering task is **`fe-kaggle`**: a
+goal-seeking ladder (cheap local hold-out proxy → a **competitive top-N% bar** read from the live
+leaderboard, below which an attempt is *refined* — the gap fed back, no submission spent — rather than
+submitted → a hard real **Kaggle-leaderboard** gate that accepts only what climbs our best public
+score, with a self-calibrating proxy→public estimate; trusted-submitter so creds never reach a
+worker), **live-validated** at 0.92253 balanced accuracy on `playground-series-s6e6` with local Qwen
+(under the pre-competitive-bar config). (The earlier single-tier basic-`fe` task type was removed; its §12 domain — schema, shape,
 scoring, and the standalone verifier exercised by `tests/test_feature_engineering_*.py` — is reused by
 `fe-kaggle`. The installed catalog is `{code, fe-kaggle}`.) The three **acceptance modes** (optimizer / accumulate / first-acceptable) are documented as
 emergent from verifier gate composition × `--stop-on-accept` × object-provisioning mode (README + the
