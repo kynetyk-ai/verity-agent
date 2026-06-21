@@ -159,6 +159,11 @@ def test_clears_competitive_bar_submits_and_accepts() -> None:
     )
     assert len(scorer.submitted) == 1
     assert len(_accepted(store)) == 1
+    # the scores that document the climb are recorded on the decisions (so they reach the RunReport
+    # the trajectory readout reads): the competitive estimate and the public Kaggle score.
+    scores = {d.gate: d.score for d in store.decisions_for(_accepted(store)[0].id)}
+    assert scores["competitive"] is not None
+    assert scores["kaggle"] == 0.80
 
 
 def test_refine_then_clear_climbs_to_a_submission() -> None:

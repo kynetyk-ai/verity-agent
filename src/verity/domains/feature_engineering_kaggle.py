@@ -217,8 +217,8 @@ class _KaggleGates:
             f"(margin {self.proxy_margin:.4f})"
         )
         if net <= best + self.proxy_margin:
-            return GateVerdict(VerdictKind.REJECT, f"no local improvement: {detail}")
-        return GateVerdict(VerdictKind.ACCEPT, f"local improvement: {detail}")
+            return GateVerdict(VerdictKind.REJECT, f"no local improvement: {detail}", score=net)
+        return GateVerdict(VerdictKind.ACCEPT, f"local improvement: {detail}", score=net)
 
     async def competitive(self, request: VerifierRequest) -> GateVerdict | None:
         """Cheap, goal-seeking rung: only spend a Kaggle submission on an attempt we believe is
@@ -248,10 +248,11 @@ class _KaggleGates:
                 f"below the {bar}: estimated public score {estimate:.4f} vs target {target:.4f} "
                 f"(gap {gap:.4f}); keep improving the held-out score before we spend a submission"
             )
-            return GateVerdict(VerdictKind.REFINE, msg, defects=(msg,))
+            return GateVerdict(VerdictKind.REFINE, msg, defects=(msg,), score=estimate)
         return GateVerdict(
             VerdictKind.ACCEPT,
             f"clears the {bar}: estimated public score {estimate:.4f} >= target {target:.4f}",
+            score=estimate,
         )
 
     def _calibrated_estimate(self, proxy: float) -> float:
