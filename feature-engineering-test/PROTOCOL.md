@@ -100,7 +100,8 @@ daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `
 ## Knobs (`task.json`)
 
 - `sandbox.model` / `sandbox.base_url` — the agent's model (local by default). `sandbox.code_timeout_s`
-  — the per-run script budget on the verifier side (default raised to fit full-data training).
+  — the per-run script budget on the **verifier** side (1800s, sized for full-data training +
+  calibration); `sandbox.sandbox_timeout_s` — the **agent's** own runtime budget (2400s).
 - `policy.max_cycles` — cycles per run (raised for the goal-seeking climb). `policy.stop_on_accept` —
   stop at the first accept (keep `false` to keep climbing and document improvement).
 - `verifier.knobs.competition` — the competition slug. Goal-seeking knobs: `target_percentile` (the

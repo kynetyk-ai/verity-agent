@@ -438,8 +438,9 @@ Data + speed (the amount of training data is the real lever here — use ALL of 
 - Optimize for BALANCED accuracy, not raw accuracy: validate with stratified cross-validation and
   handle the class imbalance (class weights / resampling / threshold tuning).
 - The gate runs your script under a generous time budget, but a model that does not finish scores
-  nothing — keep any ensemble or search bounded. Run the script once to confirm it works, then
-  submit.
+  nothing — keep any ensemble or search bounded. To check it runs without burning your own budget,
+  test on a small sample (e.g. a few thousand rows); the gate trains the real thing on the full
+  data. Then submit.
 
 Useful domain knowledge: differences between photometric bands ("colour indices", e.g. u-g, g-r,
 r-i, i-z) and `redshift` carry most of the signal; encode the categorical `spectral_type` and the

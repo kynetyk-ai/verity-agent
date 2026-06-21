@@ -4,7 +4,8 @@
   "sandbox": {
     "model": "qwen3.6:27b-coding-mxfp8",
     "base_url": "http://host.docker.internal:11434/v1",
-    "code_timeout_s": 900
+    "sandbox_timeout_s": 2400,
+    "code_timeout_s": 1800
   },
   "verifier": {
     "approach": "kaggle",
