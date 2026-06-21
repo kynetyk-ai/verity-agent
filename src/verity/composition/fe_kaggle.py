@@ -95,7 +95,9 @@ _DEFAULT_VERIFIER_MEMORY = "4g"
 _VERIFIER_CRED_ENV = ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_CONFIG_DIR")
 # Code-runner sizing knobs the verifier's own runner reads (it pip-installs the FE ML stack into a
 # tmpfs); forwarded by NAME so an operator can override the verifier image's defaults from the CP.
-_VERIFIER_RUNNER_ENV = ("VERITY_CODE_IMAGE", "VERITY_CODE_MEMORY", "VERITY_CODE_TMPFS")
+_VERIFIER_RUNNER_ENV = (
+    "VERITY_CODE_IMAGE", "VERITY_CODE_MEMORY", "VERITY_CODE_TMPFS", "VERITY_CODE_CPUS"
+)
 
 # How the control plane obtains the verifier for a task: it builds the per-task `VerifierSetup` and
 # hands it to a factory that returns a (typically remote) `VerifierPort`. The default ships the

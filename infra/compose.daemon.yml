@@ -65,6 +65,15 @@ services:
       # bare python:3.12-slim — the slim image lacks the system .so's (libgomp etc.) that LightGBM /
       # XGBoost link at runtime, so those submissions would crash with `OSError: libgomp.so.1`.
       VERITY_CODE_IMAGE: "${VERITY_CODE_IMAGE:-verity-code-runner:latest}"
+      # Memory cap for the code-runner (where the untrusted submission trains on full data). Forwarded
+      # to the verifier sibling, which launches the code-runner with it. The 4 GB default OOM-rejects
+      # a heavy full-data ensemble (RF+ExtraTrees+CalibratedCV); raise it now that the Docker VM has
+      # room. Swap is disabled in the runner (--memory-swap=memory), so under-provisioning is an
+      # instant OOM-reject, not a slowdown.
+      VERITY_CODE_MEMORY: "${VERITY_CODE_MEMORY:-16g}"
+      # CPU cap for the code-runner (hard cgroup ceiling). The worker default is 1 CPU, which pins
+      # full-data training to a single core; 16 of the VM's 24 leaves headroom for the host.
+      VERITY_CODE_CPUS: "${VERITY_CODE_CPUS:-16}"
       # §9.1 verifier sibling: the image to launch + the shared network the CP reaches it on by name.
       VERITY_VERIFIER_IMAGE: "verity-verifier:latest"
       VERITY_VERIFIER_NETWORK: "verity-net"
@@ -72,6 +81,10 @@ services:
       # setup payload over HTTP and buffers it, so this must clear the dataset size (full-data
       # fe-kaggle is ~230 MB of CSV); the 512 MB worker default OOM-kills it on a real run.
       VERITY_VERIFIER_MEMORY: "${VERITY_VERIFIER_MEMORY:-4g}"
+      # CP→verifier dispatch timeout: ONE HTTP call held open for the whole gate evaluation (proxy
+      # train + competitive + Kaggle train + submit/poll). Must exceed the sum of those — with a
+      # 60-min per-script code_timeout_s that's two trainings + the Kaggle wait, so default ~3h.
+      VERITY_VERIFIER_TIMEOUT: "${VERITY_VERIFIER_TIMEOUT:-10800}"
       # Model credentials — the CP forwards the selected model's key env to the agent worker
       # (sandbox env-passthrough). Empty unless a hosted model is used; a local model needs none.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
