@@ -49,6 +49,7 @@ def test_no_deps_request_maps_to_a_plain_python_worker() -> None:
     assert spec.readonly_inputs["/work/submission.py"] == b"print(1)"  # the code is ro
     assert spec.readonly_inputs["/data/nums.txt"] == b"1 2 3"  # the dataset is ro
     assert spec.writable_dirs == ("/out",)
+    assert spec.workdir == "/tmp"  # CWD is the writable tmpfs, not the read-only /work mount
     assert spec.output_globs == ("/out/result.json",)
     assert spec.network is False  # the strict hostile-input default
     assert spec.scratch.allow_exec is False
@@ -116,3 +117,21 @@ def test_real_submission_reads_data_and_writes_output() -> None:
     import json
 
     assert result.output is not None and json.loads(result.output) == {"total": 10}
+
+
+@docker_test
+def test_real_submission_can_write_scratch_in_its_working_dir() -> None:
+    """Regression: the working directory must be writable. Libraries write scratch relative to the
+    CWD (e.g. CatBoost's ``catboost_info/``); ``/work`` (the code mount) is read-only, so the runner
+    runs with its CWD on the writable tmpfs. A relative ``mkdir`` + write must succeed."""
+    code = (
+        "import os, pathlib\n"
+        "pathlib.Path('catboost_info').mkdir(exist_ok=True)\n"  # relative -> the CWD
+        "pathlib.Path('catboost_info/learn.txt').write_text('ok')\n"
+        "pathlib.Path(os.environ['VERITY_OUT'], 'result.json').write_text('{\"ok\": 1}')\n"
+    )
+    runner = BackendCodeRunner(backend=DockerBackend())
+    result = asyncio.run(
+        runner.run(RunRequest(code=code.encode(), env={"VERITY_OUT": "/out"}, timeout_s=60))
+    )
+    assert result.exit_code == 0, result.stderr  # would be non-zero if the CWD were read-only

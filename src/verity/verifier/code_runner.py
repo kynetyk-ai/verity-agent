@@ -207,7 +207,11 @@ class ContainerCodeRunner:
             "-v", f"{code_dir}:/work:ro",
             "-v", f"{data_dir}:/data:ro",
             "-v", f"{out_dir}:/out:rw",
-            "-w", "/work",
+            # CWD is the writable (ephemeral, tmpfs) /tmp, NOT the read-only /work mount: libraries
+            # that scribble scratch relative to the CWD (CatBoost's `catboost_info/`, matplotlib,
+            # joblib memmaps) then just work. The script is still run by absolute path and reads
+            # /data / writes /out by absolute path, so the CWD does not affect its real I/O.
+            "-w", "/tmp",
             "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HOME=/tmp",
         ]
         for key, value in request.env.items():
@@ -347,7 +351,10 @@ class BackendCodeRunner:
             env=dict(request.env),
             limits=ResourceLimits(memory=self.memory, cpus=self.cpus, pids=self.pids_limit),
             scratch=Tmpfs(size=self.tmpfs_size, allow_exec=with_deps),
-            workdir="/work",
+            # CWD is the writable tmpfs (/tmp), NOT the read-only /work mount, so libraries that
+            # write scratch relative to the CWD (CatBoost's `catboost_info/`, matplotlib, joblib)
+            # work. The script runs by absolute path and uses /data / /out, so CWD is irrelevant.
+            workdir="/tmp",
             runtime=self.runtime,
             timeout_s=request.timeout_s,
         )
