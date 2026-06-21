@@ -18,11 +18,18 @@ a worker — credentials must not reach untrusted agent code.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["KaggleScorer", "FakeKaggleScorer", "DAILY_SUBMISSION_LIMIT", "daily_limit_from"]
+__all__ = [
+    "KaggleScorer",
+    "FakeKaggleScorer",
+    "DAILY_SUBMISSION_LIMIT",
+    "daily_limit_from",
+    "top_fraction_threshold",
+]
 
 # Default fallback only: the real per-competition cap is read from the competition metadata
 # (``max_daily_submissions``, see ``daily_limit_from`` / ``RealKaggleScorer._resolve_daily_limit``).
@@ -45,12 +52,39 @@ def daily_limit_from(competitions: Iterable[Any] | None, competition: str, defau
     return default
 
 
+def top_fraction_threshold(scores: Sequence[float], fraction: float) -> float | None:
+    """The leaderboard score at the top-``fraction`` boundary (higher score = better standing).
+
+    The "are we competitive?" bar: with ``fraction=0.10`` this is the score you must beat-or-match
+    to sit in the **top 10%** of the standings. Scores are ranked descending and the boundary is the
+    score at rank ``ceil(fraction * N)`` (1-indexed, clamped to ``[1, N]``). Returns ``None`` for an
+    empty leaderboard so the caller can degrade (skip the bar) rather than invent a target. Assumes
+    higher-is-better (true for balanced accuracy, the FE-Kaggle metric).
+    """
+    vals = sorted((float(s) for s in scores), reverse=True)
+    n = len(vals)
+    if n == 0:
+        return None
+    k = max(1, min(n, math.ceil(fraction * n)))
+    return vals[k - 1]
+
+
 @runtime_checkable
 class KaggleScorer(Protocol):
     """The narrow port the Kaggle gate depends on. Bound to one competition at construction."""
 
     async def remaining_budget(self) -> int:
         """Submissions still allowed today (``limit - today's used``), read from the Kaggle API."""
+        ...
+
+    async def leaderboard_scores(self) -> list[float]:
+        """Every public-leaderboard score (read-only — spends **no** submission budget).
+
+        The competitive gate turns these into the top-N% target (:func:`top_fraction_threshold`).
+        Returns an empty list when the leaderboard can't be read so the gate degrades (skips the
+        competitive bar) rather than crashing; a genuine API/infra failure may also raise
+        :class:`~verity.contracts.errors.GateUnavailable`.
+        """
         ...
 
     async def submit_and_score(
@@ -74,12 +108,15 @@ class FakeKaggleScorer:
     successive ``remaining_budget`` returns instead (e.g. ``[0, 0, 3]`` to exercise the
     block-until-budget-frees path). ``fail_with`` makes ``submit_and_score`` raise (the degrade
     case). ``submitted`` records the bytes submitted so a test can assert how many calls were made.
+    ``leaderboard`` scripts the standings :meth:`leaderboard_scores` returns (the competitive bar's
+    raw input).
     """
 
     scores: Sequence[float] = (1.0,)
     budget: int = DAILY_SUBMISSION_LIMIT
     budget_readings: Sequence[int] | None = None
     fail_with: Exception | None = None
+    leaderboard: Sequence[float] = ()
     submitted: list[bytes] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)
     _score_i: int = 0
@@ -91,6 +128,9 @@ class FakeKaggleScorer:
             self._budget_i += 1
             return reading
         return self.budget
+
+    async def leaderboard_scores(self) -> list[float]:
+        return [float(s) for s in self.leaderboard]
 
     async def submit_and_score(
         self, submission_csv: bytes, *, message: str, wait_deadline_s: float
