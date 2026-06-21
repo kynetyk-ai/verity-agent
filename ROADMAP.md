@@ -314,6 +314,21 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   (`feature-engineering-test/{PROTOCOL.md,task.json,run.sh}`, local-agent default). Offline-tested on a
   `FakeKaggleScorer`; a `@kaggle @live` test submits for real (auto-skips without creds).
 
+- **Enhancement — `fe-kaggle`: goal-seeking toward a top-N% leaderboard bar ✅.** Reshapes the gate
+  from "improve then submit" to "climb toward a competitive bar, documenting improvement across runs".
+  The ladder gains a **competitive** rung between the proxy filter and the Kaggle gate: it reads the
+  **live leaderboard** (read-only, no budget spent — `KaggleScorer.leaderboard_scores` /
+  `competition_leaderboard_view`), computes the score at the top-`target_percentile`% rank, and
+  compares it to a **calibrated** hold-out estimate (a self-improving proxy→public offset learned from
+  accumulated `(proxy, public)` pairs). Below the bar → **refine** (rests `revised`, the gap fed back
+  via the existing feedback channel, the prior script re-provisioned so the agent edits it — *no
+  submission spent*); at/above → submit. `proxy-improves` gains a noise margin. The task package is
+  re-sized for a real attempt (full-data training + a large stratified hold-out, `prepare_fe_data`
+  `per_class=None`), the prompt is goal-seeking (full-data, balanced-acc CV, the gap-to-target), and a
+  user-side `trajectory.py` reads `verity results` JSON to document the climb. Offline-tested on
+  `FakeKaggleScorer` + a scripted leaderboard (zero real submissions); a read-only `@kaggle @live`
+  leaderboard test exercises the live path.
+
 ---
 
 ## Post-MVP roadmap

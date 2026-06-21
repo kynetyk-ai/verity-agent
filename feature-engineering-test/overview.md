@@ -44,6 +44,7 @@ The training file contains an `id`, the `class` target, and the following predic
 - **z** — photometric magnitude in the infrared filter
 - **redshift** — measured redshift (a strong discriminator: quasars and galaxies show much higher redshift than stars)
 - **spectral_type** — categorical stellar spectral classification (dominated by type M ~53%, A/F ~21%, with other types making up the remainder)
+- **galaxy_population** — a categorical column present in **both** `train.csv` and `test.csv` (so it is usable at prediction time). Not part of the original SDSS feature set; explore the columns directly rather than relying on this overview to enumerate everything.
 
 The five photometric bands (**u, g, r, i, z**) are the standard SDSS filter magnitudes; differences between them ("colors") are typically among the most informative engineered features for this kind of problem. Combined with **redshift**, they carry most of the signal for separating stars from galaxies and quasars.
 
