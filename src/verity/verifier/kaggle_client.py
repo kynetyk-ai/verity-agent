@@ -14,7 +14,11 @@ The competition's rules must be accepted on its Kaggle page once, or the API ret
 from __future__ import annotations
 
 import asyncio
+import csv
+import glob
+import os
 import tempfile
+import zipfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -112,18 +116,17 @@ class RealKaggleScorer:
     async def leaderboard_scores(self) -> list[float]:
         """Every public-leaderboard score (read-only — spends no submission budget).
 
-        Uses the client's leaderboard-view method; the exact bound name has drifted across kaggle
-        releases (``competition_leaderboard_view`` vs ``competition_view_leaderboard``), so we
-        resolve whichever the installed client exposes. A read failure degrades the cycle
-        (recoverable ``GateUnavailable``); an empty/garbage leaderboard yields ``[]`` so the gate
-        skips the competitive bar rather than inventing a target.
+        Uses ``competition_leaderboard_download`` — the **full** leaderboard (all teams) — NOT
+        ``competition_leaderboard_view``, which is paginated to the top ~20 and would make the
+        competitive top-N% bar mean "top-N% of the leaders" (≈ podium). The download is a zipped CSV
+        we parse for the score column. A read failure degrades the cycle (recoverable
+        ``GateUnavailable``); an empty/garbage leaderboard yields ``[]`` so the gate skips the bar.
         """
         api = self._client()
         try:
-            rows = await asyncio.to_thread(_leaderboard_view, api, self.competition)
+            scores = await asyncio.to_thread(_download_leaderboard, api, self.competition)
         except Exception as exc:  # noqa: BLE001 — API/IO failure → recoverable
             raise GateUnavailable(f"could not read the Kaggle leaderboard: {exc}") from exc
-        scores = [s for s in (_entry_score(r) for r in rows or ()) if s is not None]
         log.info("kaggle_leaderboard", competition=self.competition, entries=len(scores))
         return scores
 
@@ -166,25 +169,33 @@ class RealKaggleScorer:
             waited += self.poll_interval_s
 
 
-def _leaderboard_view(api: Any, competition: str) -> Any:
-    """Call whichever leaderboard-view method the installed kaggle client exposes (name has drifted
-    across releases). Raises ``AttributeError`` if none is present — caught as ``GateUnavailable``.
+def _download_leaderboard(api: Any, competition: str) -> list[float]:
+    """Download the **full** leaderboard (all teams) and return every public score.
+
+    ``competition_leaderboard_download`` writes a zipped CSV to a dir; we extract it and read the
+    score column (the header name varies, so match the first column containing ``score``). Returns
+    ``[]`` if nothing parseable is found, so the gate degrades to skipping the competitive bar.
     """
-    for name in ("competition_leaderboard_view", "competition_view_leaderboard"):
-        fn = getattr(api, name, None)
-        if fn is not None:
-            return fn(competition)
-    raise AttributeError("the Kaggle client exposes no leaderboard-view method")
-
-
-def _entry_score(entry: Any) -> float | None:
-    raw: Any = getattr(entry, "score", None)
-    if raw is None or raw == "":
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
+    with tempfile.TemporaryDirectory(prefix="verity-lb-") as tmp:
+        api.competition_leaderboard_download(competition, tmp, quiet=True)
+        for archive in glob.glob(os.path.join(tmp, "*.zip")):
+            with zipfile.ZipFile(archive) as zf:
+                zf.extractall(tmp)
+        csvs = glob.glob(os.path.join(tmp, "*.csv"))
+        if not csvs:
+            return []
+        scores: list[float] = []
+        with open(csvs[0], newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            col = next((c for c in (reader.fieldnames or []) if "score" in c.lower()), None)
+            if col is None:
+                return []
+            for row in reader:
+                try:
+                    scores.append(float(row[col]))
+                except (TypeError, ValueError, KeyError):
+                    pass
+        return scores
 
 
 def _submitted_on(submission: Any) -> Any:
