@@ -15,7 +15,8 @@
 #
 # Usage:   ./feature-engineering-test/run.sh [path/to/task.json]
 # Env:     VERITY_CP (container, default verity-cp), VERITY_EXCHANGE_HOST (default /tmp/verity-exchange),
-#          PER_CLASS (default 300), RESERVED_FRACTION (default 0.5) — the user-side prep knobs.
+#          PER_CLASS (default: full competitive train — set N for a quick smoke), RESERVED_FRACTION
+#          (default 0.15) — the user-side prep knobs.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,10 +37,13 @@ jget() { python3 -c 'import sys,json; print(json.load(sys.stdin)["'"$1"'"])'; }
 cli()  { docker exec "$CP" verity "$@"; }
 
 # User-side prep (ADR 0005): split train.csv into role-keyed bundles. The CP never sees the split.
+# Default is the full competitive train (the data is the bottleneck for a top-N% score); set
+# PER_CLASS=N to subsample for a quick smoke.
 echo "==> prepare role-keyed data (agent/ + verifier/)"
-( cd "$REPO_ROOT" && python3 -m tools.prepare_fe_data \
-    --train "$HERE/train.csv" --test "$HERE/test.csv" --out "$HERE" \
-    --per-class "${PER_CLASS:-300}" --reserved-fraction "${RESERVED_FRACTION:-0.5}" )
+PREP_ARGS=( --train "$HERE/train.csv" --test "$HERE/test.csv" --out "$HERE"
+            --reserved-fraction "${RESERVED_FRACTION:-0.15}" )
+[ -n "${PER_CLASS:-}" ] && PREP_ARGS+=( --per-class "$PER_CLASS" )
+( cd "$REPO_ROOT" && python3 -m tools.prepare_fe_data "${PREP_ARGS[@]}" )
 
 # Stage the role bundles + task.json into the exchange in/ dir the daemon reads (mounted at /exchange).
 mkdir -p "$EXCHANGE_HOST/in/agent" "$EXCHANGE_HOST/in/verifier"

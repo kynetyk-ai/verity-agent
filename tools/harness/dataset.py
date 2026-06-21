@@ -87,15 +87,21 @@ def stratified_split(
     )
 
 
-def subsample(data: bytes, *, per_class: int, target: str = "class") -> bytes:
-    """Keep up to ``per_class`` rows per target class — a fast, stratified slice for a live run."""
+def subsample(data: bytes, *, per_class: int | None, target: str = "class") -> bytes:
+    """Keep up to ``per_class`` rows per target class — a fast, stratified slice for a live run.
+
+    ``per_class=None`` keeps **all** rows: the full competitive train (the data is the bottleneck
+    for reaching a top-N% leaderboard score, so a serious attempt trains on everything). Rows are
+    always re-written through the same writer, so the full-train bytes are byte-stable with the
+    split path.
+    """
     reader = csv.DictReader(io.StringIO(data.decode("utf-8")))
     header = tuple(reader.fieldnames or ())
     seen: dict[str, int] = {}
     kept: list[dict[str, str]] = []
     for row in reader:
         label = row[target]
-        if seen.get(label, 0) < per_class:
+        if per_class is None or seen.get(label, 0) < per_class:
             seen[label] = seen.get(label, 0) + 1
             kept.append(row)
     return _write_csv(header, kept)
