@@ -1,0 +1,23 @@
+{
+  "type_name": "fe-kaggle",
+  "goal": "Smoke test: write a working classifier script for the stellar competition (single cycle).",
+  "sandbox": {
+    "model": "fugu",
+    "base_url": "https://api.sakana.ai/v1",
+    "api_key_env": "OPENAI_API_KEY",
+    "sandbox_timeout_s": 2400,
+    "code_timeout_s": 1800
+  },
+  "verifier": {
+    "approach": "kaggle",
+    "knobs": {
+      "competition": "playground-series-s6e6",
+      "target_percentile": 10,
+      "proxy_margin": 0.001
+    }
+  },
+  "policy": {
+    "max_cycles": 1,
+    "stop_on_accept": false
+  }
+}
