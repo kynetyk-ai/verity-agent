@@ -97,13 +97,15 @@ daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `
 - The submitted script exported to `${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out/<run_id>/`.
 - Your submissions appear on the competition's public leaderboard under your Kaggle account.
 
-**Recorded end-to-end runs** (the data we saw across 10 cycles each, plus every agent submission) live
+**Recorded end-to-end runs** (the data we saw across the cycles, plus every agent submission) live
 under `agent-runs/`:
 [`2026-06-21-gpt5.4-fulldata/`](agent-runs/2026-06-21-gpt5.4-fulldata/README.md) (hosted gpt-5.4),
 [`2026-06-21-sonnet-fulldata/`](agent-runs/2026-06-21-sonnet-fulldata/README.md) (claude-sonnet-4-6),
-and [`2026-06-22-sonnet-nudge-fulldata/`](agent-runs/2026-06-22-sonnet-nudge-fulldata/README.md)
-(sonnet again, with the parallel-library prompt nudge) — a model comparison plus a prompt-change
-A/B on the same task/data/infra.
+[`2026-06-22-sonnet-nudge-fulldata/`](agent-runs/2026-06-22-sonnet-nudge-fulldata/README.md)
+(sonnet again, with the parallel-library prompt nudge), and
+[`2026-06-23-fugu-fulldata/`](agent-runs/2026-06-23-fugu-fulldata/README.md) (Sakana `fugu`, a third
+hosted provider over the OpenAI-compatible seam; aborted at cycle 8 when the Sakana account ran out of
+prepaid credits) — a model comparison plus a prompt-change A/B on the same task/data/infra.
 
 ## Knobs (`task.json`)
 
