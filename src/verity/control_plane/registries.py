@@ -52,6 +52,8 @@ __all__ = [
     "RetrievalPolicy",
     "DefaultRetrievalPolicy",
     "ObjectProvisionMode",
+    "ProvisionStatusSet",
+    "ProvisionSelect",
     "ObjectProvisioningPolicy",
     "RegistryError",
 ]
@@ -239,33 +241,100 @@ class DefaultRetrievalPolicy:
 # ------------------------------------------------------ object-provisioning policy (durable refs)
 
 
+class ProvisionStatusSet(StrEnum):
+    """Which artifact statuses qualify for provisioning — one axis of :class:`ObjectProvisionMode`.
+
+    Control-plane-native (status only); never verifier semantics. ``ANY`` is **literally every
+    status** (incl. ``rejected``/``superseded``/in-flight ``proposed``/``tentative``) — the agent's
+    full history. ``ACCEPTED_OR_REVISED`` keeps ``revised`` "live" for provisioning (the #51
+    refine-edit target) even though :class:`DefaultRetrievalPolicy` treats ``revised`` as terminal —
+    a deliberate asymmetry: an in-flight refine is worth iterating on, a terminal one is not.
+    """
+
+    ACCEPTED = "accepted"
+    ACCEPTED_OR_REVISED = "accepted_or_revised"
+    ANY = "any"
+
+
+class ProvisionSelect(StrEnum):
+    """How to pick among the qualifying artifacts — the other axis of :class:`ObjectProvisionMode`.
+
+    ``ALL`` provisions every qualifier (recency-ranked); ``LAST`` the single most-recent; ``BEST``
+    the single highest **recorded score** (``_artifact_score`` — a recorded measurement, not
+    verifier state, so still control-plane-native). ``BEST`` breaks ties by recency and, when *no*
+    score is recorded for any candidate, degrades to ``LAST`` (measured beats unmeasured; newest
+    wins absent any measurement).
+    """
+
+    ALL = "all"
+    LAST = "last"
+    BEST = "best"
+
+
+#: Statuses each set admits. ``ANY`` carries ``None`` — "no status filter, every status qualifies".
+_STATUS_SET_MEMBERS: dict[ProvisionStatusSet, frozenset[ArtifactStatus] | None] = {
+    ProvisionStatusSet.ACCEPTED: frozenset({ArtifactStatus.ACCEPTED}),
+    ProvisionStatusSet.ACCEPTED_OR_REVISED: frozenset(
+        {ArtifactStatus.ACCEPTED, ArtifactStatus.REVISED}
+    ),
+    ProvisionStatusSet.ANY: None,
+}
+
+
 class ObjectProvisionMode(StrEnum):
     """How many durable objects to materialize into the workspace as references each cycle.
 
-    Stated in **control-plane-native terms** (status + recency) — never verifier semantics. "Build
-    on the best prior script" is ``LAST_ACCEPTED`` over the gated type, not "provision the
-    incumbent" (the control plane does not know what an incumbent is).
+    Stated in **control-plane-native terms** (status + recency + recorded score) — never verifier
+    semantics. Each named mode is one cell of a two-axis grid, *which statuses qualify*
+    (:class:`ProvisionStatusSet`) × *how to select among them* (:class:`ProvisionSelect`), resolved
+    via :data:`_MODE_AXES`. Only the sensible cells are named (the validity guard) — e.g. there is
+    no ``ANY × LAST``/``ANY × BEST`` mode (building on a possibly-rejected artifact is rarely apt).
 
-    ``LAST_REVISED_OR_ACCEPTED`` extends ``LAST_ACCEPTED`` to also pick up an in-flight ``revised``
-    submission: it provisions the single most-recent artifact whose status is ``accepted`` *or*
-    ``revised`` (issue #51). On a refine cycle the latest such artifact is the just-revised one, so
-    the agent **edits its prior script** instead of reconstructing it from the defect text alone;
-    after an accept it behaves like ``LAST_ACCEPTED``. Still pure status/recency, no gate semantics.
+    ``LAST_REVISED_OR_ACCEPTED`` (``ACCEPTED_OR_REVISED × LAST``) provisions the single most-recent
+    ``accepted``/``revised`` artifact, so a refine cycle **edits its prior script** instead of
+    reconstructing it from the defect text (issue #51). ``BEST_REVISED_OR_ACCEPTED``
+    (``ACCEPTED_OR_REVISED × BEST``) instead hands the agent its highest-*scoring* prior so it never
+    iterates away from its peak in an all-``revised`` run (issue #95); when nothing is scored yet it
+    behaves like ``LAST_REVISED_OR_ACCEPTED``.
     """
 
     NONE = "none"
     ALL = "all"
     ALL_ACCEPTED = "all_accepted"
+    ALL_REVISED_OR_ACCEPTED = "all_revised_or_accepted"
     LAST_ACCEPTED = "last_accepted"
     LAST_REVISED_OR_ACCEPTED = "last_revised_or_accepted"
+    BEST_ACCEPTED = "best_accepted"
+    BEST_REVISED_OR_ACCEPTED = "best_revised_or_accepted"
+
+
+#: Each mode's ``(status set, selection)`` axes; ``NONE`` provisions nothing. Total over the enum
+#: (asserted by ``test_mode_axes_total``) so a new mode cannot silently resolve to "nothing".
+_MODE_AXES: dict[ObjectProvisionMode, tuple[ProvisionStatusSet | None, ProvisionSelect | None]] = {
+    ObjectProvisionMode.NONE: (None, None),
+    ObjectProvisionMode.ALL: (ProvisionStatusSet.ANY, ProvisionSelect.ALL),
+    ObjectProvisionMode.ALL_ACCEPTED: (ProvisionStatusSet.ACCEPTED, ProvisionSelect.ALL),
+    ObjectProvisionMode.ALL_REVISED_OR_ACCEPTED: (
+        ProvisionStatusSet.ACCEPTED_OR_REVISED, ProvisionSelect.ALL
+    ),
+    ObjectProvisionMode.LAST_ACCEPTED: (ProvisionStatusSet.ACCEPTED, ProvisionSelect.LAST),
+    ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED: (
+        ProvisionStatusSet.ACCEPTED_OR_REVISED, ProvisionSelect.LAST
+    ),
+    ObjectProvisionMode.BEST_ACCEPTED: (ProvisionStatusSet.ACCEPTED, ProvisionSelect.BEST),
+    ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED: (
+        ProvisionStatusSet.ACCEPTED_OR_REVISED, ProvisionSelect.BEST
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
 class ObjectProvisioningPolicy:
     """Selects durable objects to drop into a writable workspace role each cycle (§3.4, §9).
 
-    The control plane resolves this against the store by **status/recency/type only** and reads the
-    selected artifacts' object sidecars via ``Store.get_object``. The result is materialized into
+    The control plane resolves this against the store by **status / recency / recorded score / type
+    only** (never verifier semantics) and reads the selected artifacts' object sidecars via
+    ``Store.get_object``. The result is materialized into
     ``target_role`` (a writable role) under ``name_prefix`` and **re-materialized every cycle**, so
     agent edits never persist. ``type_filter`` restricts selection to one artifact type;
     ``max_objects`` bounds total objects so a large store cannot blow up the workspace.
@@ -278,45 +347,45 @@ class ObjectProvisioningPolicy:
     max_objects: int = 16
 
     def _select(self, store: Store) -> list[Artifact]:
-        if self.mode is ObjectProvisionMode.NONE:
+        status_set, select = _MODE_AXES[self.mode]
+        if status_set is None or select is None:  # NONE — provision nothing
             return []
-        if self.mode is ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED:
-            # The agent's most recent submission worth iterating on: the in-flight refine target
-            # (revised) or the accepted incumbent — so a refine cycle edits its prior script (#51).
-            active = {ArtifactStatus.ACCEPTED, ArtifactStatus.REVISED}
-            candidates = [
-                a for a in store.query_artifacts(type=self.type_filter) if a.status in active
-            ]
+        # ``query_artifacts`` filters on a single status, so the set is filtered in Python; ``ANY``
+        # (members is None) keeps every status, including terminal/in-flight.
+        members = _STATUS_SET_MEMBERS[status_set]
+        candidates = [
+            a
+            for a in store.query_artifacts(type=self.type_filter)
+            if members is None or a.status in members
+        ]
+        if select is ProvisionSelect.BEST:
+            # Highest recorded score wins, ties (and the no-score-anywhere case) broken by recency —
+            # a recorded measurement, not verifier state, so still control-plane-native (#95).
+            scores = {a.id: _artifact_score(store, a) for a in candidates}
+            ranked = {aid: (s if s is not None else float("-inf")) for aid, s in scores.items()}
             candidates.sort(key=lambda a: a.created_at, reverse=True)
+            candidates.sort(key=lambda a: ranked[a.id], reverse=True)
             return candidates[:1]
-        status = (
-            ArtifactStatus.ACCEPTED
-            if self.mode in (ObjectProvisionMode.ALL_ACCEPTED, ObjectProvisionMode.LAST_ACCEPTED)
-            else None
-        )
-        candidates = store.query_artifacts(type=self.type_filter, status=status)
         candidates.sort(key=lambda a: a.created_at, reverse=True)  # most-recent first
-        if self.mode is ObjectProvisionMode.LAST_ACCEPTED:
-            return candidates[:1]
-        return candidates
+        return candidates[:1] if select is ProvisionSelect.LAST else candidates
 
     def materialize(self, store: Store) -> dict[str, dict[str, bytes]]:
         """Resolve the policy to ``{role: {name: bytes}}`` ready for ``ServedContext`` (§9).
 
-        Names are **ordered + meaningful** (issue #20): multi-object modes namespace each artifact
-        under a recency-ranked subdir ``<prefix><NN>-<id>/<name>`` (``01`` = newest), and
-        ``LAST_ACCEPTED`` stays flat (``<prefix><name>``) for the single-incumbent common case. A
-        ``<prefix>INDEX.md`` manifest always accompanies the bytes, describing each provisioned
-        artifact (rank, id, status, recency, type, score) so the agent can tell which incumbent is
-        newest/accepted/best to build on. Harvested object *names* stay domain-fixed; disambiguation
-        is the subdir scheme + manifest, so any name-flattening consumer must namespace.
+        Names are **ordered + meaningful** (issue #20). Naming is **count-based**: when ≤1 artifact
+        is selected there can be no clash (a single artifact's object names are unique), so names
+        stay flat (``<prefix><name>``); when ≥2 are selected each artifact is namespaced under a
+        recency-ranked subdir ``<prefix><NN>-<id>/<name>`` (``01`` = first by the mode's order) so
+        two artifacts that declare the *same* object name cannot clobber, and the ``<NN>`` rank ties
+        each file to its ``INDEX.md`` row. A ``<prefix>INDEX.md`` manifest accompanies the bytes,
+        listing each provisioned artifact (rank, id, status, recency, type, score). Harvested object
+        *names* stay domain-fixed; disambiguation is the subdir scheme + manifest.
         """
-        single = self.mode in (
-            ObjectProvisionMode.LAST_ACCEPTED, ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED
-        )
+        selected = self._select(store)
+        single = len(selected) <= 1
         role: dict[str, bytes] = {}
         entries: list[_ManifestEntry] = []
-        for rank, artifact in enumerate(self._select(store), start=1):
+        for rank, artifact in enumerate(selected, start=1):
             subdir = "" if single else f"{rank:02d}-{artifact.id}/"
             files: list[str] = []
             for name, ref in artifact.objects:
@@ -330,7 +399,7 @@ class ObjectProvisioningPolicy:
                 entries.append(_ManifestEntry(rank, artifact, score, files))
         if not role:
             return {}
-        role[f"{self.name_prefix}INDEX.md"] = _render_manifest(self.mode, entries)
+        role[f"{self.name_prefix}INDEX.md"] = _render_manifest(entries)
         return {self.target_role: role}
 
 
@@ -352,13 +421,14 @@ def _artifact_score(store: Store, artifact: Artifact) -> float | None:
     return max(scores) if scores else None
 
 
-def _render_manifest(mode: ObjectProvisionMode, entries: list[_ManifestEntry]) -> bytes:
-    """A small Markdown index of the provisioned durable objects (issue #20)."""
+def _render_manifest(entries: list[_ManifestEntry]) -> bytes:
+    """A dumb Markdown index of the provisioned durable objects: a title + a metadata table only.
+
+    Carries **no instructions** — what to do with these objects is the task's configurable concern
+    (its composed instructions), never hardwired into this generic control-plane renderer.
+    """
     lines = [
         "# Provisioned durable objects",
-        "",
-        f"Selected by `{mode.value}` (status/recency, newest first). Build on the best/newest "
-        "incumbent rather than starting from scratch.",
         "",
         "| rank | artifact | type | status | created_at | score | files |",
         "| --- | --- | --- | --- | --- | --- | --- |",

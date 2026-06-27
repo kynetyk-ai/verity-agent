@@ -232,7 +232,8 @@ async def serve_context(
    the assembler's bounded-context limits.
 2. Wraps it in a `ServedContext`, including `workspace_objects =
    config.object_provisioning.materialize(store)` — durable refs the agent builds on, selected by
-   status/recency only (§9, no verifier knowledge), re-materialized every cycle into a writable role.
+   status / recency / recorded score only (§9, no verifier knowledge), re-materialized every cycle
+   into a writable role.
 3. `await`s `task.sandbox.serve_context(served)` and returns it.
 
 **Downstream effect**: read-only against the store; pushes context into the sandbox runtime. The

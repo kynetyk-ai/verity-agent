@@ -43,12 +43,15 @@ from verity.domains.feature_engineering import (
     build_feature_engineering_domain,
     declared_objects,
 )
+from verity.logging import get_logger
 from verity.provisioning.backend import Labels, ResourceLimits, WorkerBackend, WorkerSpec
 from verity.sandbox.backend_driver import BackendSandboxDriver
 from verity.sandbox.registration import build_sandbox
 
 if TYPE_CHECKING:
     from verity.composition.catalog import TaskCatalog
+
+log = get_logger("verity.composition.fe_kaggle")
 
 __all__ = [
     "FE_KAGGLE_TASK_ID",
@@ -265,6 +268,7 @@ async def configure_fe_kaggle_task(
     make_verifier: VerifierFactory | None = None,
     competition: str = "",
     daily_submission_limit: int | None = None,
+    provisioning_mode: ObjectProvisionMode = ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED,
     provisioning: ProvisioningConfig | None = None,
     wait_deadline_s: float = 86_400.0,
     poll_interval_s: float = 60.0,
@@ -348,7 +352,7 @@ async def configure_fe_kaggle_task(
         shape_validator=domain.shape_validator, object_namer=declared_objects,
         sandbox_key=FE_KAGGLE_TASK_ID, verifier_key=FE_KAGGLE_TASK_ID,
         object_provisioning=ObjectProvisioningPolicy(
-            mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+            mode=provisioning_mode, type_filter=SUBMISSION
         ),
     )
     await cp.configure(config)
@@ -368,6 +372,23 @@ def _require_role_files(role: str, refs: Mapping[str, str], expected: tuple[str,
             f"run tools/prepare_fe_data.py and ingest the {role}/ bundle "
             f"(create the task with files={{'{role}': {{...}}}})"
         )
+
+
+def _parse_provision_mode(raw: object, default: ObjectProvisionMode) -> ObjectProvisionMode:
+    """Parse a ``provisioning_mode`` knob string to a mode; fall back to ``default`` on anything
+    unrecognised (degrade-don't-crash — a typo in a knob should not abort task creation)."""
+    if raw is None:
+        return default
+    try:
+        return ObjectProvisionMode(str(raw).strip().lower())
+    except ValueError:
+        log.warning(
+            "fe_kaggle_unknown_provisioning_mode",
+            value=str(raw),
+            using=default.value,
+            known=[m.value for m in ObjectProvisionMode],
+        )
+        return default
 
 
 async def build_fe_kaggle_task(
@@ -401,10 +422,17 @@ async def build_fe_kaggle_task(
     limit_knob = knobs.get("daily_submission_limit")
     # ``target_percentile`` is the human-facing knob (top-N%); the gate works in a fraction.
     target_fraction = float(knobs.get("target_percentile", 10.0)) / 100.0
+    # Which prior submission(s) to provision into the next cycle's workspace (registries.py). Rides
+    # ``verifier.knobs`` for now (the existing knob channel); its principled home is a typed
+    # context-assembly/``PolicyRequest`` field, since provisioning is orchestration, not gating.
+    provisioning_mode = _parse_provision_mode(
+        knobs.get("provisioning_mode"), ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED
+    )
     return await configure_fe_kaggle_task(
         cp, backend=backend, agent_files=agent_files, verifier_files=verifier_files,
         competition=str(competition),
         daily_submission_limit=int(limit_knob) if limit_knob is not None else None,
+        provisioning_mode=provisioning_mode,
         provisioning=provisioning_config_from(request.sandbox),
         wait_deadline_s=float(knobs.get("wait_deadline_s", 86_400.0)),
         poll_interval_s=float(knobs.get("budget_poll_interval_s", 60.0)),
