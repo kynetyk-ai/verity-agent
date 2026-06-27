@@ -79,8 +79,12 @@ packages = ["src/verity"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests", "tools"]
-# Recorded agent submissions (verbatim model output kept as run artifacts, not maintained source).
-extend-exclude = ["prototyping_datasci_test/prototyping-runs"]
+# Recorded agent submissions (verbatim model output kept as run artifacts, not maintained source)
+# and the exploratory run-data analysis notebook (a throwaway analysis artifact, not library code).
+extend-exclude = [
+    "prototyping_datasci_test/prototyping-runs",
+    "prototyping_datasci_test/run_data_explorer.ipynb",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
