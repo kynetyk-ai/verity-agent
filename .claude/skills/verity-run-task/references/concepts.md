@@ -53,9 +53,11 @@ implements. The three shapes, and how to build each:
 
 - **Optimizer — supplant the incumbent with a better one** (one best answer survives).
   *Verifier:* a hard **scoring** gate that accepts only when the new artifact beats the incumbent **and
-  emits a supersession** (names the artifact it replaces). *Provisioning:* `LAST_ACCEPTED`, so the agent
-  iterates on the current best. *Run:* leave `--stop-on-accept` off (keep improving). This is the
-  feature-engineering / `fe-kaggle` behaviour.
+  emits a supersession** (names the artifact it replaces). *Provisioning:* `BEST_REVISED_OR_ACCEPTED`
+  (the `fe-kaggle` default), so the agent always builds on its highest-*scoring* prior — accepted or
+  revised — rather than its newest proposal, so an all-`revised` run never drifts away from its peak
+  (#95). Overridable via the `provisioning_mode` verifier knob in `task.json`. *Run:* leave
+  `--stop-on-accept` off (keep improving). This is the feature-engineering / `fe-kaggle` behaviour.
 - **Accumulate — keep every acceptable answer** (a collection, not a winner).
   *Verifier:* a hard **validity** gate that accepts on soundness and **never supersedes** → all sound
   artifacts coexist as `accepted`. *Provisioning:* `ALL_ACCEPTED`. *Run:* `--stop-on-accept` off.

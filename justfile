@@ -36,7 +36,10 @@ cp-serve:
     docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
     mkdir -p /tmp/verity-staging "${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/in" \
         "${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out" "${VERITY_STORE_HOST:-/tmp/verity-store}"
-    docker compose -f infra/compose.daemon.yml up -d
+    # --env-file .env: compose otherwise resolves ${KAGGLE_*} against infra/.env (the compose-file's
+    # project dir), not repo-root .env, so the daemon would launch with EMPTY Kaggle creds and fail
+    # only later at the submission gate. Point compose at the repo-root .env explicitly.
+    docker compose --env-file .env -f infra/compose.daemon.yml up -d
 
 # Run a `verity` client subcommand against the standing daemon, e.g. `just cp catalog`.
 cp *args:

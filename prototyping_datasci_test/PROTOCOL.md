@@ -68,8 +68,8 @@ lives **only** in the `verifier/` bundle, so it structurally cannot reach the ag
 
 ```bash
 # 1. bring up the standing daemon (builds images, mounts exchange + store + creds)
-set -a; . ./.env; set +a          # load Kaggle creds into the environment compose reads
-just cp-serve
+set -a; . ./.env; set +a          # belt-and-suspenders: `just cp-serve` already passes
+just cp-serve                     # `--env-file .env` to compose, so the Kaggle creds resolve
 
 # 2. run the task end to end (ingest -> create -> run -> poll -> results -> export)
 ./prototyping_datasci_test/run.sh
@@ -112,12 +112,18 @@ prepaid credits) — a model comparison plus a prompt-change A/B on the same tas
 - `sandbox.model` / `sandbox.base_url` — the agent's model (local by default). `sandbox.code_timeout_s`
   — the per-run script budget on the **verifier** side (1800s, sized for full-data training +
   calibration); `sandbox.sandbox_timeout_s` — the **agent's** own runtime budget (2400s).
+  `sandbox.recursion_limit` — the LangGraph step cap; `sandbox.step_budget` — optional per-cycle
+  model-step budget (agent-side, distinct from the two *time* budgets). Unset → the driver derives one
+  (~0.8× `recursion_limit`) so a step-exhausted cycle gets a soft "wrap up" nudge and finalizes
+  gracefully instead of crashing with `GraphRecursionError` (#103).
 - `policy.max_cycles` — cycles per run (raised for the goal-seeking climb). `policy.stop_on_accept` —
   stop at the first accept (keep `false` to keep climbing and document improvement).
 - `verifier.knobs.competition` — the competition slug. Goal-seeking knobs: `target_percentile` (the
   bar, default 10), `proxy_margin` (hold-out noise margin), `min_calibration_points`, `pessimism`.
-  Other optional: `budget_poll_interval_s`, `score_poll_interval_s`, `wait_deadline_s`,
-  `submit_message`, `daily_submission_limit`.
+  `provisioning_mode` — which prior submissions are materialized into the agent's workspace each cycle
+  (default `best_revised_or_accepted`, its highest-*scoring* prior, #95; `all_revised_or_accepted`
+  hands it the full set of accepted/revised scripts). Other optional: `budget_poll_interval_s`,
+  `score_poll_interval_s`, `wait_deadline_s`, `submit_message`, `daily_submission_limit`.
 
 **Prep knobs** (env vars to `run.sh`, *not* `task.json` — prep is user-side now): `PER_CLASS`
 (rows/class — **unset = the full competitive train** (the default); set a number for a quick smaller

@@ -219,6 +219,12 @@ survives contact with reality, and doubles as the venue for the 6.2 study.
   degrade-don't-crash (recorded `sandbox_failed`, fed back, next cycle launched). A good *paired*
   example for the paper: it demonstrates the failure-handling invariant **and** an honest limitation of
   wall-clock budgeting (more time helps but isn't unbounded headroom for an agent that keeps exploring).
+  *Update (#102, since the runs above):* the nudge is now a two-tier ladder — a **recurring, ephemeral**
+  time-remaining note from the 50% mark (injected per model request via `wrap_model_call`, never
+  persisted) plus the one-time 80% finalize. It front-loads pacing so the agent stops *starting* work
+  it can't finish; it does **not** fully resolve the case of an agent already deep inside a long call
+  when the wall arrives (no in-context nudge can interrupt a running tool). So the limitation is
+  *reduced*, not eliminated — the honest framing for the paper stands.
 
 ## 9. Related work — positioning
 
