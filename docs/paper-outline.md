@@ -112,6 +112,11 @@ Naming the spectrum gives a tight contribution today and a clean future-work hoo
 
 ## 6. Evaluation plan
 
+> The runnable, detailed version of this plan — the ablation ladder (Exp 1–4b), the Kaggle capstone,
+> the knowledge-work second domain, the metrics/figures, and the build-vs-configure assessment — lives
+> in [experimental-design.md](experimental-design.md). This section is the conceptual sketch it
+> expands.
+
 ### 6.1 Ablation — isolate the one novel piece (the independent grader + its context effects)
 
 Run on a **simple, cheap, auto-graded task** (not full Kaggle) so it can be replicated across many
