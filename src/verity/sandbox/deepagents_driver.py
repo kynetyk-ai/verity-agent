@@ -29,12 +29,13 @@ from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from verity.control_plane.registries import OperationSignature
 from verity.control_plane.workspace import ProvisionedWorkspace
 from verity.logging import get_logger
+from verity.sandbox.container_io import effective_step_budget
 from verity.sandbox.descriptor import (
     RESERVED_PROPOSAL_NAME,
     RESERVED_TELEMETRY_NAME,
@@ -50,6 +51,7 @@ __all__ = [
     "StepBudgetMiddleware",
     "StepBudgetExceeded",
     "build_deepagents_agent",
+    "effective_step_budget",
     "run_agent",
 ]
 
@@ -57,14 +59,25 @@ log = get_logger("verity.sandbox.deepagents_driver")
 
 _DEFAULT_RECURSION_LIMIT = 80
 _DEADLINE_WARN_FRACTION = 0.8  # warn the agent once it is this far into its time/step budget
+_DEADLINE_REMIND_FRACTION = 0.5  # start the recurring time-remaining awareness at the halfway mark
 
 
 class DeadlineMiddleware(AgentMiddleware):
-    """A soft-deadline nudge (ROADMAP 5.2): inject a wrap-up message before the hard timeout kills.
+    """A two-tier soft-deadline ladder (ROADMAP 5.2, #102): pace early, then finalize before death.
 
-    The hard sandbox timeout is the backstop; this biases the agent to *finalize* first. Once the
-    run is ``warn_fraction`` of the way through ``deadline_s`` (wall-clock), ``before_model``
-    injects a one-time wrap-up message telling the agent to submit. ``now`` injectable for tests.
+    The hard sandbox timeout is the backstop; this biases the agent to *budget its time* and then
+    *finalize* first. Two additive tiers, both wall-clock against ``deadline_s``:
+
+    * **``reminder_fraction``→``warn_fraction`` (50%→80%, recurring, EPHEMERAL):**
+      ``wrap_model_call`` augments the system prompt *for that one model call* with a transient
+      "≈Xs left — budget accordingly" note. It is **never written to durable message state** (no
+      context bloat — the structural-context-hygiene thesis), and is throttled to a coarse cadence
+      so it does not fire on every step.
+    * **``warn_fraction`` (80%, one-time, PERSISTED):** ``before_model`` injects a single sharp
+      "finalize and submit NOW" :class:`HumanMessage` — a salient interrupt for the hard pivot.
+
+    100% is the hard stop (worker timeout), handled outside this middleware. ``now`` injectable for
+    tests.
     """
 
     def __init__(
@@ -73,22 +86,32 @@ class DeadlineMiddleware(AgentMiddleware):
         *,
         now: Callable[[], float] = time.monotonic,
         warn_fraction: float = _DEADLINE_WARN_FRACTION,
+        reminder_fraction: float = _DEADLINE_REMIND_FRACTION,
     ) -> None:
         super().__init__()
         self._deadline_s = deadline_s
         self._now = now
         self._warn_at = warn_fraction * deadline_s
+        self._remind_at = reminder_fraction * deadline_s
+        # Throttle the recurring note to ~once per 10% of the budget (a 50/40/30/20% coarse
+        # countdown), so it paces the agent without nagging every step or bloating tokens.
+        self._remind_interval_s = max(1.0, 0.1 * deadline_s)
         self._start: float | None = None
         self._warned = False
+        self._last_remind_at: float | None = None
+
+    def _elapsed(self) -> float:
+        if self._start is None:
+            self._start = self._now()
+        return self._now() - self._start
 
     def before_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         self._start = self._now()
         return None
 
     def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        if self._start is None:
-            self._start = self._now()
-        elapsed = self._now() - self._start
+        # The one-time, persisted 80% finalize-now pivot.
+        elapsed = self._elapsed()
         if self._warned or elapsed < self._warn_at:
             return None
         self._warned = True
@@ -102,6 +125,38 @@ class DeadlineMiddleware(AgentMiddleware):
                 ))
             ]
         }
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        # The recurring, EPHEMERAL 50%→80% pacing note. Augment the system prompt for this single
+        # call only; the durable request/state is untouched, so nothing accumulates across steps.
+        note = self._time_note()
+        if note is None:
+            return handler(request)
+        base = request.system_prompt or ""
+        augmented = SystemMessage(content=f"{base}\n\n{note}".strip())
+        return handler(request.override(system_message=augmented))
+
+    def _time_note(self) -> str | None:
+        """The transient time-remaining note to inject this call, or ``None`` (before 50%, after
+        80%, or throttled). Coarsely throttled so it paces rather than nags."""
+        elapsed = self._elapsed()
+        if elapsed < self._remind_at or elapsed >= self._warn_at:
+            return None
+        now = self._now()
+        if self._last_remind_at is not None:
+            if now - self._last_remind_at < self._remind_interval_s:
+                return None
+        self._last_remind_at = now
+        remaining = max(0, int(self._deadline_s - elapsed))
+        return (
+            f"[time budget] ~{remaining}s of {int(self._deadline_s)}s remaining this cycle. "
+            "Budget your remaining time; don't start work (long trainings, broad searches) you "
+            "can't finish and submit before the deadline."
+        )
 
 
 class StepBudgetExceeded(RuntimeError):
@@ -273,7 +328,7 @@ class DeepAgentsInProcessDriver:
             system_prompt=system_prompt,
             backend=backend,
             extra_tools=resolve_tools(self._tool_names),
-            step_budget=self._step_budget,
+            step_budget=effective_step_budget(self._recursion_limit, self._step_budget),
         )
         log.info("deepagents_run", ops=[s.name for s in operations], root=str(workspace.root))
         try:

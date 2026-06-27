@@ -297,6 +297,86 @@ def test_deadline_middleware_is_silent_with_no_budget_pressure() -> None:
     assert mw.before_model(None, None) is None  # elapsed 0: nothing injected
 
 
+class _Clock:
+    """A settable monotonic clock for deterministic middleware time tests."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class _FakeModelRequest:
+    """A minimal ModelRequest stand-in: a system prompt + the immutable ``override`` contract."""
+
+    def __init__(self, system_prompt: str, system_message: object | None = None) -> None:
+        self._system_prompt = system_prompt
+        self.system_message = system_message
+
+    @property
+    def system_prompt(self) -> str:
+        return self._system_prompt
+
+    def override(self, **overrides: object) -> _FakeModelRequest:
+        # Immutable, like the real ModelRequest.override: a NEW request, original untouched.
+        return _FakeModelRequest(self._system_prompt, overrides.get("system_message"))
+
+
+def test_deadline_middleware_recurring_note_is_ephemeral_50_to_80() -> None:
+    # #102: from the halfway mark the recurring tier injects a transient time note into the model
+    # request via wrap_model_call — augmenting the system prompt for THAT call only, never the
+    # durable request/state (no context bloat).
+    clock = _Clock()
+    mw = DeadlineMiddleware(100.0, now=clock)
+    mw.before_agent(None, None)
+    seen: list[Any] = []
+
+    def handler(req: Any) -> Any:
+        seen.append(req)
+        return req
+
+    # Below 50%: nothing injected — the original request flows through untouched.
+    clock.t = 10.0
+    original = _FakeModelRequest("base prompt")
+    mw.wrap_model_call(original, handler)  # type: ignore[arg-type]
+    assert seen[-1] is original and seen[-1].system_message is None
+
+    # 50%–80%: an ephemeral note augments the system prompt for this call on a COPY; the original
+    # request object is not mutated, so nothing persists across steps.
+    clock.t = 60.0
+    original2 = _FakeModelRequest("base prompt")
+    mw.wrap_model_call(original2, handler)  # type: ignore[arg-type]
+    passed = seen[-1]
+    assert passed is not original2
+    assert original2.system_message is None  # durable request untouched
+    assert "time budget" in passed.system_message.content.lower()
+    assert "base prompt" in passed.system_message.content  # original prompt preserved
+
+
+def test_deadline_middleware_recurring_note_is_throttled() -> None:
+    # #102: the recurring note is throttled to a coarse cadence (~once per 10% of the budget), so it
+    # paces the agent rather than firing on every model step.
+    clock = _Clock()
+    mw = DeadlineMiddleware(100.0, now=clock)  # throttle interval = 10s
+    mw.before_agent(None, None)
+    injected: list[bool] = []
+
+    def handler(req: Any) -> Any:
+        injected.append(getattr(req, "system_message", None) is not None)
+        return req
+
+    clock.t = 60.0
+    mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
+    clock.t = 61.0  # within 10s of the last note -> throttled
+    mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
+    clock.t = 72.0  # past the throttle window -> fires again
+    mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
+    clock.t = 85.0  # past 80% -> recurring tier stops (the one-time pivot is before_model's job)
+    mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
+    assert injected == [True, False, True, False]
+
+
 def test_agent_builds_with_a_deadline(tmp_path: Path) -> None:
     # Smoke: building with a deadline (which appends DeadlineMiddleware) succeeds and keeps tools.
     outbox = tmp_path / "outbox"
