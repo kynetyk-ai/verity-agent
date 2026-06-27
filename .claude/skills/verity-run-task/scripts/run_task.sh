@@ -15,7 +15,7 @@
 #
 # DATA PREP IS YOURS (ADR 0005): split inputs into per-role bundles OUTSIDE Verity; the control plane
 # routes opaque, role-keyed blobs. For fe-kaggle, prepare with tools/prepare_fe_data.py (or just use
-# feature-engineering-test/run.sh, which does the prep + role routing for you).
+# prototyping_datasci_test/run.sh, which does the prep + role routing for you).
 #
 # Options (with defaults):
 #   --type NAME             task type from `verity catalog`            (required unless --request-file)

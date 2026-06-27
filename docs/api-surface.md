@@ -820,7 +820,7 @@ answer-key isolation invariant holds **by construction**: `holdout_labels.csv` i
 file the CP cannot route to the agent. The committed, runnable package — `task.json` (local-agent
 default), `run.sh` (which runs the prep + role routing for you), and the full setup protocol (token,
 accepting the competition rules) — lives in
-[`feature-engineering-test/`](../feature-engineering-test/PROTOCOL.md). Read the live contract with
+[`prototyping_datasci_test/`](../prototyping_datasci_test/PROTOCOL.md). Read the live contract with
 `verity catalog --type fe-kaggle`.
 
 #### Adding a task or verifier type (a plugin) — no control-plane rebuild (Phase 9.3, ADR 0006)

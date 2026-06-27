@@ -45,7 +45,7 @@ lives **only** in the `verifier/` bundle, so it structurally cannot reach the ag
 ## Setup (once)
 
 1. **Data.** Download the competition's `train.csv` and `test.csv` into **this folder**
-   (`feature-engineering-test/`). They're gitignored. (`sample_submission.csv` is optional — the gate
+   (`prototyping_datasci_test/`). They're gitignored. (`sample_submission.csv` is optional — the gate
    derives the submission from `test.csv`.)
 
 2. **Kaggle API token.** At <https://www.kaggle.com/settings> → *Create New Token* (downloads
@@ -72,7 +72,7 @@ set -a; . ./.env; set +a          # load Kaggle creds into the environment compo
 just cp-serve
 
 # 2. run the task end to end (ingest -> create -> run -> poll -> results -> export)
-./feature-engineering-test/run.sh
+./prototyping_datasci_test/run.sh
 
 # 3. when you're done
 just cp-down
@@ -90,20 +90,20 @@ daemon even if you Ctrl-C the poll. Re-attach with `just cp status <run_id>` / `
 - The **documented climb.** Pipe one or more runs' results through the readout to see the trajectory
   of accepted scores toward the top-10% bar:
   ```bash
-  docker exec verity-cp verity results <run_id> | python3 feature-engineering-test/trajectory.py
+  docker exec verity-cp verity results <run_id> | python3 prototyping_datasci_test/trajectory.py
   # cross-run: collect each run's `verity results` JSON to files and pass them all
-  python3 feature-engineering-test/trajectory.py run1.json run2.json ...
+  python3 prototyping_datasci_test/trajectory.py run1.json run2.json ...
   ```
 - The submitted script exported to `${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out/<run_id>/`.
 - Your submissions appear on the competition's public leaderboard under your Kaggle account.
 
 **Recorded end-to-end runs** (the data we saw across the cycles, plus every agent submission) live
-under `agent-runs/`:
-[`2026-06-21-gpt5.4-fulldata/`](agent-runs/2026-06-21-gpt5.4-fulldata/README.md) (hosted gpt-5.4),
-[`2026-06-21-sonnet-fulldata/`](agent-runs/2026-06-21-sonnet-fulldata/README.md) (claude-sonnet-4-6),
-[`2026-06-22-sonnet-nudge-fulldata/`](agent-runs/2026-06-22-sonnet-nudge-fulldata/README.md)
+under `prototyping-runs/`:
+[`2026-06-21-gpt5.4-fulldata/`](prototyping-runs/2026-06-21-gpt5.4-fulldata/README.md) (hosted gpt-5.4),
+[`2026-06-21-sonnet-fulldata/`](prototyping-runs/2026-06-21-sonnet-fulldata/README.md) (claude-sonnet-4-6),
+[`2026-06-22-sonnet-nudge-fulldata/`](prototyping-runs/2026-06-22-sonnet-nudge-fulldata/README.md)
 (sonnet again, with the parallel-library prompt nudge), and
-[`2026-06-23-fugu-fulldata/`](agent-runs/2026-06-23-fugu-fulldata/README.md) (Sakana `fugu`, a third
+[`2026-06-23-fugu-fulldata/`](prototyping-runs/2026-06-23-fugu-fulldata/README.md) (Sakana `fugu`, a third
 hosted provider over the OpenAI-compatible seam; aborted at cycle 8 when the Sakana account ran out of
 prepaid credits) — a model comparison plus a prompt-change A/B on the same task/data/infra.
 
@@ -123,7 +123,7 @@ prepaid credits) — a model comparison plus a prompt-change A/B on the same tas
 (rows/class — **unset = the full competitive train** (the default); set a number for a quick smaller
 smoke) and `RESERVED_FRACTION` (the hold-out share, default 0.15). To prepare data yourself without
 `run.sh`: `python3 -m tools.prepare_fe_data --train train.csv --test test.csv --out
-feature-engineering-test` (add `--per-class N` for a smoke).
+prototyping_datasci_test` (add `--per-class N` for a smoke).
 
 Mind the **daily submission cap** (the competition's own limit, read from its Kaggle metadata —
 typically ~5/day, shared across all runs) — keep concurrent runs to a handful.

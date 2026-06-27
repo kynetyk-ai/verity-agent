@@ -95,7 +95,7 @@ verity create --request-file task.json \
 ```
 
 `fe-kaggle` (the real-leaderboard gate) needs exactly this: prepare the bundles with
-`tools/prepare_fe_data.py` (or let `feature-engineering-test/run.sh` do it), and its `task.json`
+`tools/prepare_fe_data.py` (or let `prototyping_datasci_test/run.sh` do it), and its `task.json`
 carries `verifier.knobs.competition` (the slug); the daemon must have `KAGGLE_USERNAME`/`KAGGLE_KEY`
 in its env (setup.md → *Kaggle creds*). Read its live contract with `verity catalog --type fe-kaggle`.
 
