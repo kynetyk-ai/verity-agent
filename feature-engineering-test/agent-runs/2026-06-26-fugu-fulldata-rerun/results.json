@@ -1,0 +1,612 @@
+{
+  "tenant_id": "default",
+  "task_id": "fe-kaggle",
+  "run_id": "656b3b11a7e54a338c747be26764d8cf",
+  "status": "complete",
+  "accepted_artifact_ids": [],
+  "report": {
+    "report_schema_version": 1,
+    "task_id": "fe-kaggle",
+    "tenant_id": "default",
+    "generated_at": "2026-06-27T00:12:22.006386+00:00",
+    "policy": {
+      "max_cycles": 10,
+      "refine_cap": 3,
+      "stop_on_accept": false,
+      "max_consecutive_sandbox_failures": 3
+    },
+    "cycles": [
+      {
+        "index": 0,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": true,
+        "shape_error": null,
+        "sandbox_error": null,
+        "gate_error": null,
+        "proposal": {
+          "artifact_id": "art-7966e7a5f52b",
+          "type": "Submission",
+          "operation": "submit",
+          "parents": [
+            "DatasetVersion/ds"
+          ],
+          "objects": [
+            "requirements.txt",
+            "submission.py"
+          ]
+        },
+        "commit": {
+          "outcome": "revised",
+          "status": "revised",
+          "supersedes": null,
+          "defects": [
+            "below the top-10% bar: estimated public score 0.9660 vs target 0.9718 (gap 0.0059); keep improving the held-out score before we spend a submission"
+          ],
+          "decisions": [
+            {
+              "gate": "runs-clean",
+              "verdict": "accept",
+              "rationale": "runs clean on the hold-out",
+              "defects": [],
+              "score": null
+            },
+            {
+              "gate": "proxy-improves",
+              "verdict": "accept",
+              "rationale": "local improvement: local proxy balanced-accuracy 0.9660 vs best accepted 0.0000 (margin 0.0010)",
+              "defects": [],
+              "score": 0.9659610046196047
+            },
+            {
+              "gate": "competitive",
+              "verdict": "refine",
+              "rationale": "below the top-10% bar: estimated public score 0.9660 vs target 0.9718 (gap 0.0059); keep improving the held-out score before we spend a submission",
+              "defects": [
+                "below the top-10% bar: estimated public score 0.9660 vs target 0.9718 (gap 0.0059); keep improving the held-out score before we spend a submission"
+              ],
+              "score": 0.9659610046196047
+            }
+          ]
+        },
+        "rationale": "Explored dataset signals, engineered photometric colour/redshift/categorical features, validated a balanced XGBoost + HistGradientBoosting ensemble with class-recall multipliers for balanced accuracy, and verified full test prediction output shape.",
+        "timings": {
+          "cycle_ms": 2533953.807,
+          "sandbox_ms": 2466823.091,
+          "commit_ms": 67062.324
+        },
+        "agent_telemetry": {
+          "input_tokens": 826273,
+          "output_tokens": 20926,
+          "total_tokens": 847199,
+          "model_steps": 35,
+          "tool_calls": 44,
+          "model": "fugu"
+        }
+      },
+      {
+        "index": 1,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": true,
+        "shape_error": null,
+        "sandbox_error": null,
+        "gate_error": null,
+        "proposal": {
+          "artifact_id": "art-1b951b670166",
+          "type": "Submission",
+          "operation": "submit",
+          "parents": [
+            "DatasetVersion/ds"
+          ],
+          "objects": [
+            "requirements.txt",
+            "submission.py"
+          ]
+        },
+        "commit": {
+          "outcome": "revised",
+          "status": "revised",
+          "supersedes": null,
+          "defects": [
+            "below the top-10% bar: estimated public score 0.9662 vs target 0.9719 (gap 0.0057); keep improving the held-out score before we spend a submission"
+          ],
+          "decisions": [
+            {
+              "gate": "runs-clean",
+              "verdict": "accept",
+              "rationale": "runs clean on the hold-out",
+              "defects": [],
+              "score": null
+            },
+            {
+              "gate": "proxy-improves",
+              "verdict": "accept",
+              "rationale": "local improvement: local proxy balanced-accuracy 0.9662 vs best accepted 0.0000 (margin 0.0010)",
+              "defects": [],
+              "score": 0.9661563590605166
+            },
+            {
+              "gate": "competitive",
+              "verdict": "refine",
+              "rationale": "below the top-10% bar: estimated public score 0.9662 vs target 0.9719 (gap 0.0057); keep improving the held-out score before we spend a submission",
+              "defects": [
+                "below the top-10% bar: estimated public score 0.9662 vs target 0.9719 (gap 0.0057); keep improving the held-out score before we spend a submission"
+              ],
+              "score": 0.9661563590605166
+            }
+          ]
+        },
+        "rationale": "Improved incumbent with richer color/redshift/categorical interaction features, stronger bounded XGBoost blend, optional LightGBM ensemble when available, HGB fallback, and balanced-accuracy class multipliers; smoke-tested output contract on sampled data.",
+        "timings": {
+          "cycle_ms": 4590354.475,
+          "sandbox_ms": 4474378.301,
+          "commit_ms": 115904.111
+        },
+        "agent_telemetry": {
+          "input_tokens": 782099,
+          "output_tokens": 27363,
+          "total_tokens": 809462,
+          "model_steps": 42,
+          "tool_calls": 50,
+          "model": "fugu"
+        }
+      },
+      {
+        "index": 2,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": true,
+        "shape_error": null,
+        "sandbox_error": null,
+        "gate_error": null,
+        "proposal": {
+          "artifact_id": "art-33cac2d887b8",
+          "type": "Submission",
+          "operation": "submit",
+          "parents": [
+            "DatasetVersion/ds"
+          ],
+          "objects": [
+            "requirements.txt",
+            "submission.py"
+          ]
+        },
+        "commit": {
+          "outcome": "revised",
+          "status": "revised",
+          "supersedes": null,
+          "defects": [
+            "below the top-10% bar: estimated public score 0.9663 vs target 0.9719 (gap 0.0056); keep improving the held-out score before we spend a submission"
+          ],
+          "decisions": [
+            {
+              "gate": "runs-clean",
+              "verdict": "accept",
+              "rationale": "runs clean on the hold-out",
+              "defects": [],
+              "score": null
+            },
+            {
+              "gate": "proxy-improves",
+              "verdict": "accept",
+              "rationale": "local improvement: local proxy balanced-accuracy 0.9663 vs best accepted 0.0000 (margin 0.0010)",
+              "defects": [],
+              "score": 0.966287399074523
+            },
+            {
+              "gate": "competitive",
+              "verdict": "refine",
+              "rationale": "below the top-10% bar: estimated public score 0.9663 vs target 0.9719 (gap 0.0056); keep improving the held-out score before we spend a submission",
+              "defects": [
+                "below the top-10% bar: estimated public score 0.9663 vs target 0.9719 (gap 0.0056); keep improving the held-out score before we spend a submission"
+              ],
+              "score": 0.966287399074523
+            }
+          ]
+        },
+        "rationale": "Built on incumbent ensemble; validation indicated stronger balanced-accuracy class multipliers and XGBoost/HGB blend lift. Added smoothed non-leaky prior features from train distribution, one complementary XGBoost model, robust LightGBM/XGBoost/HGB ensemble, and smoke-tested output contract on a sampled dataset.",
+        "timings": {
+          "cycle_ms": 4204075.404,
+          "sandbox_ms": 4016090.472,
+          "commit_ms": 187889.048
+        },
+        "agent_telemetry": {
+          "input_tokens": 1086248,
+          "output_tokens": 37829,
+          "total_tokens": 1124077,
+          "model_steps": 48,
+          "tool_calls": 56,
+          "model": "fugu"
+        }
+      },
+      {
+        "index": 3,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": true,
+        "shape_error": null,
+        "sandbox_error": null,
+        "gate_error": null,
+        "proposal": {
+          "artifact_id": "art-2e3ec5478a16",
+          "type": "Submission",
+          "operation": "submit",
+          "parents": [
+            "DatasetVersion/ds"
+          ],
+          "objects": [
+            "requirements.txt",
+            "submission.py"
+          ]
+        },
+        "commit": {
+          "outcome": "revised",
+          "status": "revised",
+          "supersedes": null,
+          "defects": [
+            "below the top-10% bar: estimated public score 0.9663 vs target 0.9719 (gap 0.0056); keep improving the held-out score before we spend a submission"
+          ],
+          "decisions": [
+            {
+              "gate": "runs-clean",
+              "verdict": "accept",
+              "rationale": "runs clean on the hold-out",
+              "defects": [],
+              "score": null
+            },
+            {
+              "gate": "proxy-improves",
+              "verdict": "accept",
+              "rationale": "local improvement: local proxy balanced-accuracy 0.9663 vs best accepted 0.0000 (margin 0.0010)",
+              "defects": [],
+              "score": 0.9662970877773196
+            },
+            {
+              "gate": "competitive",
+              "verdict": "refine",
+              "rationale": "below the top-10% bar: estimated public score 0.9663 vs target 0.9719 (gap 0.0056); keep improving the held-out score before we spend a submission",
+              "defects": [
+                "below the top-10% bar: estimated public score 0.9663 vs target 0.9719 (gap 0.0056); keep improving the held-out score before we spend a submission"
+              ],
+              "score": 0.9662970877773196
+            }
+          ]
+        },
+        "rationale": "Focused revision of incumbent: retained full-data boosted-tree ensemble, added robust photometry outlier features and additional color-redshift interactions, replaced the weakest XGB variant with a loss-guided configuration that validated best for minority classes, and retuned class decision multipliers for balanced accuracy. Smoke-tested output contract on a small stratified sample.",
+        "timings": {
+          "cycle_ms": 4609283.615,
+          "sandbox_ms": 4369014.57,
+          "commit_ms": 240206.651
+        },
+        "agent_telemetry": {
+          "input_tokens": 1374179,
+          "output_tokens": 33597,
+          "total_tokens": 1407776,
+          "model_steps": 51,
+          "tool_calls": 59,
+          "model": "fugu"
+        }
+      },
+      {
+        "index": 4,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": true,
+        "shape_error": null,
+        "sandbox_error": null,
+        "gate_error": null,
+        "proposal": {
+          "artifact_id": "art-68b810a6f4d3",
+          "type": "Submission",
+          "operation": "submit",
+          "parents": [
+            "DatasetVersion/ds"
+          ],
+          "objects": [
+            "requirements.txt",
+            "submission.py"
+          ]
+        },
+        "commit": {
+          "outcome": "revised",
+          "status": "revised",
+          "supersedes": null,
+          "defects": [
+            "below the top-10% bar: estimated public score 0.9666 vs target 0.9719 (gap 0.0053); keep improving the held-out score before we spend a submission"
+          ],
+          "decisions": [
+            {
+              "gate": "runs-clean",
+              "verdict": "accept",
+              "rationale": "runs clean on the hold-out",
+              "defects": [],
+              "score": null
+            },
+            {
+              "gate": "proxy-improves",
+              "verdict": "accept",
+              "rationale": "local improvement: local proxy balanced-accuracy 0.9666 vs best accepted 0.0000 (margin 0.0010)",
+              "defects": [],
+              "score": 0.9665995203194196
+            },
+            {
+              "gate": "competitive",
+              "verdict": "refine",
+              "rationale": "below the top-10% bar: estimated public score 0.9666 vs target 0.9719 (gap 0.0053); keep improving the held-out score before we spend a submission",
+              "defects": [
+                "below the top-10% bar: estimated public score 0.9666 vs target 0.9719 (gap 0.0053); keep improving the held-out score before we spend a submission"
+              ],
+              "score": 0.9665995203194196
+            }
+          ]
+        },
+        "rationale": "Revised the incumbent ensemble using validation findings: added a fast shallow LightGBM diversity member, shifted weights toward the stronger XGBoost/LightGBM members, and used more aggressive balanced-accuracy decision multipliers (GALAXY down, STAR up). Smoke-tested on an 8k/3k sampled dataset and confirmed predictions.csv has exactly id,class for all test rows.",
+        "timings": {
+          "cycle_ms": 4278060.226,
+          "sandbox_ms": 4014423.759,
+          "commit_ms": 263576.203
+        },
+        "agent_telemetry": {
+          "input_tokens": 1426015,
+          "output_tokens": 46184,
+          "total_tokens": 1472199,
+          "model_steps": 51,
+          "tool_calls": 59,
+          "model": "fugu"
+        }
+      },
+      {
+        "index": 5,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": false,
+        "shape_error": null,
+        "sandbox_error": "sandbox worker timed out after 4800s",
+        "gate_error": null,
+        "proposal": null,
+        "commit": null,
+        "rationale": null,
+        "timings": {
+          "cycle_ms": 4803367.263,
+          "sandbox_ms": 4803322.425,
+          "commit_ms": null
+        },
+        "agent_telemetry": null
+      },
+      {
+        "index": 6,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": true,
+        "shape_error": null,
+        "sandbox_error": null,
+        "gate_error": null,
+        "proposal": {
+          "artifact_id": "art-d225547a71bc",
+          "type": "Submission",
+          "operation": "submit",
+          "parents": [
+            "DatasetVersion/ds"
+          ],
+          "objects": [
+            "requirements.txt",
+            "submission.py"
+          ]
+        },
+        "commit": {
+          "outcome": "revised",
+          "status": "revised",
+          "supersedes": null,
+          "defects": [
+            "below the top-10% bar: estimated public score 0.9665 vs target 0.9719 (gap 0.0054); keep improving the held-out score before we spend a submission"
+          ],
+          "decisions": [
+            {
+              "gate": "runs-clean",
+              "verdict": "accept",
+              "rationale": "runs clean on the hold-out",
+              "defects": [],
+              "score": null
+            },
+            {
+              "gate": "proxy-improves",
+              "verdict": "accept",
+              "rationale": "local improvement: local proxy balanced-accuracy 0.9665 vs best accepted 0.0000 (margin 0.0010)",
+              "defects": [],
+              "score": 0.9664641195211928
+            },
+            {
+              "gate": "competitive",
+              "verdict": "refine",
+              "rationale": "below the top-10% bar: estimated public score 0.9665 vs target 0.9719 (gap 0.0054); keep improving the held-out score before we spend a submission",
+              "defects": [
+                "below the top-10% bar: estimated public score 0.9665 vs target 0.9719 (gap 0.0054); keep improving the held-out score before we spend a submission"
+              ],
+              "score": 0.9664641195211928
+            }
+          ]
+        },
+        "rationale": "Submitted a bounded LightGBM-only full-data pipeline to avoid the previous timeout. It keeps the strongest astrophysical feature engineering and class imbalance handling, adds a small holdout-based balanced-accuracy multiplier tuner, removes the slow XGBoost/HGB ensemble members, pins only required fast CPU packages, and was smoke-tested on sampled data including the multiplier tuning branch.",
+        "timings": {
+          "cycle_ms": 568735.478,
+          "sandbox_ms": 479723.895,
+          "commit_ms": 88946.678
+        },
+        "agent_telemetry": {
+          "input_tokens": 812440,
+          "output_tokens": 25980,
+          "total_tokens": 838420,
+          "model_steps": 37,
+          "tool_calls": 45,
+          "model": "fugu"
+        }
+      },
+      {
+        "index": 7,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": false,
+        "shape_error": null,
+        "sandbox_error": "sandbox worker timed out after 4800s",
+        "gate_error": null,
+        "proposal": null,
+        "commit": null,
+        "rationale": null,
+        "timings": {
+          "cycle_ms": 4801746.498,
+          "sandbox_ms": 4801701.649,
+          "commit_ms": null
+        },
+        "agent_telemetry": null
+      },
+      {
+        "index": 8,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": true,
+        "shape_error": null,
+        "sandbox_error": null,
+        "gate_error": null,
+        "proposal": {
+          "artifact_id": "art-d21e0f289d92",
+          "type": "Submission",
+          "operation": "submit",
+          "parents": [
+            "DatasetVersion/ds"
+          ],
+          "objects": [
+            "requirements.txt",
+            "submission.py"
+          ]
+        },
+        "commit": {
+          "outcome": "revised",
+          "status": "revised",
+          "supersedes": null,
+          "defects": [
+            "below the top-10% bar: estimated public score 0.9665 vs target 0.9719 (gap 0.0054); keep improving the held-out score before we spend a submission"
+          ],
+          "decisions": [
+            {
+              "gate": "runs-clean",
+              "verdict": "accept",
+              "rationale": "runs clean on the hold-out",
+              "defects": [],
+              "score": null
+            },
+            {
+              "gate": "proxy-improves",
+              "verdict": "accept",
+              "rationale": "local improvement: local proxy balanced-accuracy 0.9665 vs best accepted 0.0000 (margin 0.0010)",
+              "defects": [],
+              "score": 0.9664638137564076
+            },
+            {
+              "gate": "competitive",
+              "verdict": "refine",
+              "rationale": "below the top-10% bar: estimated public score 0.9665 vs target 0.9719 (gap 0.0054); keep improving the held-out score before we spend a submission",
+              "defects": [
+                "below the top-10% bar: estimated public score 0.9665 vs target 0.9719 (gap 0.0054); keep improving the held-out score before we spend a submission"
+              ],
+              "score": 0.9664638137564076
+            }
+          ]
+        },
+        "rationale": "Replaced timed-out incumbent with a bounded deterministic two-LightGBM ensemble using all training rows, vectorized feature/target encoding, fixed thread caps, and no separate calibration fit. Smoke-tested script syntax, feature build, and predictions.csv contract with sampled data.",
+        "timings": {
+          "cycle_ms": 623320.925,
+          "sandbox_ms": 546120.656,
+          "commit_ms": 77124.767
+        },
+        "agent_telemetry": {
+          "input_tokens": 759118,
+          "output_tokens": 29174,
+          "total_tokens": 788292,
+          "model_steps": 36,
+          "tool_calls": 44,
+          "model": "fugu"
+        }
+      },
+      {
+        "index": 9,
+        "goal": "Reach the top 10% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+        "entered_protocol": true,
+        "shape_error": null,
+        "sandbox_error": null,
+        "gate_error": null,
+        "proposal": {
+          "artifact_id": "art-cdcfc5b6fac1",
+          "type": "Submission",
+          "operation": "submit",
+          "parents": [
+            "DatasetVersion/ds"
+          ],
+          "objects": [
+            "requirements.txt",
+            "submission.py"
+          ]
+        },
+        "commit": {
+          "outcome": "revised",
+          "status": "revised",
+          "supersedes": null,
+          "defects": [
+            "below the top-10% bar: estimated public score 0.9661 vs target 0.9719 (gap 0.0057); keep improving the held-out score before we spend a submission"
+          ],
+          "decisions": [
+            {
+              "gate": "runs-clean",
+              "verdict": "accept",
+              "rationale": "runs clean on the hold-out",
+              "defects": [],
+              "score": null
+            },
+            {
+              "gate": "proxy-improves",
+              "verdict": "accept",
+              "rationale": "local improvement: local proxy balanced-accuracy 0.9661 vs best accepted 0.0000 (margin 0.0010)",
+              "defects": [],
+              "score": 0.966139966078161
+            },
+            {
+              "gate": "competitive",
+              "verdict": "refine",
+              "rationale": "below the top-10% bar: estimated public score 0.9661 vs target 0.9719 (gap 0.0057); keep improving the held-out score before we spend a submission",
+              "defects": [
+                "below the top-10% bar: estimated public score 0.9661 vs target 0.9719 (gap 0.0057); keep improving the held-out score before we spend a submission"
+              ],
+              "score": 0.966139966078161
+            }
+          ]
+        },
+        "rationale": "Finalized a deterministic full-data script with richer spatial and colour/redshift target-encoding features plus a bounded LightGBM/XGBoost probability ensemble and balanced-accuracy decision multipliers. Smoke-tested the script contract on a small sample.",
+        "timings": {
+          "cycle_ms": 4166450.789,
+          "sandbox_ms": 4031409.837,
+          "commit_ms": 134968.719
+        },
+        "agent_telemetry": {
+          "input_tokens": 2173961,
+          "output_tokens": 46449,
+          "total_tokens": 2220410,
+          "model_steps": 70,
+          "tool_calls": 76,
+          "model": "fugu"
+        }
+      }
+    ],
+    "summary": {
+      "cycles_run": 10,
+      "outcomes": {
+        "revised": 8,
+        "sandbox_failed": 2
+      },
+      "accepted": [],
+      "superseded": [],
+      "trial_count": 0,
+      "refine_count": 8,
+      "object_count": 12,
+      "wall_time_ms": 35179348.47965592
+    },
+    "agent_telemetry": {
+      "input_tokens": 9240333,
+      "output_tokens": 267502,
+      "total_tokens": 9507835,
+      "model_steps": 370,
+      "tool_calls": 433,
+      "model": "fugu"
+    }
+  }
+}
