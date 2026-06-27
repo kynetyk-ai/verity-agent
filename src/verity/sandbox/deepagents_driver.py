@@ -119,9 +119,10 @@ class DeadlineMiddleware(AgentMiddleware):
         return {
             "messages": [
                 HumanMessage(content=(
-                    f"Time budget almost spent: ~{remaining}s of {int(self._deadline_s)}s left. "
-                    "Stop exploring now — finalize your script, run it once to confirm it works, "
-                    "and submit your best proposal immediately."
+                    f"Time almost up: ~{remaining}s of {int(self._deadline_s)}s left. STOP "
+                    "exploring and finalize NOW, even if imperfect: build your best, "
+                    "properly-shaped proposal and submit it by CALLING YOUR PROPOSE/SUBMIT "
+                    "TOOL. Doing the work but never calling the tool records nothing — submit now."
                 ))
             ]
         }
