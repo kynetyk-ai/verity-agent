@@ -43,9 +43,12 @@ class FakeVerifier:
         self.result = result if result is not None else _ACCEPT
         self.requests: list[VerifierRequest] = []
         self.provisioned = False
+        self.dispatched_while_provisioned = False
 
     async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         self.requests.append(request)
+        if self.provisioned:
+            self.dispatched_while_provisioned = True
         return self.result
 
     async def provision(self) -> None:
@@ -132,9 +135,12 @@ def _setup(
     return cp, sandbox, verifier, store
 
 
-def test_configure_stamps_schema_and_provisions_services() -> None:
+def test_configure_stamps_schema_and_defers_verifier_provision() -> None:
+    # #96: configure provisions the sandbox but NOT the verifier — the verifier is provisioned on
+    # the run boundary (see test_run_provisions_and_tears_down_verifier), so an idle verifier
+    # sibling never outlives its run on a resident task.
     _cp, _sandbox, verifier, store = _setup()
-    assert verifier.provisioned is True
+    assert verifier.provisioned is False
     current = store.current_schema_version()
     assert current is not None and NOTE in current.types
 
@@ -363,6 +369,18 @@ def test_run_loop_drives_cycles_and_regenerates() -> None:
     assert len(results) == 1  # stop_on_accept ended after the first accept
     assert sandbox.regenerated == 1  # workspace regenerated each cycle
     assert [a.id for a in cp.accepted_artifacts(type=NOTE)] == ["n1"]
+
+
+def test_run_provisions_and_tears_down_verifier() -> None:
+    # #96: run-scoped verifier lifecycle — provisioned at run-start, torn down at run-end (the
+    # FakeVerifier flips `provisioned` on provision/teardown), so it is False again after the run.
+    cp, _sandbox, verifier, _store = _setup(
+        proposals=[_note("n1")], policy=OrchestrationPolicy(max_cycles=1, stop_on_accept=True),
+    )
+    assert verifier.provisioned is False  # not provisioned at configure
+    asyncio.run(cp.run("t1", goal="make a good note"))
+    assert verifier.provisioned is False  # torn down at run-end
+    assert verifier.dispatched_while_provisioned is True  # it WAS live during the run
 
 
 def test_extraction_answers_why_from_provenance() -> None:
