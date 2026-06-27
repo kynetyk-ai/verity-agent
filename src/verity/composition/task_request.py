@@ -56,6 +56,10 @@ class SandboxRequest:
     recursion_limit: int = 200
     sandbox_timeout_s: float = 1500.0
     code_timeout_s: float = 600.0
+    # Per-cycle model-step budget (ROADMAP 5.1, #103). ``None`` lets the driver derive a graceful
+    # default from ``recursion_limit`` so every task gets the soft "wrap up" step nudge before the
+    # framework's hard ``GraphRecursionError``; an explicit value overrides the derivation.
+    step_budget: int | None = None
 
     def to_model_spec(self) -> ModelSpec | None:
         """Reconstruct the `ModelSpec`, or ``None`` to let the builder pick its default model.
@@ -96,6 +100,7 @@ class SandboxRequest:
             "recursion_limit": self.recursion_limit,
             "sandbox_timeout_s": self.sandbox_timeout_s,
             "code_timeout_s": self.code_timeout_s,
+            "step_budget": self.step_budget,
         }
 
     @classmethod

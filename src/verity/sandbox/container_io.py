@@ -18,6 +18,7 @@ __all__ = [
     "CONTAINER_INPUT_DIR",
     "CONTAINER_INPUT_PATH",
     "CycleInput",
+    "effective_step_budget",
 ]
 
 # Fixed in-container mount points.
@@ -25,6 +26,23 @@ CONTAINER_WORKSPACE = "/work"
 CONTAINER_OUTBOX = "/work/outbox"
 CONTAINER_INPUT_DIR = "/sandbox"
 CONTAINER_INPUT_PATH = "/sandbox/input.json"
+
+_STEP_BUDGET_FRACTION = 0.8  # derived step budget as a fraction of the framework recursion limit
+
+
+def effective_step_budget(recursion_limit: int, step_budget: int | None) -> int:
+    """The per-cycle step budget to enforce, deriving a graceful default when none is set (#103).
+
+    An explicit ``step_budget`` always wins. When it is ``None`` we derive one from the framework's
+    ``recursion_limit`` so *every* cycle gets the soft "wrap up and submit" nudge + a **typed**
+    ``StepBudgetExceeded`` stop *before* the framework's ungraceful ``GraphRecursionError`` — the
+    always-on safety net (kept strictly below ``recursion_limit`` so it fires first). Lives here in
+    the framework-neutral cycle-input module so the host-side drivers can derive it without
+    importing the Deep Agents stack.
+    """
+    if step_budget is not None:
+        return step_budget
+    return max(1, int(_STEP_BUDGET_FRACTION * recursion_limit))
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +55,7 @@ class CycleInput:
     recursion_limit: int = 80
     deadline_s: float | None = None  # soft wrap-up budget (5.2); usually the container hard timeout
     tool_names: tuple[str, ...] = ()  # extra sandbox tools to bind, by registry name (5.4, #6)
-    step_budget: int | None = None  # per-cycle model-step budget (5.1); None = framework limit only
+    step_budget: int | None = None  # per-cycle model-step budget (5.1); None -> driver-derived
 
     def to_json(self) -> bytes:
         return json.dumps(

@@ -31,6 +31,7 @@ from verity.sandbox.container_io import (
     CONTAINER_INPUT_DIR,
     CONTAINER_WORKSPACE,
     CycleInput,
+    effective_step_budget,
 )
 from verity.sandbox.errors import SandboxError
 from verity.sandbox.model_spec import ModelSpec
@@ -93,7 +94,7 @@ class DeepAgentsContainerDriver:
                 # finalize before the kill (5.2). The hard timeout stays the backstop.
                 deadline_s=self.timeout_s,
                 tool_names=self.tool_names,
-                step_budget=self.step_budget,
+                step_budget=effective_step_budget(self.recursion_limit, self.step_budget),
             )
             (inputs_dir / "input.json").write_bytes(cycle.to_json())
             os.chmod(inputs_dir, 0o755)

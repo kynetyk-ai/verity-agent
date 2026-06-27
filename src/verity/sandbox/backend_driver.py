@@ -36,6 +36,7 @@ from verity.sandbox.container_io import (
     CONTAINER_OUTBOX,
     CONTAINER_WORKSPACE,
     CycleInput,
+    effective_step_budget,
 )
 from verity.sandbox.errors import SandboxError
 from verity.sandbox.model_spec import ModelSpec
@@ -116,7 +117,7 @@ class BackendSandboxDriver:
             recursion_limit=self.recursion_limit,
             deadline_s=self.timeout_s,  # the soft wrap-up budget is the worker's hard timeout (5.2)
             tool_names=self.tool_names,
-            step_budget=self.step_budget,
+            step_budget=effective_step_budget(self.recursion_limit, self.step_budget),
         )
         worker_spec = self._worker_spec(cycle, workspace)
         log.info("sandbox_worker_run", image=self.image, ops=[s.name for s in operations])

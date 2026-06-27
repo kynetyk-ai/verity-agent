@@ -38,6 +38,7 @@ class ProvisioningConfig:
     recursion_limit: int = 200
     sandbox_timeout_s: float = 1500.0
     code_timeout_s: float = 600.0
+    step_budget: int | None = None  # per-cycle model-step budget (#103); None -> driver-derived
 
 
 def provisioning_config_from(sandbox: SandboxRequest) -> ProvisioningConfig:
@@ -57,4 +58,5 @@ def provisioning_config_from(sandbox: SandboxRequest) -> ProvisioningConfig:
         recursion_limit=sandbox.recursion_limit,
         sandbox_timeout_s=sandbox.sandbox_timeout_s,
         code_timeout_s=sandbox.code_timeout_s,
+        step_budget=sandbox.step_budget,
     )
