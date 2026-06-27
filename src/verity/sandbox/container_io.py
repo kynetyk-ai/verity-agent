@@ -63,7 +63,12 @@ class CycleInput:
                 "system_prompt": self.system_prompt,
                 "user_message": self.user_message,
                 "operations": [
-                    {"name": s.name, "inputs": list(s.inputs), "output": s.output}
+                    {
+                        "name": s.name,
+                        "inputs": list(s.inputs),
+                        "output": s.output,
+                        "object_payload_keys": list(s.object_payload_keys),
+                    }
                     for s in self.operations
                 ],
                 "recursion_limit": self.recursion_limit,
@@ -77,7 +82,10 @@ class CycleInput:
     def from_json(cls, data: bytes) -> CycleInput:
         obj = json.loads(data)
         operations = tuple(
-            OperationSignature(name=o["name"], inputs=tuple(o["inputs"]), output=o["output"])
+            OperationSignature(
+                name=o["name"], inputs=tuple(o["inputs"]), output=o["output"],
+                object_payload_keys=tuple(o.get("object_payload_keys", ())),
+            )
             for o in obj["operations"]
         )
         return cls(

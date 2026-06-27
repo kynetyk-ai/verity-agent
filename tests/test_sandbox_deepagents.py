@@ -50,8 +50,10 @@ from verity.sandbox.deepagents_driver import (  # noqa: E402
     StepBudgetExceeded,
     StepBudgetMiddleware,
     _extract_telemetry,
+    _make_propose_tool,
     build_deepagents_agent,
 )
+from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME  # noqa: E402
 
 
 class ToolCallingFakeModel(GenericFakeChatModel):
@@ -408,6 +410,61 @@ def test_step_budget_middleware_is_silent_well_under_budget() -> None:
     mw = StepBudgetMiddleware(100)
     for _ in range(3):
         assert mw.before_model(None, None) is None
+
+
+# --- propose tool: outbox file-presence check + the tested attestation nudge ---
+
+_SUB_SIG = OperationSignature(
+    "submit", inputs=("Dataset",), output="Submission",
+    object_payload_keys=("entrypoint", "requirements"),
+)
+_SUB_PAYLOAD = {"entrypoint": "submission.py", "requirements": "requirements.txt"}
+
+
+def _seed_outbox(tmp_path: Path, *names: str) -> Path:
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    for name in names:
+        (outbox / name).write_text("x\n")
+    return outbox
+
+
+def test_propose_rejects_when_a_declared_object_file_is_missing(tmp_path: Path) -> None:
+    # The op declares entrypoint/requirements as outbox files; a missing one is an in-cycle reject
+    # (records nothing), so the agent can fix it before a gate cycle is spent.
+    outbox = _seed_outbox(tmp_path, "requirements.txt")  # entrypoint NOT written
+    propose = _make_propose_tool(_SUB_SIG, outbox)
+    result = propose(parents=["ds"], payload=_SUB_PAYLOAD)
+    assert result.startswith("rejected:")
+    assert "entrypoint='submission.py'" in result
+    assert not (outbox / RESERVED_PROPOSAL_NAME).exists()  # nothing recorded
+
+
+def test_propose_records_when_declared_files_present(tmp_path: Path) -> None:
+    outbox = _seed_outbox(tmp_path, "submission.py", "requirements.txt")
+    propose = _make_propose_tool(_SUB_SIG, outbox)
+    result = propose(parents=["ds"], payload=_SUB_PAYLOAD, tested=True)
+    assert "proposal recorded" in result and "tested=false" not in result
+    assert (outbox / RESERVED_PROPOSAL_NAME).exists()
+
+
+def test_propose_warns_but_records_when_not_attested_tested(tmp_path: Path) -> None:
+    # tested defaults False -> still records (the nudge is soft, not enforced) but warns.
+    outbox = _seed_outbox(tmp_path, "submission.py", "requirements.txt")
+    propose = _make_propose_tool(_SUB_SIG, outbox)
+    result = propose(parents=["ds"], payload=_SUB_PAYLOAD)
+    assert "proposal recorded" in result and "tested=false" in result
+    assert (outbox / RESERVED_PROPOSAL_NAME).exists()
+
+
+def test_propose_skips_presence_check_when_op_declares_no_object_keys(tmp_path: Path) -> None:
+    # An op with no object_payload_keys (the default) records without any outbox file present.
+    outbox = _seed_outbox(tmp_path)
+    sig = OperationSignature("author", inputs=("Source",), output="Note")
+    propose = _make_propose_tool(sig, outbox)
+    result = propose(parents=["src"], payload={"text": "a note"})
+    assert "proposal recorded" in result
+    assert (outbox / RESERVED_PROPOSAL_NAME).exists()
 
 
 def test_agent_builds_with_a_step_budget(tmp_path: Path) -> None:

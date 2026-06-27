@@ -88,12 +88,19 @@ class OperationSignature:
     ``required_payload_keys`` is an *optional* per-operation payload schema (presence-only): the
     keys the proposal payload must carry, checked at intake (ROADMAP 5.1 #13). Structural, not
     semantic — the control plane never interprets payload values, only that declared keys exist.
+
+    ``object_payload_keys`` is the subset of payload keys whose *values name a file the agent must
+    have written to ``outbox/``* (e.g. a Submission's ``entrypoint``/``requirements``). The propose
+    tool checks those files are present before recording, so a missing/misplaced object is a clear,
+    in-cycle ``rejected: …`` the agent can fix — not a wasted gate cycle. Still structural: the
+    control plane reads the declared *name* from the payload, never the file's contents.
     """
 
     name: str
     inputs: tuple[str, ...]
     output: str
     required_payload_keys: tuple[str, ...] = ()
+    object_payload_keys: tuple[str, ...] = ()
 
 
 class SchemaRegistry:
