@@ -9,9 +9,9 @@ JSON documents and prints the climb of accepted submissions toward the top-N% ba
 
 Usage:
     # one run
-    docker exec verity-cp verity results <run_id> | python3 feature-engineering-test/trajectory.py
+    docker exec verity-cp verity results <run_id> | python3 prototyping_datasci_test/trajectory.py
     # many runs (the cross-run climb): collect the JSONs, pass them as files
-    python3 feature-engineering-test/trajectory.py run1.json run2.json ...
+    python3 prototyping_datasci_test/trajectory.py run1.json run2.json ...
 
 Each input is a RunReport dict (``verity results <run_id>``). Reads stdin when given no files.
 """

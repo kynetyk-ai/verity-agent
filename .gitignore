@@ -27,11 +27,11 @@ npm-debug.log*
 
 # The feature-engineering / fe-kaggle task package lives here and IS committed (PROTOCOL.md,
 # task.json, run.sh, overview.md); only the large datasets + generated output stay out of git.
-/feature-engineering-test/*.csv
-/feature-engineering-test/out/
+/prototyping_datasci_test/*.csv
+/prototyping_datasci_test/out/
 # Role-keyed bundles produced by the user-side prep (tools/prepare_fe_data.py) — derived data.
-/feature-engineering-test/agent/
-/feature-engineering-test/verifier/
+/prototyping_datasci_test/agent/
+/prototyping_datasci_test/verifier/
 
 # OS / editor
 .DS_Store

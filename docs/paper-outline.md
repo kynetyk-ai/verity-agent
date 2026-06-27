@@ -177,7 +177,7 @@ survives contact with reality, and doubles as the venue for the 6.2 study.
 ## 7. Evidence already in hand
 
 - **Cross-model / cross-provider runs on an identical harness**: gpt-5.4, sonnet, sonnet+nudge,
-  fugu (Sakana, over the OpenAI-compatible seam) under `feature-engineering-test/agent-runs/`.
+  fugu (Sakana, over the OpenAI-compatible seam) under `prototyping_datasci_test/prototyping-runs/`.
 - **Live instances of the agent fooling itself, caught by the independent gate** — the adversarial
   thesis demonstrated in the wild:
   - fugu run README: the script *self-reported ~0.967* while the held-out gate measured **0.9665**
@@ -270,7 +270,7 @@ available / functional / reusable). State each with its honest caveat:
   (Deep Agents/LangChain), swappable behind the `BackendSandboxDriver` seam but one implementation in
   practice. Frame the driver seam as the mitigation.
 - **It runs.** End-to-end, on an external benchmark, reproducibly, for hours, across providers — a bar
-  many submissions fail. The recorded `agent-runs/` *are* the artifact-evaluation story; don't
+  many submissions fail. The recorded `prototyping-runs/` *are* the artifact-evaluation story; don't
   undersell it.
 - **Composable — two layers.** *Mechanically:* already composable at the service boundary (long-lived
   daemon + CLI + HTTP API + byte data plane + async create→run→poll→results→export), so a Verity task

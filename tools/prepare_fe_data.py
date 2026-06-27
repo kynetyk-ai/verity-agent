@@ -22,9 +22,9 @@ likewise the two ``test.csv``), so the content-addressed store dedupes them.
 
 Usage (competitive defaults — full train, ~15% stratified hold-out):
     uv run python tools/prepare_fe_data.py \
-        --train feature-engineering-test/train.csv \
-        --test  feature-engineering-test/test.csv \
-        --out   feature-engineering-test
+        --train prototyping_datasci_test/train.csv \
+        --test  prototyping_datasci_test/test.csv \
+        --out   prototyping_datasci_test
     # add --per-class N for a quick smaller smoke; --reserved-fraction F to resize the hold-out
 """
 

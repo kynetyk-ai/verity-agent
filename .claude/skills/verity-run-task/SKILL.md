@@ -69,7 +69,7 @@ the bundled orchestrator (daemon must already be up):
 ```bash
 bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type code --goal "write a script that runs"
 # data-bearing tasks, e.g. fe-kaggle: prepare role bundles first (tools/prepare_fe_data.py), then
-# point the package's own run.sh at them (feature-engineering-test/run.sh does the prep for you).
+# point the package's own run.sh at them (prototyping_datasci_test/run.sh does the prep for you).
 ```
 
 ## Guardrails (read before running)

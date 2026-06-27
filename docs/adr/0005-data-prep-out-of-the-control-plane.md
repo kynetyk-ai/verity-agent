@@ -104,12 +104,12 @@ from "the split withheld it" to "routing never placed it there."
 
 ## The worked example (this change ships it)
 
-`feature-engineering-test/` now carries the prepared, role-keyed inputs (generated once from the
+`prototyping_datasci_test/` now carries the prepared, role-keyed inputs (generated once from the
 stellar `train.csv`/`test.csv` with the *same* `subsample(per_class=300)` → `stratified_split(
 reserved_fraction=0.5)` the CP did, run user-side):
 
 ```
-feature-engineering-test/
+prototyping_datasci_test/
   agent/
     train.csv            # labeled, hold-out rows removed — what the agent trains on
     test.csv             # the real Kaggle test set, unlabeled

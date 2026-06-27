@@ -151,7 +151,7 @@ and per-cycle telemetry).
 
 Per [`../../PROTOCOL.md`](../../PROTOCOL.md): bring up the daemon with a **funded** `OPENAI_API_KEY` for
 Sakana in `.env` (and the raised `VERITY_VERIFIER_TIMEOUT=14400` default, already in
-`infra/compose.daemon.yml`), then `./feature-engineering-test/run.sh feature-engineering-test/task.fugu.json`
+`infra/compose.daemon.yml`), then `./prototyping_datasci_test/run.sh prototyping_datasci_test/task.fugu.json`
 (full data, hosted fugu, 80-min agent budget). Runs are non-deterministic (hosted model + live
 leaderboard read fresh each cycle), and fugu auto-routes across backend providers, so per-cycle latency
 varies. To curb the two remaining timeouts, either raise the budget further or constrain the agent's

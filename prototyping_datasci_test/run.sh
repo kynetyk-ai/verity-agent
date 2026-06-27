@@ -13,7 +13,7 @@
 #   - competition rules accepted on kaggle.com (the API 403s otherwise)
 #   - train.csv + test.csv present in THIS directory (gitignored; download from the competition)
 #
-# Usage:   ./feature-engineering-test/run.sh [path/to/task.json]
+# Usage:   ./prototyping_datasci_test/run.sh [path/to/task.json]
 # Env:     VERITY_CP (container, default verity-cp), VERITY_EXCHANGE_HOST (default /tmp/verity-exchange),
 #          PER_CLASS (default: full competitive train — set N for a quick smoke), RESERVED_FRACTION
 #          (default 0.15) — the user-side prep knobs.

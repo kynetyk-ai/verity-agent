@@ -135,7 +135,7 @@ machine-readable RunReport (every cycle's decisions, scores, timings, and teleme
 ## Reproduce
 
 Per [`../../PROTOCOL.md`](../../PROTOCOL.md): bring up the daemon (with a funded `OPENAI_API_KEY` for
-Sakana in `.env`), then `./feature-engineering-test/run.sh feature-engineering-test/task.fugu.json`
+Sakana in `.env`), then `./prototyping_datasci_test/run.sh prototyping_datasci_test/task.fugu.json`
 (full data, hosted fugu). To avoid the timeout losses seen here, raise `sandbox_timeout_s` (e.g. to
 3600) in `task.fugu.json`. Runs are non-deterministic (hosted model + live leaderboard), and fugu's
 default mode auto-routes across backend providers, so per-cycle latency varies.

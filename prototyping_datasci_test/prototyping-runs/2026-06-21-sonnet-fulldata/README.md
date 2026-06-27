@@ -141,5 +141,5 @@ rationales).
 ## Reproduce
 
 Per [`../../PROTOCOL.md`](../../PROTOCOL.md): bring up the daemon, then
-`./feature-engineering-test/run.sh feature-engineering-test/task.sonnet.json` (full data, hosted
+`./prototyping_datasci_test/run.sh prototyping_datasci_test/task.sonnet.json` (full data, hosted
 model). Runs are non-deterministic (hosted model + live leaderboard).

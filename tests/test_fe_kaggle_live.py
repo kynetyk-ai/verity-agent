@@ -29,7 +29,7 @@ import pytest
 from verity.contracts import GateUnavailable
 
 _COMPETITION = os.environ.get("KAGGLE_COMPETITION", "playground-series-s6e6")
-_DATASET = Path("feature-engineering-test/test.csv")
+_DATASET = Path("prototyping_datasci_test/test.csv")
 
 
 def _kaggle_ready() -> tuple[bool, str]:

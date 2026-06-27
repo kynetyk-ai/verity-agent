@@ -107,6 +107,6 @@ The 6 scripts that committed a proposal (the four recursion-cap cycles produced 
 ## Reproduce
 
 Per [`../../PROTOCOL.md`](../../PROTOCOL.md):
-`./feature-engineering-test/run.sh feature-engineering-test/task.sonnet.json` (full data, hosted
+`./prototyping_datasci_test/run.sh prototyping_datasci_test/task.sonnet.json` (full data, hosted
 model), with the nudge merged in `feature_engineering.py`. Non-deterministic (hosted model + live
 leaderboard).

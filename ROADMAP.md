@@ -261,7 +261,7 @@ now, cheap open models later; ADR 0002). Built as two sprints behind one `Sandbo
 ### Phase 4 — Feature-engineering domain (§12) → MVP ✅
 
 The first real discovery run, and the MVP — the §12 domain on the real Kaggle stellar dataset
-(`feature-engineering-test/`), run for multiple proposal rounds against the live control plane. Two
+(`prototyping_datasci_test/`), run for multiple proposal rounds against the live control plane. Two
 settled decisions shape it: the submitted **script trains end-to-end** and the verifier scores it on
 a **reserved hold-out** split from `train.csv` (leakage caught on the reserved set, §13.11); and the
 submission declares a **package list** the runner **pip-installs at run time** (network on; pinned
@@ -311,7 +311,7 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   read from its Kaggle metadata (default 5, overridable) and the gate blocks until budget frees;
   degrade-don't-crash on API failure. New `verity create
   --request-file` + `--test-data` (two inputs); the committed, runnable task package
-  (`feature-engineering-test/{PROTOCOL.md,task.json,run.sh}`, local-agent default). Offline-tested on a
+  (`prototyping_datasci_test/{PROTOCOL.md,task.json,run.sh}`, local-agent default). Offline-tested on a
   `FakeKaggleScorer`; a `@kaggle @live` test submits for real (auto-skips without creds).
 
 - **Enhancement — `fe-kaggle`: goal-seeking toward a top-N% leaderboard bar ✅.** Reshapes the gate

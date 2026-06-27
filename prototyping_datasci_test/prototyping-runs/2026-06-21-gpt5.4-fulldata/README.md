@@ -121,5 +121,5 @@ the agent's rationales).
 ## Reproduce
 
 Per [`../../PROTOCOL.md`](../../PROTOCOL.md): bring up the daemon, then
-`./feature-engineering-test/run.sh feature-engineering-test/task.gpt.json` (full data, hosted model).
+`./prototyping_datasci_test/run.sh prototyping_datasci_test/task.gpt.json` (full data, hosted model).
 Runs are non-deterministic (hosted model + live leaderboard).
