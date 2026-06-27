@@ -9,10 +9,12 @@ Agents — quarantined behind the mypy override, runs only in the image.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 from deepagents.backends.local_shell import LocalShellBackend
+from langgraph.errors import GraphRecursionError
 
 from verity.logging import configure_logging, get_logger
 from verity.sandbox.container_io import (
@@ -21,7 +23,12 @@ from verity.sandbox.container_io import (
     CONTAINER_WORKSPACE,
     CycleInput,
 )
-from verity.sandbox.deepagents_driver import build_deepagents_agent, run_agent
+from verity.sandbox.deepagents_driver import (
+    StepBudgetExceeded,
+    build_deepagents_agent,
+    run_agent,
+)
+from verity.sandbox.descriptor import RESERVED_TELEMETRY_NAME
 from verity.sandbox.model_spec import ModelSpec, resolve_model
 from verity.sandbox.tools import resolve_tools
 
@@ -62,11 +69,42 @@ def main() -> None:
         base_url=spec.base_url,
         ops=[s.name for s in cycle.operations],
     )
-    run_agent(
-        agent, cycle.user_message,
-        recursion_limit=cycle.recursion_limit, outbox=Path(CONTAINER_OUTBOX),
-    )
+    try:
+        run_agent(
+            agent, cycle.user_message,
+            recursion_limit=cycle.recursion_limit, outbox=Path(CONTAINER_OUTBOX),
+        )
+    except (StepBudgetExceeded, GraphRecursionError) as exc:
+        # The agent ran out of its step/recursion budget (#103) — a graceful, EXPECTED stop. The
+        # soft step nudge biases the agent to propose first, so the propose tool has usually already
+        # written its descriptor to the outbox. Salvage it: record the stop reason and exit 0 so the
+        # host HARVESTS the (possibly partial) proposal, instead of crashing exit 1 and losing the
+        # whole cycle. If nothing was proposed, the host records a "no proposal" cycle and feeds it
+        # back (degrade-don't-crash) — still never a fatal exit-1 loss. A genuine crash (OOM, tool
+        # error) is NOT caught here, so it still surfaces as a non-zero exit with diagnostics.
+        reason = f"{type(exc).__name__}: {exc}"
+        log.warning("container_entry_budget_exhausted", reason=reason)
+        _annotate_stop_reason(Path(CONTAINER_OUTBOX), reason)
     log.info("container_entry_done")
+
+
+def _annotate_stop_reason(outbox: Path, reason: str) -> None:
+    """Record the graceful stop reason in the harvested telemetry (best-effort, never raises).
+
+    ``run_agent`` only writes ``__telemetry__`` on a clean return, so on a budget-exhausted stop we
+    write (or augment) it here with ``stop_reason`` — surfacing the cause in the RunReport rather
+    than salvaging silently.
+    """
+    path = outbox / RESERVED_TELEMETRY_NAME
+    try:
+        telemetry = json.loads(path.read_bytes()) if path.exists() else {}
+    except (OSError, ValueError):
+        telemetry = {}
+    telemetry["stop_reason"] = reason
+    try:
+        path.write_bytes(json.dumps(telemetry).encode("utf-8"))
+    except OSError as exc:
+        log.warning("container_entry_telemetry_write_failed", error=str(exc))
 
 
 if __name__ == "__main__":

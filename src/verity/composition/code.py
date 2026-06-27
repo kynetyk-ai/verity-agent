@@ -83,7 +83,7 @@ async def configure_code_task(
             backend=backend, model=model, spec=spec, image=provisioning.sandbox_image,
             config=CODE_TASK_ID, memory=provisioning.sandbox_memory,
             recursion_limit=provisioning.recursion_limit, timeout_s=provisioning.sandbox_timeout_s,
-            runtime=provisioning.runtime,
+            step_budget=provisioning.step_budget, runtime=provisioning.runtime,
         ),
         proposer_identity=f"deepagents-worker:{model}",
     )

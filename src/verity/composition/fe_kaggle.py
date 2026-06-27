@@ -22,6 +22,7 @@ import os
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,8 @@ from verity.sandbox.registration import build_sandbox
 
 if TYPE_CHECKING:
     from verity.composition.catalog import TaskCatalog
+    from verity.contracts.model import VerdictBundle
+    from verity.contracts.ports import VerifierRequest
 
 log = get_logger("verity.composition.fe_kaggle")
 
@@ -224,6 +227,49 @@ def _verifier_factory_from_env(backend: WorkerBackend) -> VerifierFactory:
         )
     return _http_verifier
 
+
+@dataclass(slots=True)
+class _LazyLaunchVerifier:
+    """A `VerifierPort` that defers launch to ``provision`` and reaps at ``teardown`` (#96).
+
+    The control plane drives provision/teardown on the **run** boundary (``ControlPlane.run``), not
+    the task boundary — so a verifier sibling container lives only for the duration of an active run
+    and idle verifiers do not accumulate across a resident task's runs. This adapter holds the
+    launch ``factory`` + the per-task ``setup`` and (re)builds a fresh inner `VerifierPort` each
+    ``provision`` (launch + ship setup), tearing it down (destroying the container via the inner's
+    own ``teardown``) each ``teardown``. Re-launchable across runs of a resident task.
+
+    ``dispatch`` delegates to the live inner; calling it before ``provision`` is a control-plane bug
+    (the run path always provisions first), surfaced as a recoverable `GateUnavailable`.
+    """
+
+    factory: VerifierFactory
+    setup: VerifierSetup
+    inner: VerifierPort | None = None
+    identity: str = ""
+
+    async def provision(self) -> None:
+        if self.inner is None:
+            self.inner = await self.factory(self.setup)
+        await self.inner.provision()
+        self.identity = self.inner.identity
+
+    async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
+        if self.inner is None:
+            raise GateUnavailable(
+                "verifier dispatched before provision (run-scoped lifecycle, #96)"
+            )
+        return await self.inner.dispatch(request)
+
+    async def teardown(self) -> None:
+        inner, self.inner, self.identity = self.inner, None, ""
+        if inner is not None:
+            await inner.teardown()
+
+    async def health(self) -> bool:
+        return self.inner is not None and await self.inner.health()
+
+
 _FE_KAGGLE_INSTRUCTIONS = (
     "Climb into the TOP TIER of the real Kaggle leaderboard. Improve balanced accuracy by any "
     "means that fits in one script — features, model choice, a small ensemble, calibration, "
@@ -310,7 +356,7 @@ async def configure_fe_kaggle_task(
             backend=backend, model=model, spec=spec, image=provisioning.sandbox_image,
             config=FE_KAGGLE_TASK_ID, memory=provisioning.sandbox_memory,
             recursion_limit=provisioning.recursion_limit, timeout_s=provisioning.sandbox_timeout_s,
-            runtime=provisioning.runtime,
+            step_budget=provisioning.step_budget, runtime=provisioning.runtime,
         ),
         proposer_identity=f"deepagents-worker:{model}",
         # The agent role's pre-prepared files, routed verbatim into data/. The user's prep removed
@@ -341,7 +387,10 @@ async def configure_fe_kaggle_task(
             ),
         },
     )
-    verifier = await (make_verifier or _verifier_factory_from_env(backend))(setup)
+    # Run-scoped lifecycle (#96): wrap the launch factory in a lazy adapter rather than launching
+    # the verifier sibling here at configure-time. The control plane provisions it at run-start and
+    # tears it down at run-end (api.ControlPlane.run), so an idle verifier never outlives its run.
+    verifier = _LazyLaunchVerifier(make_verifier or _verifier_factory_from_env(backend), setup)
 
     cp.register_sandbox(FE_KAGGLE_TASK_ID, lambda: sandbox)
     cp.register_verifier(FE_KAGGLE_TASK_ID, lambda: verifier)

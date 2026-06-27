@@ -245,7 +245,10 @@ class ControlPlane:
         sandbox = self._sandbox_providers.create(config.sandbox_key)
         verifier = self._verifier_providers.create(config.verifier_key)
         await sandbox.provision()
-        await verifier.provision()
+        # The verifier is provisioned on the RUN boundary, not here (#96): `run()` provisions it at
+        # run-start and tears it down at run-end, so an idle verifier sibling (a 4 GB container for
+        # fe-kaggle) never outlives its run on a resident task. In-process verifiers provision as a
+        # no-op, so this is uniform across verifier types.
         state = TaskState(
             config=config, sandbox=sandbox, verifier=verifier,
             run_context=RunContext(tenant_id=config.tenant_id, run_id=self._run_id_source()),
@@ -583,38 +586,53 @@ class ControlPlane:
         feedback = ""
         cycles = 0
         consecutive_failures = 0
-        while self._policy.should_continue(cycles_run=cycles):
-            result = await self.run_cycle(task_id, goal=goal, feedback=feedback)
-            results.append(result)
-            cycles += 1
-            failure = result.sandbox_error or result.gate_error
-            if failure is not None:
-                # A failed cycle (sandbox could not propose, or the gate was unavailable): bound
-                # runaway failure, else feed the reason back and continue.
-                consecutive_failures += 1
-                cap = self._policy.max_consecutive_sandbox_failures
-                if cap and consecutive_failures >= cap:
-                    log.error("run_aborted_consecutive_failures", task_id=task_id, failures=cap)
-                    self._record_run(task_id, status="aborted")
-                    raise OrchestrationError(
-                        f"aborting run after {consecutive_failures} consecutive failed cycles "
-                        f"(last: {failure})"
-                    )
-            else:
-                consecutive_failures = 0
-                if (
-                    self._policy.stop_on_accept
-                    and result.commit is not None
-                    and result.commit.status is ArtifactStatus.ACCEPTED
-                ):
-                    break
-            feedback = _feedback_from(result)
-        record = self._record_run(task_id, status="complete")
-        log.info(
-            "run_complete", task_id=task_id, tenant_id=task.config.tenant_id,
-            run_id=record.run_id, cycles=cycles,
-        )
-        return results
+        # Run-scoped verifier lifecycle (#96): provision at run-start, tear down in `finally` at
+        # run-end (even on abort/exception) so an idle verifier sibling never outlives its run.
+        # `provision` is inside the `try` so a partially-launched verifier is still reaped; both
+        # `provision` and `teardown` are no-ops for in-process verifiers.
+        try:
+            await task.verifier.provision()
+            while self._policy.should_continue(cycles_run=cycles):
+                result = await self.run_cycle(task_id, goal=goal, feedback=feedback)
+                results.append(result)
+                cycles += 1
+                failure = result.sandbox_error or result.gate_error
+                if failure is not None:
+                    # A failed cycle (sandbox could not propose, or the gate was unavailable): bound
+                    # runaway failure, else feed the reason back and continue.
+                    consecutive_failures += 1
+                    cap = self._policy.max_consecutive_sandbox_failures
+                    if cap and consecutive_failures >= cap:
+                        log.error(
+                            "run_aborted_consecutive_failures", task_id=task_id, failures=cap
+                        )
+                        self._record_run(task_id, status="aborted")
+                        raise OrchestrationError(
+                            f"aborting run after {consecutive_failures} consecutive failed cycles "
+                            f"(last: {failure})"
+                        )
+                else:
+                    consecutive_failures = 0
+                    if (
+                        self._policy.stop_on_accept
+                        and result.commit is not None
+                        and result.commit.status is ArtifactStatus.ACCEPTED
+                    ):
+                        break
+                feedback = _feedback_from(result)
+            record = self._record_run(task_id, status="complete")
+            log.info(
+                "run_complete", task_id=task_id, tenant_id=task.config.tenant_id,
+                run_id=record.run_id, cycles=cycles,
+            )
+            return results
+        finally:
+            # Best-effort: a teardown failure must never mask the run's outcome (it is already
+            # idempotent + suppresses its own transport/destroy errors).
+            try:
+                await task.verifier.teardown()
+            except Exception as exc:  # noqa: BLE001 - degrade-don't-crash on cleanup
+                log.warning("verifier_teardown_failed", task_id=task_id, error=str(exc))
 
     def _record_run(self, task_id: str, *, status: str) -> RunRecord:
         """Build the run's operational metadata from the store-derived report and persist it.

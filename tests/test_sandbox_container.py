@@ -57,6 +57,18 @@ def test_cycle_input_roundtrips() -> None:
     assert back.step_budget == 30
 
 
+def test_effective_step_budget_derives_a_graceful_default() -> None:
+    # #103: an explicit step budget wins; an unset one derives a default strictly below the
+    # framework recursion limit, so the typed StepBudgetExceeded fires before GraphRecursionError.
+    from verity.sandbox.container_io import effective_step_budget
+
+    assert effective_step_budget(300, 250) == 250  # explicit override
+    derived = effective_step_budget(300, None)
+    assert derived == 240 and derived < 300  # derived default, below the framework limit
+    assert effective_step_budget(80, None) == 64
+    assert effective_step_budget(1, None) >= 1  # never zero
+
+
 def test_a_missing_docker_binary_degrades_to_a_sandbox_error() -> None:
     # No daemon needed: a non-existent binary makes create_subprocess_exec raise OSError, which the
     # driver types as a recoverable SandboxError instead of a raw OSError aborting the run (5.1).
