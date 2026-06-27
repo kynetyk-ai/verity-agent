@@ -5,8 +5,9 @@
     "model": "fugu",
     "base_url": "https://api.sakana.ai/v1",
     "api_key_env": "OPENAI_API_KEY",
-    "sandbox_timeout_s": 2400,
-    "code_timeout_s": 3600
+    "recursion_limit": 300,
+    "sandbox_timeout_s": 9600,
+    "code_timeout_s": 4800
   },
   "verifier": {
     "approach": "kaggle",
