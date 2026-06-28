@@ -271,16 +271,11 @@ class _LazyLaunchVerifier:
 
 
 _FE_KAGGLE_INSTRUCTIONS = (
-    "Climb into the TOP TIER of the real Kaggle leaderboard. Improve balanced accuracy by any "
-    "means that fits in one script — features, model choice, a small ensemble, calibration, "
-    "imbalance handling — and TRAIN ON THE FULL data. If there's no prior work yet, explore the "
-    "data with code first; otherwise read your prior/just-revised script under scratch/provided/ "
-    "and target its weakness. Each cycle your hold-out score is checked against a competitive "
-    "target read live from the leaderboard: below it you're told the gap and asked to REVISE (no "
-    "submission spent); at or above it the script is regenerated on the full data and submitted to "
-    "the REAL leaderboard, accepted only if its public score beats your best. Predict EVERY row of "
-    "test.csv. Anything that leaks the target inflates your own number but fails on the held-out "
-    "and real data."
+    "Climb the real Kaggle leaderboard for this competition, improving balanced accuracy across "
+    "cycles. Spend a real submission only on a genuinely competitive attempt; otherwise keep "
+    "refining against the held-out target. Predict every row. The mechanics — the script contract, "
+    "the held-out check, and the revise-vs-submit ladder — are in the domain instructions above; "
+    "execute them well rather than restating them."
 )
 
 _FE_KAGGLE_VERIFIER_APPROACH = (

@@ -374,86 +374,73 @@ def balanced_accuracy(truth: Mapping[str, str], preds: Mapping[str, str]) -> flo
 
 FEATURE_ENGINEERING_INSTRUCTIONS = f"""\
 You are a discovery agent on a tabular prediction task. Each cycle you produce ONE submission: a
-self-contained Python script that reads the data, builds a predictive pipeline, and writes a
-prediction for every test row. Any technique that fits in a single script and improves the held-out
-score is fair game — engineered features, the model you pick, an ensemble, calibration, handling
-class imbalance. There is no mandated method. Your aim across cycles is to climb into the TOP TIER
-of the real leaderboard: each cycle either improves on your best or is sent back to revise toward a
-competitive target (how that works is below).
+self-contained Python script that reads the data, builds a predictive pipeline, and predicts every
+test row. Any technique that fits in a single script and improves the held-out score is fair game —
+features, model choice, an ensemble, calibration, imbalance handling. No method is mandated. Across
+cycles you climb into the TOP TIER of the real leaderboard: each submission either beats your best
+or is sent back to refine toward a competitive target.
 
 The script contract (the gate runs your script; honour it exactly):
-- Resolve the data directory as `os.environ.get("VERITY_DATA", "data")` and the output directory as
-  `os.environ.get("VERITY_OUT", "out")`. (The defaults work in your sandbox; the gate sets these.)
-- Read the labelled training data from `<VERITY_DATA>/{TRAIN_INPUT}` and the unlabelled rows to
-  predict from `<VERITY_DATA>/{TEST_INPUT}`. The target is `class`; `{TEST_INPUT}` has no `class`.
-- Clean the data, build your pipeline, train on the training data, then predict a `class` for every
-  row of `{TEST_INPUT}`.
-- Write predictions to `<VERITY_OUT>/{PREDICTIONS_OUTPUT}` with exactly two columns: `id,class`.
-- The script must be deterministic (fix every random seed) and self-contained.
+- Data dir = `os.environ.get("VERITY_DATA", "data")`; output dir =
+  `os.environ.get("VERITY_OUT", "out")` (the defaults work in your sandbox; the gate sets these).
+- Read training data from `<VERITY_DATA>/{TRAIN_INPUT}` and the rows to predict from
+  `<VERITY_DATA>/{TEST_INPUT}`. The target is `class`; `{TEST_INPUT}` has none.
+- Train, then write predictions to `<VERITY_OUT>/{PREDICTIONS_OUTPUT}` with exactly two columns:
+  `id,class`.
+- Deterministic (fix every seed) and self-contained.
 
-The runner (where the gate executes your script): a CPU-only Linux container, Python 3.12, with your
-pinned `{REQUIREMENTS}` pip-installed (network on for the install). The common system libraries for
-the CPU ML stack are present, so scikit-learn, LightGBM, XGBoost, pandas, and numpy all work.
-Budget: a few minutes, ~2 GB RAM, ~1 GB scratch. So: prefer fast, wheel-installable CPU libraries
-and a bounded model; do NOT use deep-learning frameworks (torch / tensorflow will not fit or
-finish), and avoid libraries with no prebuilt wheel (there is no compiler in the runner).
+The runner (where the gate executes your script): a CPU-only Linux container, Python 3.12, ~16
+cores, ~16 GB RAM, with your pinned `{REQUIREMENTS}` pip-installed (network is on for the install
+only). scikit-learn, LightGBM, XGBoost, CatBoost, pandas, numpy all work. Do NOT use deep-learning
+frameworks (torch / tensorflow won't finish) or libraries with no prebuilt wheel (no compiler in
+the runner).
 
-Orient before you propose:
-- If there is NO incumbent yet, EXPLORE THE DATA WITH CODE first — do not try to read the raw files,
-  they are too large. Write a short script that loads the data and prints its shape, column dtypes,
-  the target's class balance, summary statistics, missingness, and a few candidate signals
-  (correlations or simple per-class means). Let what you find drive your first submission.
-- If you have prior work, it is provided under `scratch/provided/` (see its `INDEX.md`): your best
-  accepted submission, or — on a REVISE cycle — the exact script you were just asked to revise.
-  Read it, work out WHY it scores as it does and where it is WEAK, then make a focused change that
-  targets that weakness rather than starting from scratch. You may edit your workspace freely.
+How you are judged (you never see the judge's data): the gate runs your script on a reserved
+hold-out you can't see, scores BALANCED ACCURACY, and checks it against a competitive bar read live
+from the leaderboard. Below the bar — you're told your estimate, the target, and the gap, and asked
+to REVISE (no real submission spent). At or above it — the script is retrained on the full data and
+submitted to the REAL leaderboard, accepted only if its public score beats your best. So keep
+pushing the held-out score; each accepted submission is a real step up. Anything that peeks at the
+target looks great on your own split but fails on the hold-out and the real data.
 
-What to deliver to `outbox/` each cycle:
-- `{ENTRYPOINT}` — the script above.
-- `{REQUIREMENTS}` — the pinned package list your script needs (e.g. `pandas==2.2.2`), one per line.
-  The gate installs exactly these before running your script, so pin versions for reproducibility.
-- The proposal payload (via your submit/revises tool): `entrypoint` = "{ENTRYPOINT}" and
-  `requirements` = "{REQUIREMENTS}". The submission is the unit — you do not report individual
-  features or changes.
+Work the problem (you have a generous time budget each cycle — use it to explore, build, and TEST;
+past the halfway mark you'll get periodic "time remaining" notes, so pace yourself to finish):
+- First cycle (no prior work): explore the data with code to understand its structure and where the
+  signal is — what the columns are and their types, how balanced the classes are, and which
+  features actually separate them — and let what you find drive your first model. (Don't open the
+  raw files directly; they're large — load and summarize them in a script.)
+- Later cycles: your prior work is under `scratch/provided/` (see its `INDEX.md`) — your best
+  accepted submission, or, on a REVISE cycle, the exact script to revise. Treat each cycle as an
+  experiment: read it, form a hypothesis about where it's weak, make a focused change, and measure
+  it against the prior on your own held-out split before submitting — keep what demonstrably helps
+  and drop what doesn't, rather than rewriting from scratch.
 
-How you are judged (you never see the judge's data):
-- Your goal is the TOP TIER of the real leaderboard. The gate runs your script on data you cannot
-  see (a reserved hold-out) and scores BALANCED ACCURACY, then estimates whether that score would
-  reach the competitive bar — a target read live from the leaderboard. If it would NOT, your
-  submission is sent back to REVISE: you are told your estimated score, the target, and the gap —
-  close it and resubmit. No real leaderboard submission is spent until you are competitive, so keep
-  improving the held-out score.
-- Once the estimate clears the bar, the script is regenerated on the full data and submitted to the
-  REAL leaderboard; it is accepted only if its public score beats your best so far. Each accepted
-  submission is a real step up the leaderboard — keep climbing across cycles.
-- Anything that peeks at the target looks great on your own split but fails on the hold-out and the
-  real data. A submission that errors, times out, or fails to predict every row is rejected
-  outright; there is no partial credit. Confirm your script runs cleanly before you submit.
+Train on ALL the data, and finish in time:
+- TRAIN ON THE FULL training set — do NOT subsample. On this problem the amount of training data is
+  the dominant driver of balanced accuracy, and a gradient-boosted tree (LightGBM / XGBoost /
+  CatBoost) fits the whole set in a couple of minutes.
+- USE ALL THE CORES: `n_jobs=-1` (scikit-learn / XGBoost / LightGBM), `thread_count=-1` (CatBoost).
+  A single-threaded fit on the full data WILL time out — the most common reason a good model fails
+  to finish.
+- Keep any ensemble or search bounded — a model that doesn't finish scores nothing. And note: some
+  libraries that manage their own thread pools don't co-exist cleanly in one process (CatBoost
+  alongside LightGBM/XGBoost is a known stall) — so if you want several, train each in its own
+  process (`multiprocessing` / `ProcessPoolExecutor`) and combine predictions.
+- Optimize for BALANCED accuracy: validate with stratified cross-validation and handle class
+  imbalance (class weights / resampling / threshold tuning).
 
-Data + speed (the amount of training data is the real lever here — use ALL of it):
-- TRAIN ON THE FULL training data provided; do NOT subsample it. With balanced accuracy on this
-  problem the quantity of training data is the dominant driver of the score, and a gradient-boosted
-  tree model (LightGBM / XGBoost / CatBoost) fits the whole set in a couple of minutes — comfortably
-  within the time budget.
-- USE ALL THE CPU CORES. The runner has ~16 cores — set `n_jobs=-1` (scikit-learn / XGBoost /
-  LightGBM) and `thread_count=-1` (CatBoost) so training is parallel. A single-threaded fit (the
-  library default for some estimators) on the full data WILL time out — this is the most common
-  reason a good model fails to finish.
-- The runner is an automated, isolated sandbox — not your interactive workspace, and with tighter
-  limits. Some libraries that manage their own thread pools do not share one process cleanly —
-  CatBoost loaded alongside LightGBM or XGBoost is a known case — and the run can STALL (it stops
-  making progress and the gate eventually times it out). If you want several such models, train each
-  in its own process (`multiprocessing` / `ProcessPoolExecutor`) and combine their predictions,
-  rather than co-loading them in one process.
-- Optimize for BALANCED accuracy, not raw accuracy: validate with stratified cross-validation and
-  handle the class imbalance (class weights / resampling / threshold tuning).
-- The gate runs your script under a generous time budget, but a model that does not finish scores
-  nothing — keep any ensemble or search bounded. To check it runs without burning your own budget,
-  test on a small sample (e.g. a few thousand rows); the gate trains the real thing on the full
-  data. Then submit.
+Before you submit — TEST IT (this is where attempts most often fail): actually RUN your script
+end-to-end in your sandbox (on a small sample if you like — a few thousand rows) and confirm it
+completes and writes `{PREDICTIONS_OUTPUT}` with the `id,class` columns and a row for every test
+row. A script that errors, times out, or skips rows is rejected outright — no partial credit — so
+never submit one you haven't watched run clean.
 
-Useful domain knowledge: differences between photometric bands ("colour indices", e.g. u-g, g-r,
-r-i, i-z) and `redshift` carry most of the signal; encode the categorical `spectral_type` and the
-`galaxy_population` column (both are present in train AND test — explore the columns to see exactly
-what is available); and because scoring is balanced accuracy, handle class imbalance (class weights
-/ resampling)."""
+Deliver to `outbox/` each cycle: `{ENTRYPOINT}` (the script) and `{REQUIREMENTS}` (its pinned
+packages, e.g. `pandas==2.2.2`, one per line — the gate installs exactly these). The proposal
+payload (via your submit/revises tool): `entrypoint` = "{ENTRYPOINT}", `requirements` =
+"{REQUIREMENTS}". The submission is the unit — don't report individual features.
+
+Domain signal: colour indices (differences between photometric bands, e.g. u-g, g-r, r-i, i-z) and
+`redshift` carry most of the signal. The categorical `spectral_type` and `galaxy_population` are
+present in train AND test — encode them for the model; don't feed raw string columns to the
+estimator. Because scoring is balanced accuracy, handle the class imbalance."""
