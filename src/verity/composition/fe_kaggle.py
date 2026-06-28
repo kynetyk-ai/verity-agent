@@ -35,8 +35,8 @@ from verity.control_plane.api import ControlPlane
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import (
     DefaultRetrievalPolicy,
-    ObjectProvisioningPolicy,
     ObjectProvisionMode,
+    provisioning_policy,
 )
 from verity.domains.feature_engineering import (
     DATASET_VERSION,
@@ -309,7 +309,7 @@ async def configure_fe_kaggle_task(
     make_verifier: VerifierFactory | None = None,
     competition: str = "",
     daily_submission_limit: int | None = None,
-    provisioning_mode: ObjectProvisionMode = ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED,
+    provisioning_spec: object = ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED,
     provisioning: ProvisioningConfig | None = None,
     wait_deadline_s: float = 86_400.0,
     poll_interval_s: float = 60.0,
@@ -395,9 +395,7 @@ async def configure_fe_kaggle_task(
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator, object_namer=declared_objects,
         sandbox_key=FE_KAGGLE_TASK_ID, verifier_key=FE_KAGGLE_TASK_ID,
-        object_provisioning=ObjectProvisioningPolicy(
-            mode=provisioning_mode, type_filter=SUBMISSION
-        ),
+        object_provisioning=provisioning_policy(provisioning_spec, type_filter=SUBMISSION),
     )
     await cp.configure(config)
     return FE_KAGGLE_TASK_ID
@@ -416,23 +414,6 @@ def _require_role_files(role: str, refs: Mapping[str, str], expected: tuple[str,
             f"run tools/prepare_fe_data.py and ingest the {role}/ bundle "
             f"(create the task with files={{'{role}': {{...}}}})"
         )
-
-
-def _parse_provision_mode(raw: object, default: ObjectProvisionMode) -> ObjectProvisionMode:
-    """Parse a ``provisioning_mode`` knob string to a mode; fall back to ``default`` on anything
-    unrecognised (degrade-don't-crash — a typo in a knob should not abort task creation)."""
-    if raw is None:
-        return default
-    try:
-        return ObjectProvisionMode(str(raw).strip().lower())
-    except ValueError:
-        log.warning(
-            "fe_kaggle_unknown_provisioning_mode",
-            value=str(raw),
-            using=default.value,
-            known=[m.value for m in ObjectProvisionMode],
-        )
-        return default
 
 
 async def build_fe_kaggle_task(
@@ -466,17 +447,22 @@ async def build_fe_kaggle_task(
     limit_knob = knobs.get("daily_submission_limit")
     # ``target_percentile`` is the human-facing knob (top-N%); the gate works in a fraction.
     target_fraction = float(knobs.get("target_percentile", 10.0)) / 100.0
-    # Which prior submission(s) to provision into the next cycle's workspace (registries.py). Rides
-    # ``verifier.knobs`` for now (the existing knob channel); its principled home is a typed
-    # context-assembly/``PolicyRequest`` field, since provisioning is orchestration, not gating.
-    provisioning_mode = _parse_provision_mode(
-        knobs.get("provisioning_mode"), ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED
+    # Which prior submission(s) to provision into the next cycle's workspace (registries.py).
+    # Provisioning is orchestration, so its principled home is ``policy.provisioning`` — a preset
+    # name or an explicit ``{statuses, select}`` axes object. The deprecated verifier-knobs channel
+    # (``provisioning`` / ``provisioning_mode``) is still read for back-compat; default = best of
+    # the accepted/revised lineage.
+    provisioning_spec = (
+        request.policy.provisioning
+        or knobs.get("provisioning")
+        or knobs.get("provisioning_mode")
+        or ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED
     )
     return await configure_fe_kaggle_task(
         cp, backend=backend, agent_files=agent_files, verifier_files=verifier_files,
         competition=str(competition),
         daily_submission_limit=int(limit_knob) if limit_knob is not None else None,
-        provisioning_mode=provisioning_mode,
+        provisioning_spec=provisioning_spec,
         provisioning=provisioning_config_from(request.sandbox),
         wait_deadline_s=float(knobs.get("wait_deadline_s", 86_400.0)),
         poll_interval_s=float(knobs.get("budget_poll_interval_s", 60.0)),

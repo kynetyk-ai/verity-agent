@@ -18,7 +18,7 @@ import pytest
 from tools.harness.dataset import stratified_split
 from tools.harness.stub_verifier import StubVerifier
 
-from verity.composition.fe_kaggle import _parse_provision_mode, configure_fe_kaggle_task
+from verity.composition.fe_kaggle import configure_fe_kaggle_task
 from verity.contracts import (
     Artifact,
     ArtifactStatus,
@@ -34,10 +34,12 @@ from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.commit import CommitOutcome, ShapeError
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import (
-    _MODE_AXES,
+    _PRESETS,
     DefaultRetrievalPolicy,
     ObjectProvisioningPolicy,
     ObjectProvisionMode,
+    ProvisionSelect,
+    provisioning_policy,
 )
 from verity.control_plane.store import Decision, SqliteStore
 from verity.domains.feature_engineering import (
@@ -174,13 +176,13 @@ def _store_with_three() -> SqliteStore:
 
 
 def test_policy_none_provisions_nothing() -> None:
-    policy = ObjectProvisioningPolicy(mode=ObjectProvisionMode.NONE)
+    policy = provisioning_policy(ObjectProvisionMode.NONE)
     assert policy.materialize(_store_with_three()) == {}
 
 
 def test_policy_last_accepted_takes_the_most_recent_accepted() -> None:
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(_store_with_three())["scratch"]
     # the rejected s3 is more recent but not accepted; s2 (latest accepted) wins, flat + a manifest.
@@ -189,8 +191,8 @@ def test_policy_last_accepted_takes_the_most_recent_accepted() -> None:
 
 
 def test_policy_all_accepted_ranks_by_recency_with_a_manifest() -> None:
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(_store_with_three())["scratch"]
     # newest-first ranked subdirs (01 = s2, the most recent accepted), plus the manifest.
@@ -201,8 +203,8 @@ def test_policy_all_accepted_ranks_by_recency_with_a_manifest() -> None:
 
 
 def test_policy_all_includes_terminal_and_respects_cap() -> None:
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.ALL, type_filter=SUBMISSION, max_objects=2
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL, type_filter=SUBMISSION, max_objects=2
     )
     out = policy.materialize(_store_with_three())["scratch"]
     # the cap bounds object files (2), but the manifest always rides along (metadata, not payload).
@@ -218,8 +220,8 @@ def test_policy_last_revised_or_accepted_picks_the_in_flight_revised() -> None:
                       name=ENTRYPOINT, data=b"accepted", ts="t1")
     _seed_with_object(store, art_id="s2", status=ArtifactStatus.REVISED,
                       name=ENTRYPOINT, data=b"refining", ts="t2")
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(store)["scratch"]
     assert out["provided/submission.py"] == b"refining"  # the in-flight revised, not the accepted
@@ -228,8 +230,8 @@ def test_policy_last_revised_or_accepted_picks_the_in_flight_revised() -> None:
 
 def test_policy_last_revised_or_accepted_falls_back_to_accepted() -> None:
     # With no in-flight revised it behaves like LAST_ACCEPTED, ignoring the more-recent rejected.
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(_store_with_three())["scratch"]
     assert out["provided/submission.py"] == b"v2"  # s2 (latest accepted); rejected s3 ignored
@@ -255,8 +257,8 @@ def test_policy_best_picks_higher_score_not_newest() -> None:
                       name=ENTRYPOINT, data=b"newer-worse", ts="t2")
     _record_score(store, "s1", 0.90)
     _record_score(store, "s2", 0.50)
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(store)["scratch"]
     assert out["provided/submission.py"] == b"older-better"  # score beats recency
@@ -270,8 +272,8 @@ def test_policy_best_falls_back_to_recency_when_no_scores() -> None:
                       name=ENTRYPOINT, data=b"old", ts="t1")
     _seed_with_object(store, art_id="s2", status=ArtifactStatus.ACCEPTED,
                       name=ENTRYPOINT, data=b"new", ts="t2")
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(store)["scratch"]
     assert out["provided/submission.py"] == b"new"
@@ -287,8 +289,8 @@ def test_policy_best_accepted_ignores_revised() -> None:
                       name=ENTRYPOINT, data=b"revised", ts="t2")
     _record_score(store, "s1", 0.80)
     _record_score(store, "s2", 0.90)
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.BEST_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.BEST_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(store)["scratch"]
     assert out["provided/submission.py"] == b"accepted"  # 0.80 accepted beats 0.90 revised
@@ -303,8 +305,8 @@ def test_policy_all_revised_or_accepted_ranks_accepted_and_revised() -> None:
                       name=ENTRYPOINT, data=b"rev", ts="t2")
     _seed_with_object(store, art_id="s3", status=ArtifactStatus.REJECTED,
                       name=ENTRYPOINT, data=b"bad", ts="t3")
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.ALL_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(store)["scratch"]
     assert out["provided/01-s2/submission.py"] == b"rev"  # newest non-rejected first
@@ -320,8 +322,8 @@ def test_policy_all_accepted_single_hit_is_flat() -> None:
     store = SqliteStore()
     _seed_with_object(store, art_id="s1", status=ArtifactStatus.ACCEPTED,
                       name=ENTRYPOINT, data=b"only", ts="t1")
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(store)["scratch"]
     assert out["provided/submission.py"] == b"only"
@@ -332,8 +334,8 @@ def test_provision_name_clash_namespaced() -> None:
     # Two artifacts declaring the SAME object name must not clobber: count>1 ⇒ each under its own
     # <NN>-<id>/ subdir, both bytes survive, both listed in the index.
     store = _store_with_three()  # s1, s2 both declare ENTRYPOINT; s3 rejected
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(store)["scratch"]
     assert out["provided/01-s2/submission.py"] == b"v2"
@@ -346,8 +348,8 @@ def test_provision_name_clash_namespaced() -> None:
 
 def test_manifest_drops_instruction() -> None:
     # INDEX.md is a dumb metadata list: no hardwired agent instruction, just a title + table.
-    out = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
+    out = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
     ).materialize(_store_with_three())["scratch"]
     idx = out["provided/INDEX.md"]
     assert b"Build on" not in idx
@@ -357,23 +359,27 @@ def test_manifest_drops_instruction() -> None:
     assert b"| rank | artifact | type | status | created_at | score | files |" in idx
 
 
-def test_mode_axes_total() -> None:
-    # Every mode has axes; a newly-added mode cannot silently resolve to "provision nothing".
-    assert set(_MODE_AXES) == set(ObjectProvisionMode)
+def test_every_named_mode_has_a_preset() -> None:
+    # The named modes are sugar; each must resolve to axes (none can silently mean "nothing").
+    assert {m.value for m in ObjectProvisionMode} <= set(_PRESETS)
 
 
-def test_parse_provision_mode_knob() -> None:
-    default = ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED
-    assert _parse_provision_mode("all_accepted", default) is ObjectProvisionMode.ALL_ACCEPTED
-    # case-insensitive:
-    assert _parse_provision_mode("BEST_ACCEPTED", default) is ObjectProvisionMode.BEST_ACCEPTED
-    assert _parse_provision_mode(None, default) is default  # omitted → default
-    assert _parse_provision_mode("not-a-mode", default) is default  # unknown → safe fallback
+def test_provisioning_policy_resolves_presets_and_explicit_axes() -> None:
+    # A preset name (str or enum), case-insensitive, resolves to the right axes.
+    p = provisioning_policy("all_accepted", type_filter=SUBMISSION)
+    assert p.statuses == frozenset({ArtifactStatus.ACCEPTED}) and p.select is ProvisionSelect.ALL
+    assert provisioning_policy("BEST_ACCEPTED").select is ProvisionSelect.BEST
+    assert provisioning_policy(ObjectProvisionMode.NONE).statuses == frozenset()  # nothing
+    assert provisioning_policy("not-a-mode").statuses == frozenset()  # unknown → none + warn
+    # The decoupling: the explicit form reaches superseded artifacts, no named mode required.
+    lineage = provisioning_policy({"statuses": ["accepted", "superseded"], "select": "all"})
+    assert lineage.statuses == frozenset({ArtifactStatus.ACCEPTED, ArtifactStatus.SUPERSEDED})
+    assert provisioning_policy({"statuses": "any", "select": "last"}).statuses is None  # any
 
 
 def test_fe_kaggle_default_provisioning_is_best() -> None:
     # The chosen default (#95): fe-kaggle builds on the best prior unless a knob overrides it.
-    param = inspect.signature(configure_fe_kaggle_task).parameters["provisioning_mode"]
+    param = inspect.signature(configure_fe_kaggle_task).parameters["provisioning_spec"]
     assert param.default is ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED
 
 
@@ -482,8 +488,8 @@ def _build_cp(
 
 def test_two_cycles_commit_and_provision_prior_script(tmp_path: Path) -> None:
     driver = _RecordingDriver()
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
     )
     cp, store = _build_cp(tmp_path, driver=driver, policy=policy)
 

@@ -135,6 +135,10 @@ class PolicyRequest:
     refine_cap: int = 3
     stop_on_accept: bool = False
     max_consecutive_sandbox_failures: int = 3
+    # Object-provisioning spec — a preset name (e.g. "best_revised_or_accepted") or an explicit
+    # ``{"statuses": [...], "select": "all|last|best"}``. Lives here because provisioning is
+    # orchestration (what the agent sees next cycle), not gating; ``None`` = the task's default.
+    provisioning: str | dict[str, Any] | None = None
 
     def to_orchestration_policy(self) -> OrchestrationPolicy:
         return OrchestrationPolicy(
@@ -150,6 +154,7 @@ class PolicyRequest:
             "refine_cap": self.refine_cap,
             "stop_on_accept": self.stop_on_accept,
             "max_consecutive_sandbox_failures": self.max_consecutive_sandbox_failures,
+            "provisioning": self.provisioning,
         }
 
     @classmethod
