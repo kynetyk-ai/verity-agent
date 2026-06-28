@@ -452,12 +452,14 @@ async def build_fe_kaggle_task(
     limit_knob = knobs.get("daily_submission_limit")
     # ``target_percentile`` is the human-facing knob (top-N%); the gate works in a fraction.
     target_fraction = float(knobs.get("target_percentile", 10.0)) / 100.0
-    # Which prior submission(s) to provision into the next cycle's workspace (registries.py). An
-    # explicit ``provisioning`` axes object (``{statuses, select}``) wins, else a preset-name
-    # ``provisioning_mode`` string, else the best of the accepted/revised lineage. Provisioning is
-    # orchestration, not gating — it rides the verifier-knobs channel for now (see PolicyRequest).
+    # Which prior submission(s) to provision into the next cycle's workspace (registries.py).
+    # Provisioning is orchestration, so its principled home is ``policy.provisioning`` — a preset
+    # name or an explicit ``{statuses, select}`` axes object. The deprecated verifier-knobs channel
+    # (``provisioning`` / ``provisioning_mode``) is still read for back-compat; default = best of
+    # the accepted/revised lineage.
     provisioning_spec = (
-        knobs.get("provisioning")
+        request.policy.provisioning
+        or knobs.get("provisioning")
         or knobs.get("provisioning_mode")
         or ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED
     )
