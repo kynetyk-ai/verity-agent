@@ -1,0 +1,10 @@
+candidate-4 follow-up: 5-fold RF+ET+LGBM+XGB stack | cap=21600s
+2026-06-28 13:38:20 [info     ] code_run                       entrypoint=submission.py exit_code=0 produced_output=True timed_out=False
+{
+  "label": "sonnet-nudge-cycle8-458ln-rf+et+lgbm+xgb (true runtime)",
+  "status": "clean",
+  "wall_s": 4312.0,
+  "exit_code": 0,
+  "timed_out": false,
+  "produced_output": true
+}

@@ -89,7 +89,10 @@ _DEFAULT_VERIFIER_PORT = 8001
 # to Kaggle + polls the public score. The 30s transport default times out well before that, so be
 # generous; override with VERITY_VERIFIER_TIMEOUT. (A cap-blocked Kaggle wait can exceed even this —
 # that legitimately long synchronous hold wants the async verify-job redesign, tracked separately.)
-_DEFAULT_VERIFIER_TIMEOUT_S = 1800.0
+# Sized to the calibrated code_timeout_s (#111): a cycle holds this one HTTP call open for up to two
+# code-runner trainings (proxy + Kaggle rung) plus the Kaggle wait, i.e. ~3x the per-script budget.
+# With code_timeout_s = 12960s that is ~38880s (~10.8h). Override with VERITY_VERIFIER_TIMEOUT.
+_DEFAULT_VERIFIER_TIMEOUT_S = 38880.0
 # The verifier sibling is shipped the whole verifier-role dataset as its setup payload over HTTP and
 # buffers + parses it in memory, so the cap must clear the dataset size (full-data fe-kaggle is
 # ~230 MB of CSV → a few hundred MB peak while receiving). The 512 MB worker default OOM-kills it on

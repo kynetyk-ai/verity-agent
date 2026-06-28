@@ -55,7 +55,11 @@ class SandboxRequest:
     code_tmpfs_size: str = "1g"
     recursion_limit: int = 200
     sandbox_timeout_s: float = 1500.0
-    code_timeout_s: float = 600.0
+    # Gate per-script budget. Calibrated (#111): 3x the slowest clean full-data run measured across
+    # the prototyping corpus (4312s, a 5-fold RF+ET+LGBM+XGB stack) -> 12960s, so no valid heavy
+    # script is cut mid-train. NOTE: cascades to VERITY_VERIFIER_TIMEOUT (a cycle is up to two of
+    # these + the Kaggle wait); keep that >= ~3x this value.
+    code_timeout_s: float = 12960.0
     # Per-cycle model-step budget (ROADMAP 5.1, #103). ``None`` lets the driver derive a graceful
     # default from ``recursion_limit`` so every task gets the soft "wrap up" step nudge before the
     # framework's hard ``GraphRecursionError``; an explicit value overrides the derivation.

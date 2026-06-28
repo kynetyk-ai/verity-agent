@@ -37,7 +37,8 @@ class ProvisioningConfig:
     code_tmpfs_size: str = "1g"
     recursion_limit: int = 200
     sandbox_timeout_s: float = 1500.0
-    code_timeout_s: float = 600.0
+    # Gate per-script budget; calibrated 3x the slowest clean full-data run, 4312s (#111).
+    code_timeout_s: float = 12960.0
     step_budget: int | None = None  # per-cycle model-step budget (#103); None -> driver-derived
 
 
