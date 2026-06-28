@@ -65,6 +65,8 @@ from verity.verifier import (
 __all__ = [
     "DATASET_VERSION",
     "SUBMISSION",
+    "ACCEPT_IMPROVE_OVER_BEST_PRIOR",
+    "ACCEPT_ALWAYS",
     "ENTRYPOINT",
     "REQUIREMENTS",
     "TRAIN_INPUT",
@@ -81,6 +83,19 @@ __all__ = [
 
 DATASET_VERSION = "DatasetVersion"
 SUBMISSION = "Submission"
+
+# The verdict-policy axis of the holdout scorer (the ablation knob, experimental-design §6.2). Both
+# policies share the same scoring run; only the accept verdict differs.
+#   ``improve_over_best_prior`` — ACCEPT iff the score beats the best prior, else REJECT (the §12
+#     ``selection`` behaviour). Under a binary accept/reject gate that never refines, "best
+#     accepted" and "best prior of any status" coincide, so the existing best-accepted baseline is
+#     exact for the ablation (Exp 3/4/4b).
+#   ``always`` — run, record the score, ACCEPT unconditionally (Exp 1/2). A non-runnable / non-
+#     scorable submission still rejects (there is no score to record) — the fair, non-hobbled
+#     construct, not "accept the failure" (experimental-design §7).
+ACCEPT_IMPROVE_OVER_BEST_PRIOR = "improve_over_best_prior"
+ACCEPT_ALWAYS = "always"
+_ACCEPT_POLICIES = (ACCEPT_IMPROVE_OVER_BEST_PRIOR, ACCEPT_ALWAYS)
 
 # The reserved object names the agent writes to outbox/ (the script + its declared package list).
 ENTRYPOINT = "submission.py"
@@ -197,6 +212,7 @@ def build_feature_engineering_verifier(
     margin: float = 0.0,
     trial_deflation: float = 0.0,
     timeout_s: float = 900.0,
+    accept_policy: str = ACCEPT_IMPROVE_OVER_BEST_PRIOR,
 ) -> SdkVerifier:
     """The opaque verifier package for the §12 domain — the two ``Submission`` gates (ADR 0001).
 
@@ -204,15 +220,26 @@ def build_feature_engineering_verifier(
     then scores **balanced accuracy** against ``reserved_labels`` — which it **holds and never
     exposes**, so a leaked-target submission inflates the agent's own score but is caught here (§12,
     §13.11). The cheap **runs-clean** gate (→ ``tentative``) requires the script to execute and
-    predict every reserved row; the hard **selection** gate (→ ``accepted``) requires the score to
-    beat the incumbent by ``margin``, with the bar raised ``trial_deflation`` per prior rejected
-    submission (the trial count is the rejected-log, §12). Reject-only — this domain issues no
-    ``refine``.
+    predict every reserved row.
+
+    ``accept_policy`` selects the hard verdict step over that one shared scoring run (the ablation
+    knob, experimental-design §6.2) — both policies score every submission identically:
+
+    * ``improve_over_best_prior`` (default) — the hard **selection** gate (→ ``accepted``) requires
+      the score to beat the incumbent by ``margin``, with the bar raised ``trial_deflation`` per
+      prior rejected submission (the trial count is the rejected-log, §12). Reject-only — no
+      ``refine``.
+    * ``always`` — the hard **score-and-accept** gate records the score and accepts unconditionally
+      (Exp 1/2); a non-scorable submission still rejects.
 
     The incumbents' scores come from the verifier's own measurement ledger (it scored them), keyed
     by the store-slice's *current* accepted ids — so independence holds (the slice carries status,
     the verifier the numbers it computed; no rationale or score round-trips through the store).
     """
+    if accept_policy not in _ACCEPT_POLICIES:
+        raise ValueError(
+            f"unknown accept_policy {accept_policy!r}; expected one of {_ACCEPT_POLICIES}"
+        )
     gates = _SubmissionGates(
         runner=runner,
         agent_train_csv=agent_train_csv,
@@ -226,13 +253,18 @@ def build_feature_engineering_verifier(
     # identity reach it, so its code-runner workers are labelled for audit + reaping (7.4.h). A pure
     # in-process runner (FakeCodeRunner) does not implement the capability and registers nothing.
     sinks = (runner,) if isinstance(runner, SupportsRunContext) else ()
+    hard_step = (
+        GateStep("score-and-accept", gates.score_and_accept, is_hard=True)
+        if accept_policy == ACCEPT_ALWAYS
+        else GateStep("selection", gates.selection, is_hard=True)
+    )
     return SdkVerifier(
         identity=FE_VERIFIER_IDENTITY,
         context_sinks=sinks,
         pipelines={
             SUBMISSION: (
                 GateStep("runs-clean", gates.runnable, is_hard=False),
-                GateStep("selection", gates.selection, is_hard=True),
+                hard_step,
             ),
         },
     )
@@ -327,6 +359,28 @@ class _SubmissionGates:
                 VerdictKind.ACCEPT, f"improves: {detail}", score=score, supersedes=best_id
             )
         return GateVerdict(VerdictKind.REJECT, f"does not improve: {detail}", score=score)
+
+    async def score_and_accept(self, request: VerifierRequest) -> GateVerdict | None:
+        """Permissive policy: score the run, record it, ACCEPT unconditionally (Exp 1/2).
+
+        Records the score on the same ledger ``selection`` uses, so a run under this policy is
+        directly comparable to one under ``improve_over_best_prior``. A submission that produced no
+        scorable predictions still rejects — there is no number to record, and an unrunnable script
+        is not an "accept the failure" (the fair, non-hobbled construct, experimental-design §7).
+        Does not supersede: every accepted attempt is retained (the accumulating-context conditions
+        read all priors), and supersession is the improving ladder's concern, not this one.
+        """
+        result = await self._run(request)
+        preds = _parse_predictions(result.output) if result is not None else None
+        if preds is None or (self.reserved_labels.keys() - preds.keys()):
+            return GateVerdict(VerdictKind.REJECT, "submission produced no scorable predictions")
+        score = balanced_accuracy(self.reserved_labels, preds)
+        self._scores[request.proposal.id] = score
+        return GateVerdict(
+            VerdictKind.ACCEPT,
+            f"balanced-accuracy {score:.4f} (always-accept: score recorded, accepted)",
+            score=score,
+        )
 
     def _best_incumbent(self, store_slice: tuple[Artifact, ...]) -> tuple[str | None, float]:
         """The top-scoring currently-accepted submission (status from the slice, score from us)."""
