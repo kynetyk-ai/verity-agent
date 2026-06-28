@@ -11,6 +11,7 @@ equal-compute guard.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -162,9 +163,14 @@ def test_run_sweep_runs_every_cell_and_writes_reports(tmp_path) -> None:
 
     assert len(results) == 4  # 2 conditions × 1 model × 2 seeds
     assert all(r.status == "complete" and r.report is not None for r in results)
-    # every cell wrote its RunReport JSON for the (deferred) analysis layer
+    # every cell wrote its RunReport JSON, plus a manifest, for the analysis layer
     written = {p.name for p in (tmp_path / "out").glob("*.json")}
-    assert written == {r.key() + ".json" for r in results}
+    assert written == {r.key() + ".json" for r in results} | {"manifest.json"}
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert {(m["condition"], m["model"], m["seed"]) for m in manifest} == {
+        (r.condition, r.model, r.seed) for r in results
+    }
+    assert all(m["report"] in written for m in manifest)
 
     # config-only: the per-cell accept_policy reached the real scorer — the decision gate differs.
     gate_by_condition = {

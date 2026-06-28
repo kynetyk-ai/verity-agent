@@ -244,7 +244,8 @@ async def run_sweep(
 
     ``role_files`` is the shared, pre-prepared dataset (``{role: {filename: bytes}}``) ingested into
     each cell's task. When ``results_dir`` is set, each cell's `RunReport` JSON is written there as
-    ``<condition>-<model>-seedN.json`` for the (deferred) analysis layer to consume.
+    ``<condition>-<model>-seedN.json``, plus a ``manifest.json`` listing every cell + its coords —
+    the robust file→cell mapping the analysis layer reads (no filename parsing).
     """
     out_dir = Path(results_dir) if results_dir is not None else None
     if out_dir is not None:
@@ -274,7 +275,26 @@ async def run_sweep(
             )
         log.info("sweep_cell_done", index=i, total=len(cells), key=result.key(),
                  status=result.status)
+    if out_dir is not None:
+        _write_manifest(out_dir, results)
     return results
+
+
+def _write_manifest(out_dir: Path, results: list[CellResult]) -> None:
+    """Write ``manifest.json`` — the cell coordinates + report filename the analysis layer reads.
+
+    Only cells that produced a report file are listed (a missing-report cell has nothing to read).
+    The ``report`` filename matches what ``run_sweep`` wrote, so the reader never parses keys.
+    """
+    manifest = [
+        {
+            "condition": r.condition, "model": r.model, "seed": r.seed,
+            "run_id": r.run_id, "status": r.status, "report": f"{r.key()}.json",
+        }
+        for r in results
+        if r.report is not None
+    ]
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
