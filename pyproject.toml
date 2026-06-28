@@ -28,6 +28,7 @@ code = "verity.composition.code:register"
 [project.entry-points."verity.verifier_types"]
 fake = "verity.domains.fake:register_verifier"
 fe-kaggle = "verity.verifier.fe_kaggle_service:register_verifier"
+holdout-experiment = "verity.verifier.holdout_service:register_verifier"
 
 [project.optional-dependencies]
 sandbox = [

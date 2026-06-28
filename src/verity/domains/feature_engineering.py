@@ -79,6 +79,7 @@ __all__ = [
     "build_feature_engineering_verifier",
     "declared_objects",
     "balanced_accuracy",
+    "parse_label_csv",
 ]
 
 DATASET_VERSION = "DatasetVersion"
@@ -422,6 +423,26 @@ def _parse_predictions(output: bytes | None) -> dict[str, str] | None:
     except (UnicodeDecodeError, csv.Error):
         return None
     return preds or None
+
+
+def parse_label_csv(data: bytes, *, id_column: str = "id", target: str = "class") -> dict[str, str]:
+    """Parse a ``holdout_labels.csv`` (the answer key) into an ``{id: target}`` map (verifier-side).
+
+    Domain knowledge that lives with the verifier: since ADR 0005 the answer key arrives as a
+    routed verifier-role *file* (not a control-plane-derived dict), and the verifier image — which
+    owns the domain — turns it back into the lookup the gates score against. Falls back to the first
+    two columns when the header names differ, so a prep tool need not match the gate's column names.
+    """
+    reader = csv.reader(io.StringIO(data.decode("utf-8")))
+    rows = list(reader)
+    if not rows:
+        return {}
+    header = rows[0]
+    try:
+        id_idx, target_idx = header.index(id_column), header.index(target)
+    except ValueError:
+        id_idx, target_idx = 0, 1
+    return {r[id_idx]: r[target_idx] for r in rows[1:] if len(r) > max(id_idx, target_idx)}
 
 
 def balanced_accuracy(truth: Mapping[str, str], preds: Mapping[str, str]) -> float:
