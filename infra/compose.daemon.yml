@@ -82,9 +82,10 @@ services:
       # fe-kaggle is ~230 MB of CSV); the 512 MB worker default OOM-kills it on a real run.
       VERITY_VERIFIER_MEMORY: "${VERITY_VERIFIER_MEMORY:-4g}"
       # CP→verifier dispatch timeout: ONE HTTP call held open for the whole gate evaluation (proxy
-      # train + competitive + Kaggle train + submit/poll). Must exceed the sum of those — with an
-      # 80-min per-script code_timeout_s that's two trainings (~2h40m) + the Kaggle wait, so default ~4h.
-      VERITY_VERIFIER_TIMEOUT: "${VERITY_VERIFIER_TIMEOUT:-14400}"
+      # train + competitive + Kaggle train + submit/poll). Must exceed the sum of those — with the
+      # calibrated 216-min per-script code_timeout_s (#111) that's two trainings (~7.2h) + the Kaggle
+      # wait, so ~3x the per-script budget ≈ 10.8h.
+      VERITY_VERIFIER_TIMEOUT: "${VERITY_VERIFIER_TIMEOUT:-38880}"
       # Model credentials — the CP forwards the selected model's key env to the agent worker
       # (sandbox env-passthrough). Empty unless a hosted model is used; a local model needs none.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"

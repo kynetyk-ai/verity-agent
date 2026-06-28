@@ -83,6 +83,7 @@ src = ["src", "tests", "tools"]
 # and the exploratory run-data analysis notebook (a throwaway analysis artifact, not library code).
 extend-exclude = [
     "prototyping_datasci_test/prototyping-runs",
+    "prototyping_datasci_test/code-runner-calibration",
     "prototyping_datasci_test/run_data_explorer.ipynb",
 ]
 
