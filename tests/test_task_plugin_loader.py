@@ -12,9 +12,25 @@ import asyncio
 import pytest
 import structlog
 
+from verity.composition import loader as loader_module
 from verity.composition.catalog import TaskCatalog, UnknownTaskType
 from verity.composition.description import OperationDescription, TaskTypeDescription
 from verity.composition.loader import load_task_plugins
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_logging():
+    """Isolate from any prior test that ran ``configure_logging`` (e.g. the daemon's JSON setup).
+
+    ``capture_logs`` only intercepts a *freshly bound* logger, but ``configure_logging`` caches
+    loggers (``cache_logger_on_first_use``) — so a module-level ``log`` bound under an earlier
+    test's config escapes capture. Reset structlog to its (cache-free) defaults and rebind the
+    module logger, so each test's ``capture_logs`` reliably sees the loader's events.
+    """
+    structlog.reset_defaults()
+    loader_module.log = structlog.get_logger("verity.composition.loader")
+    yield
+    structlog.reset_defaults()
 
 
 class FakeEntryPoint:

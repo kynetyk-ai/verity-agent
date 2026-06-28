@@ -23,6 +23,7 @@ verity-reaper = "verity.provisioning.reaper:main"
 # NOTE: entry points come from INSTALLED dist metadata — run `uv sync` after editing these.
 [project.entry-points."verity.task_types"]
 fe-kaggle = "verity.composition.fe_kaggle:register"
+fe-holdout = "verity.composition.fe_holdout:register"
 code = "verity.composition.code:register"
 
 [project.entry-points."verity.verifier_types"]

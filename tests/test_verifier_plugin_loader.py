@@ -7,9 +7,25 @@ entry points (no install) to pin both shapes (dataless ``impl`` + data-bearing `
 
 from __future__ import annotations
 
+import pytest
 import structlog
 
+from verity.verifier import registry as registry_module
 from verity.verifier.registry import VerifierRegistry, load_verifier_plugins
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_logging():
+    """Isolate from any prior test that ran ``configure_logging`` (e.g. the daemon's JSON setup).
+
+    ``capture_logs`` only intercepts a *freshly bound* logger, but ``configure_logging`` caches
+    loggers (``cache_logger_on_first_use``) — so the registry's module-level ``log`` bound under an
+    earlier test's config escapes capture. Reset structlog and rebind it so capture is reliable.
+    """
+    structlog.reset_defaults()
+    registry_module.log = structlog.get_logger("verity.verifier.registry")
+    yield
+    structlog.reset_defaults()
 
 
 class FakeEntryPoint:
