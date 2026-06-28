@@ -86,6 +86,11 @@ SUBMISSION = "Submission"
 ENTRYPOINT = "submission.py"
 REQUIREMENTS = "requirements.txt"
 
+# The payload KEYS whose VALUES name those outbox objects. Shared by `declared_objects` (the harvest
+# filter) and the operations' `object_payload_keys` (the propose tool's in-cycle presence check), so
+# the two never drift.
+_SUBMISSION_OBJECT_KEYS = ("entrypoint", "requirements")
+
 # The script I/O contract (the gate runs the script over these). The script reads its CSVs from the
 # directory in ``$VERITY_DATA`` (default ``data``) and writes predictions to ``$VERITY_OUT``
 # (default ``out``), so the same script runs unchanged in the agent's sandbox and the gate's runner.
@@ -117,12 +122,18 @@ def build_feature_engineering_domain() -> FeatureEngineeringDomain:
     schema.register_type(ArtifactTypeDef(DATASET_VERSION, is_root=True))
     schema.register_type(ArtifactTypeDef(SUBMISSION))
     schema.register_operation(
-        OperationSignature("submit", inputs=(DATASET_VERSION,), output=SUBMISSION)
+        OperationSignature(
+            "submit", inputs=(DATASET_VERSION,), output=SUBMISSION,
+            object_payload_keys=_SUBMISSION_OBJECT_KEYS,
+        )
     )
     # A revision of a prior submission enters via a 'revises' op (kernel-general, §6); this domain
     # never issues a refine, so it is unused here, but the op stays registered for lineage.
     schema.register_operation(
-        OperationSignature("revises", inputs=(SUBMISSION,), output=SUBMISSION)
+        OperationSignature(
+            "revises", inputs=(SUBMISSION,), output=SUBMISSION,
+            object_payload_keys=_SUBMISSION_OBJECT_KEYS,
+        )
     )
 
     gated_types = GatedTypeRegistry()
@@ -170,7 +181,7 @@ def declared_objects(artifact: Artifact) -> frozenset[str]:
     """
     if artifact.type != SUBMISSION or not isinstance(artifact.payload, dict):
         return frozenset()
-    candidates = (artifact.payload.get("entrypoint"), artifact.payload.get("requirements"))
+    candidates = tuple(artifact.payload.get(key) for key in _SUBMISSION_OBJECT_KEYS)
     return frozenset(name for name in candidates if isinstance(name, str) and name)
 
 
