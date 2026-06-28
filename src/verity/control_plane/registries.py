@@ -31,6 +31,7 @@ self-contained and the registry simply stores and resolves them.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -52,9 +53,9 @@ __all__ = [
     "RetrievalPolicy",
     "DefaultRetrievalPolicy",
     "ObjectProvisionMode",
-    "ProvisionStatusSet",
     "ProvisionSelect",
     "ObjectProvisioningPolicy",
+    "provisioning_policy",
     "RegistryError",
 ]
 
@@ -241,23 +242,8 @@ class DefaultRetrievalPolicy:
 # ------------------------------------------------------ object-provisioning policy (durable refs)
 
 
-class ProvisionStatusSet(StrEnum):
-    """Which artifact statuses qualify for provisioning — one axis of :class:`ObjectProvisionMode`.
-
-    Control-plane-native (status only); never verifier semantics. ``ANY`` is **literally every
-    status** (incl. ``rejected``/``superseded``/in-flight ``proposed``/``tentative``) — the agent's
-    full history. ``ACCEPTED_OR_REVISED`` keeps ``revised`` "live" for provisioning (the #51
-    refine-edit target) even though :class:`DefaultRetrievalPolicy` treats ``revised`` as terminal —
-    a deliberate asymmetry: an in-flight refine is worth iterating on, a terminal one is not.
-    """
-
-    ACCEPTED = "accepted"
-    ACCEPTED_OR_REVISED = "accepted_or_revised"
-    ANY = "any"
-
-
 class ProvisionSelect(StrEnum):
-    """How to pick among the qualifying artifacts — the other axis of :class:`ObjectProvisionMode`.
+    """How to pick among the qualifying artifacts — one axis of a provisioning policy.
 
     ``ALL`` provisions every qualifier (recency-ranked); ``LAST`` the single most-recent; ``BEST``
     the single highest **recorded score** (``_artifact_score`` — a recorded measurement, not
@@ -271,94 +257,138 @@ class ProvisionSelect(StrEnum):
     BEST = "best"
 
 
-#: Statuses each set admits. ``ANY`` carries ``None`` — "no status filter, every status qualifies".
-_STATUS_SET_MEMBERS: dict[ProvisionStatusSet, frozenset[ArtifactStatus] | None] = {
-    ProvisionStatusSet.ACCEPTED: frozenset({ArtifactStatus.ACCEPTED}),
-    ProvisionStatusSet.ACCEPTED_OR_REVISED: frozenset(
-        {ArtifactStatus.ACCEPTED, ArtifactStatus.REVISED}
-    ),
-    ProvisionStatusSet.ANY: None,
-}
-
-
 class ObjectProvisionMode(StrEnum):
-    """How many durable objects to materialize into the workspace as references each cycle.
+    """Named **presets** over the two provisioning axes (status set × :class:`ProvisionSelect`).
 
-    Stated in **control-plane-native terms** (status + recency + recorded score) — never verifier
-    semantics. Each named mode is one cell of a two-axis grid, *which statuses qualify*
-    (:class:`ProvisionStatusSet`) × *how to select among them* (:class:`ProvisionSelect`), resolved
-    via :data:`_MODE_AXES`. Only the sensible cells are named (the validity guard) — e.g. there is
-    no ``ANY × LAST``/``ANY × BEST`` mode (building on a possibly-rejected artifact is rarely apt).
-
-    ``LAST_REVISED_OR_ACCEPTED`` (``ACCEPTED_OR_REVISED × LAST``) provisions the single most-recent
-    ``accepted``/``revised`` artifact, so a refine cycle **edits its prior script** instead of
-    reconstructing it from the defect text (issue #51). ``BEST_REVISED_OR_ACCEPTED``
-    (``ACCEPTED_OR_REVISED × BEST``) instead hands the agent its highest-*scoring* prior so it never
-    iterates away from its peak in an all-``revised`` run (issue #95); when nothing is scored yet it
-    behaves like ``LAST_REVISED_OR_ACCEPTED``.
+    These are *sugar*, not the surface. The real policy is ``(statuses, select)`` on
+    :class:`ObjectProvisioningPolicy`, which can express **any** combination; a preset is just a
+    convenient, discoverable name resolved through :data:`_PRESETS` by :func:`provisioning_policy`.
+    The raw axes are always available — e.g. ``{statuses: [accepted, superseded], select: all}``
+    (the lineage of bests) needs no named mode. Provisioning is status/recency/score-native — never
+    verifier semantics — and is deliberately **independent of the acceptance lifecycle**: whether a
+    gate superseded an artifact must not constrain what provisioning may select.
     """
 
     NONE = "none"
     ALL = "all"
     ALL_ACCEPTED = "all_accepted"
     ALL_REVISED_OR_ACCEPTED = "all_revised_or_accepted"
+    ALL_ACCEPTED_OR_SUPERSEDED = "all_accepted_or_superseded"
     LAST_ACCEPTED = "last_accepted"
     LAST_REVISED_OR_ACCEPTED = "last_revised_or_accepted"
     BEST_ACCEPTED = "best_accepted"
     BEST_REVISED_OR_ACCEPTED = "best_revised_or_accepted"
 
 
-#: Each mode's ``(status set, selection)`` axes; ``NONE`` provisions nothing. Total over the enum
-#: (asserted by ``test_mode_axes_total``) so a new mode cannot silently resolve to "nothing".
-_MODE_AXES: dict[ObjectProvisionMode, tuple[ProvisionStatusSet | None, ProvisionSelect | None]] = {
-    ObjectProvisionMode.NONE: (None, None),
-    ObjectProvisionMode.ALL: (ProvisionStatusSet.ANY, ProvisionSelect.ALL),
-    ObjectProvisionMode.ALL_ACCEPTED: (ProvisionStatusSet.ACCEPTED, ProvisionSelect.ALL),
-    ObjectProvisionMode.ALL_REVISED_OR_ACCEPTED: (
-        ProvisionStatusSet.ACCEPTED_OR_REVISED, ProvisionSelect.ALL
-    ),
-    ObjectProvisionMode.LAST_ACCEPTED: (ProvisionStatusSet.ACCEPTED, ProvisionSelect.LAST),
-    ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED: (
-        ProvisionStatusSet.ACCEPTED_OR_REVISED, ProvisionSelect.LAST
-    ),
-    ObjectProvisionMode.BEST_ACCEPTED: (ProvisionStatusSet.ACCEPTED, ProvisionSelect.BEST),
-    ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED: (
-        ProvisionStatusSet.ACCEPTED_OR_REVISED, ProvisionSelect.BEST
-    ),
+_AC = ArtifactStatus
+#: Preset name → ``(statuses, select)``. ``None`` statuses = "any status"; an empty set = "nothing".
+#: Presets are sugar; the explicit ``{statuses, select}`` form expresses cells no preset names.
+_PRESETS: dict[str, tuple[frozenset[ArtifactStatus] | None, ProvisionSelect]] = {
+    "none": (frozenset(), ProvisionSelect.ALL),
+    "all": (None, ProvisionSelect.ALL),
+    "all_accepted": (frozenset({_AC.ACCEPTED}), ProvisionSelect.ALL),
+    "all_revised_or_accepted": (frozenset({_AC.ACCEPTED, _AC.REVISED}), ProvisionSelect.ALL),
+    "all_accepted_or_superseded": (frozenset({_AC.ACCEPTED, _AC.SUPERSEDED}), ProvisionSelect.ALL),
+    "last_accepted": (frozenset({_AC.ACCEPTED}), ProvisionSelect.LAST),
+    "last_revised_or_accepted": (frozenset({_AC.ACCEPTED, _AC.REVISED}), ProvisionSelect.LAST),
+    "best_accepted": (frozenset({_AC.ACCEPTED}), ProvisionSelect.BEST),
+    "best_revised_or_accepted": (frozenset({_AC.ACCEPTED, _AC.REVISED}), ProvisionSelect.BEST),
 }
+
+#: Statuses rarely apt to build on — allowed in an explicit set but warned (advisory, never a
+#: structural block: the config is the source of truth for what gets provisioned).
+_FOOTGUN_STATUSES = frozenset({_AC.REJECTED, _AC.PROPOSED, _AC.TENTATIVE})
+
+
+def _parse_statuses(raw: object) -> frozenset[ArtifactStatus] | None:
+    """Parse an explicit ``statuses`` spec → frozenset (``None`` = any; empty/absent = nothing)."""
+    if raw is None:
+        return frozenset()
+    if isinstance(raw, str):
+        names: list[object] = [raw]
+    elif isinstance(raw, Iterable):
+        names = list(raw)
+    else:
+        raise RegistryError(f"unparseable statuses spec: {raw!r}")
+    lowered = [str(n).strip().lower() for n in names]
+    if "any" in lowered:
+        return None
+    return frozenset(ArtifactStatus(n) for n in lowered)  # ValueError on an unknown status name
+
+
+def provisioning_policy(
+    spec: object,
+    *,
+    type_filter: str | None = None,
+    target_role: str = "scratch",
+    name_prefix: str = "provided/",
+    max_objects: int = 16,
+) -> ObjectProvisioningPolicy:
+    """Resolve a provisioning **spec** to an :class:`ObjectProvisioningPolicy`.
+
+    ``spec`` is either a preset **name** (``str`` / :class:`ObjectProvisionMode`) or an **explicit**
+    mapping ``{"statuses": [...], "select": "all|last|best"}``. The explicit form can express any
+    ``(status set × select)`` cell — including ones no preset names. An unknown preset name degrades
+    to ``none`` with a warning; a status set that includes a footgun status is allowed but warned.
+    The selection is independent of the acceptance lifecycle (provisioning is not gated by whether a
+    gate superseded an artifact).
+    """
+    if spec is None:
+        statuses, select = _PRESETS["none"]
+    elif isinstance(spec, Mapping):
+        statuses = _parse_statuses(spec.get("statuses"))
+        select = ProvisionSelect(str(spec.get("select", "all")).strip().lower())
+    elif isinstance(spec, str):  # a preset name (StrEnum is a str)
+        key = spec.strip().lower()
+        if key not in _PRESETS:
+            log.warning("unknown_provisioning_preset", value=spec, known=sorted(_PRESETS))
+            key = "none"
+        statuses, select = _PRESETS[key]
+    else:
+        raise RegistryError(f"unparseable provisioning spec: {spec!r}")
+    if statuses and statuses & _FOOTGUN_STATUSES:
+        log.warning("provisioning_includes_footgun_statuses",
+                    statuses=sorted(s.value for s in statuses))
+    return ObjectProvisioningPolicy(
+        statuses=statuses, select=select, type_filter=type_filter,
+        target_role=target_role, name_prefix=name_prefix, max_objects=max_objects,
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class ObjectProvisioningPolicy:
     """Selects durable objects to drop into a writable workspace role each cycle (§3.4, §9).
 
-    The control plane resolves this against the store by **status / recency / recorded score / type
-    only** (never verifier semantics) and reads the selected artifacts' object sidecars via
-    ``Store.get_object``. The result is materialized into
-    ``target_role`` (a writable role) under ``name_prefix`` and **re-materialized every cycle**, so
-    agent edits never persist. ``type_filter`` restricts selection to one artifact type;
-    ``max_objects`` bounds total objects so a large store cannot blow up the workspace.
+    Configured by two axes: ``statuses`` (which artifact statuses qualify; ``None`` = any status, an
+    **empty set** = provision nothing) × ``select`` (all / last / best). The control plane resolves
+    this against the store by **status / recency / recorded score / type only** (never verifier
+    semantics; never the acceptance decision) and reads the selected artifacts' object sidecars via
+    ``Store.get_object``. The result is materialized into ``target_role`` (a writable role) under
+    ``name_prefix`` and **re-materialized every cycle**, so agent edits never persist.
+    ``type_filter`` restricts selection to one type; ``max_objects`` bounds total objects so a store
+    cannot blow up the workspace. Build one from a preset or an explicit spec via
+    :func:`provisioning_policy`.
     """
 
-    mode: ObjectProvisionMode = ObjectProvisionMode.NONE
+    statuses: frozenset[ArtifactStatus] | None = frozenset()
+    select: ProvisionSelect = ProvisionSelect.ALL
     type_filter: str | None = None
     target_role: str = "scratch"
     name_prefix: str = "provided/"
     max_objects: int = 16
 
     def _select(self, store: Store) -> list[Artifact]:
-        status_set, select = _MODE_AXES[self.mode]
-        if status_set is None or select is None:  # NONE — provision nothing
+        if self.statuses is not None and not self.statuses:  # empty set — provision nothing
             return []
-        # ``query_artifacts`` filters on a single status, so the set is filtered in Python; ``ANY``
-        # (members is None) keeps every status, including terminal/in-flight.
-        members = _STATUS_SET_MEMBERS[status_set]
+        # ``query_artifacts`` filters on type only; the status set is applied in Python. ``None``
+        # statuses keeps every status (incl. terminal); an explicit set keeps exactly those —
+        # including ``superseded``, so an optimizer gate never removes prior bests from reach.
         candidates = [
             a
             for a in store.query_artifacts(type=self.type_filter)
-            if members is None or a.status in members
+            if self.statuses is None or a.status in self.statuses
         ]
-        if select is ProvisionSelect.BEST:
+        if self.select is ProvisionSelect.BEST:
             # Highest recorded score wins, ties (and the no-score-anywhere case) broken by recency —
             # a recorded measurement, not verifier state, so still control-plane-native (#95).
             scores = {a.id: _artifact_score(store, a) for a in candidates}
@@ -367,7 +397,7 @@ class ObjectProvisioningPolicy:
             candidates.sort(key=lambda a: ranked[a.id], reverse=True)
             return candidates[:1]
         candidates.sort(key=lambda a: a.created_at, reverse=True)  # most-recent first
-        return candidates[:1] if select is ProvisionSelect.LAST else candidates
+        return candidates[:1] if self.select is ProvisionSelect.LAST else candidates
 
     def materialize(self, store: Store) -> dict[str, dict[str, bytes]]:
         """Resolve the policy to ``{role: {name: bytes}}`` ready for ``ServedContext`` (§9).
