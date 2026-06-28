@@ -39,8 +39,8 @@ from verity.control_plane.commit import CommitOutcome, NoImplicitAccept
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import (
     DefaultRetrievalPolicy,
-    ObjectProvisioningPolicy,
     ObjectProvisionMode,
+    provisioning_policy,
 )
 from verity.control_plane.store import SqliteStore
 from verity.domains.feature_engineering import (
@@ -148,8 +148,8 @@ def _build(
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator, object_namer=declared_objects,
         sandbox_key="fe", verifier_key="fe",
-        object_provisioning=ObjectProvisioningPolicy(
-            mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+        object_provisioning=provisioning_policy(
+            ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
         ),
     )
     asyncio.run(cp.configure(config))
@@ -445,8 +445,8 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator, object_namer=declared_objects,
         sandbox_key="fe", verifier_key="fe",
-        object_provisioning=ObjectProvisioningPolicy(
-            mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+        object_provisioning=provisioning_policy(
+            ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
         ),
     )
     asyncio.run(cp.configure(config))

@@ -119,9 +119,10 @@ class DeadlineMiddleware(AgentMiddleware):
         return {
             "messages": [
                 HumanMessage(content=(
-                    f"Time budget almost spent: ~{remaining}s of {int(self._deadline_s)}s left. "
-                    "Stop exploring now — finalize your script, run it once to confirm it works, "
-                    "and submit your best proposal immediately."
+                    f"Time almost up: ~{remaining}s of {int(self._deadline_s)}s left. STOP "
+                    "exploring and finalize NOW, even if imperfect: build your best, "
+                    "properly-shaped proposal and submit it by CALLING YOUR PROPOSE/SUBMIT "
+                    "TOOL. Doing the work but never calling the tool records nothing — submit now."
                 ))
             ]
         }
@@ -349,25 +350,66 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
     op_name = signature.name
     out_type = signature.output
     in_types = ", ".join(signature.inputs) or "(none)"
+    object_keys = signature.object_payload_keys
 
-    def propose(parents: list[str], payload: dict[str, Any], rationale: str = "") -> str:
+    def _missing_objects(payload: dict[str, Any]) -> list[str]:
+        """Declared object files (by the op's `object_payload_keys`) absent from outbox/."""
+        missing = []
+        for key in object_keys:
+            name = payload.get(key)
+            if isinstance(name, str) and name and not (outbox / name).is_file():
+                missing.append(f"{key}={name!r}")
+        return missing
+
+    def propose(
+        parents: list[str], payload: dict[str, Any], rationale: str = "", tested: bool = False
+    ) -> str:
         if not isinstance(payload, dict) or not payload:
             return "rejected: payload must be a non-empty JSON object"
         if not parents:
             return "rejected: parents must include the input artifact id(s) from your context"
+        # Enforceable: every object the payload declares must actually be in outbox/ — catch a
+        # missing/misplaced file in-cycle (a fixable rejected, no gate cycle spent) instead of a
+        # runs-clean reject downstream. Generic: the keys come from the op, not hardcoded names.
+        if missing := _missing_objects(payload):
+            present = sorted(
+                p.name for p in outbox.iterdir()
+                if p.is_file() and p.name != RESERVED_PROPOSAL_NAME
+            ) if outbox.is_dir() else []
+            return (
+                f"rejected: you declared {', '.join(missing)} but no such file is in outbox/. "
+                f"Write the file(s) to outbox/ then call again. "
+                f"outbox/ now has: {present or 'nothing'}."
+            )
         descriptor = ProposalDescriptor(
             op_name=op_name, parents=tuple(parents), payload=payload, metadata=rationale
         )
         (outbox / RESERVED_PROPOSAL_NAME).write_bytes(descriptor.to_json())
-        return f"proposal recorded ({op_name} -> {out_type}); the harness will harvest and gate it"
+        # `tested` is a self-attestation (we cannot verify it) — a nudge, not a gate. Submitting an
+        # untested script is the top cause of an outright reject, so we warn when it is not set.
+        warn = "" if tested else (
+            " NOTE: tested=false — you did not attest that you RAN this end-to-end. If you have "
+            "not run it (your execute tool), it may fail the gate — run it first next time."
+        )
+        return (
+            f"proposal recorded ({op_name} -> {out_type}); "
+            f"the harness will harvest and gate it.{warn}"
+        )
 
     propose.__name__ = op_name
     propose.__qualname__ = op_name
     propose.__doc__ = (
         f"Propose a {out_type} via {op_name} (inputs: {in_types}). Call once, last.\n\n"
+        f"Before you call this:\n"
+        f"  1. Write every declared object file to outbox/ (this tool rejects the call if a file\n"
+        f"     the payload names is not there).\n"
+        f"  2. Actually RUN your script end-to-end with your execute tool and confirm its output\n"
+        f"     — a crash, timeout, or missing output is an outright reject, no partial credit.\n\n"
         f"Args:\n"
         f"    parents: ids of the input artifact(s) of type {in_types}, taken from your context.\n"
         f"    payload: the {out_type} payload as a JSON object (see domain instructions / spec).\n"
-        f"    rationale: brief note on how/why (audit trail; never shown to the verifier)."
+        f"    rationale: brief note on how/why (audit trail; never shown to the verifier).\n"
+        f"    tested: set true ONLY after you actually ran the script end-to-end and saw its\n"
+        f"        output. Attestation only (not verified) — but untested is what keeps failing."
     )
     return propose

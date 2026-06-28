@@ -45,7 +45,12 @@ def test_cycle_input_roundtrips() -> None:
     ci = CycleInput(
         system_prompt="SYS",
         user_message="do it",
-        operations=(OperationSignature("submit", ("Dataset",), "Submission"),),
+        operations=(
+            OperationSignature(
+                "submit", ("Dataset",), "Submission",
+                object_payload_keys=("entrypoint", "requirements"),  # declared outbox files
+            ),
+        ),
         recursion_limit=42,
         deadline_s=1500.0,  # soft wrap-up budget (5.2)
         tool_names=("read_pdf",),  # extra sandbox tools by name (5.4)
@@ -55,6 +60,8 @@ def test_cycle_input_roundtrips() -> None:
     assert back == ci
     assert back.deadline_s == 1500.0 and back.tool_names == ("read_pdf",)
     assert back.step_budget == 30
+    # the op's object-payload keys survive the host -> container hop (drives the presence check)
+    assert back.operations[0].object_payload_keys == ("entrypoint", "requirements")
 
 
 def test_effective_step_budget_derives_a_graceful_default() -> None:
