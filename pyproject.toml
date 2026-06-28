@@ -80,7 +80,7 @@ packages = ["src/verity"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests", "tools"]
+src = ["src", "tests", "tools", "experiments"]
 # Recorded agent submissions (verbatim model output kept as run artifacts, not maintained source)
 # and the exploratory run-data analysis notebook (a throwaway analysis artifact, not library code).
 extend-exclude = [

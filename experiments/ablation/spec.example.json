@@ -1,0 +1,23 @@
+{
+  "task_type": "fe-holdout",
+  "goal": "Write a script that optimizes stellar-class prediction for balanced accuracy. Your submission should improve upon any previous submissions.",
+  "models": [
+    {"label": "qwen", "model": "qwen3.6:27b-coding-mxfp8", "base_url": "http://host.docker.internal:11434/v1"},
+    {"label": "sonnet", "model": "anthropic:claude-sonnet-4-6"},
+    {"label": "gpt-5.4-mini", "model": "openai:gpt-5.4-mini"}
+  ],
+  "seeds": 10,
+  "budgets": {
+    "max_cycles": 10,
+    "sandbox_timeout_s": 1500,
+    "code_timeout_s": 12960,
+    "recursion_limit": 300
+  },
+  "conditions": [
+    {"name": "exp1", "accept_policy": "always", "provisioning": "none", "max_cycles": 1},
+    {"name": "exp2", "accept_policy": "always", "provisioning": "all"},
+    {"name": "exp3", "accept_policy": "improve_over_best_prior", "provisioning": "all"},
+    {"name": "exp4", "accept_policy": "improve_over_best_prior", "provisioning": "all_revised_or_accepted"},
+    {"name": "exp4b", "accept_policy": "improve_over_best_prior", "provisioning": "best_revised_or_accepted"}
+  ]
+}
