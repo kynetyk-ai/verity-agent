@@ -131,11 +131,8 @@ def _verifier_factory_from_env(backend: WorkerBackend) -> VerifierFactory:
 
 
 _FE_KAGGLE_INSTRUCTIONS = (
-    "Climb the real Kaggle leaderboard for this competition, improving balanced accuracy across "
-    "cycles. Spend a real submission only on a genuinely competitive attempt; otherwise keep "
-    "refining against the held-out target. Predict every row. The mechanics — the script contract, "
-    "the held-out check, and the revise-vs-submit ladder — are in the domain instructions above; "
-    "execute them well rather than restating them."
+    "Improve balanced accuracy across cycles; each submission should beat your previous best. "
+    "Predict every row."
 )
 
 _FE_KAGGLE_VERIFIER_APPROACH = (

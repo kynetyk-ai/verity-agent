@@ -459,13 +459,12 @@ def balanced_accuracy(truth: Mapping[str, str], preds: Mapping[str, str]) -> flo
 
 
 FEATURE_ENGINEERING_INSTRUCTIONS = f"""\
-You are a discovery agent on a tabular prediction task. Each cycle you produce ONE submission: a
-self-contained Python script that reads the data, builds a predictive pipeline, and predicts every
-test row. Any technique that fits in a single script and improves the held-out score is fair game —
-features, model choice, an ensemble, calibration, imbalance handling. No method is mandated. Across
-cycles you climb into the TOP TIER of the real leaderboard: each submission either beats your best
-or is sent back to refine toward a competitive target.
+Produce a single self-contained Python script that reads the data, builds a predictive pipeline, and
+predicts every test row. Any technique that fits in a single script and improves the held-out score
+is fair game — features, model choice, an ensemble, calibration, imbalance handling. No method is
+mandated.
 
+### Script Contract
 The script contract (the gate runs your script; honour it exactly):
 - Data dir = `os.environ.get("VERITY_DATA", "data")`; output dir =
   `os.environ.get("VERITY_OUT", "out")` (the defaults work in your sandbox; the gate sets these).
@@ -481,45 +480,32 @@ only). scikit-learn, LightGBM, XGBoost, CatBoost, pandas, numpy all work. Do NOT
 frameworks (torch / tensorflow won't finish) or libraries with no prebuilt wheel (no compiler in
 the runner).
 
-How you are judged (you never see the judge's data): the gate runs your script on a reserved
-hold-out you can't see, scores BALANCED ACCURACY, and checks it against a competitive bar read live
-from the leaderboard. Below the bar — you're told your estimate, the target, and the gap, and asked
-to REVISE (no real submission spent). At or above it — the script is retrained on the full data and
-submitted to the REAL leaderboard, accepted only if its public score beats your best. So keep
-pushing the held-out score; each accepted submission is a real step up. Anything that peeks at the
-target looks great on your own split but fails on the hold-out and the real data.
+### Evaluation Criteria
+- The proposal will be evaluated based on BALANCED ACCURACY.
+- The proposed script is retrained on additional data not available in this environment; anything
+  that peeks at the target fails on the hold-out and real data.
+- The proposal should improve upon prior results, if prior submissions and their outcomes are
+  provided.
 
-Work the problem (you have a generous time budget each cycle — use it to explore, build, and TEST;
-past the halfway mark you'll get periodic "time remaining" notes, so pace yourself to finish):
-- First cycle (no prior work): explore the data with code to understand its structure and where the
-  signal is — what the columns are and their types, how balanced the classes are, and which
-  features actually separate them — and let what you find drive your first model. (Don't open the
-  raw files directly; they're large — load and summarize them in a script.)
-- Later cycles: your prior work is under `scratch/provided/` (see its `INDEX.md`) — your best
-  accepted submission, or, on a REVISE cycle, the exact script to revise. Treat each cycle as an
-  experiment: read it, form a hypothesis about where it's weak, make a focused change, and measure
-  it against the prior on your own held-out split before submitting — keep what demonstrably helps
-  and drop what doesn't, rather than rewriting from scratch.
+### Process Instructions
+
+Work the problem within the time allotted:
+- If no prior submissions have been provided, explore the data with code to understand its
+  structure, where the signal is, and non-obvious relationships (don't open the raw files directly;
+  they're large — load and summarize them in a script).
+- If prior submissions are provided, consider ways to optimize and/or combine the best approaches.
+- If prior scores appear to have plateaued, consider new directions (e.g. new features, different
+  models).
 
 Train on ALL the data, and finish in time:
-- TRAIN ON THE FULL training set — do NOT subsample. On this problem the amount of training data is
-  the dominant driver of balanced accuracy, and a gradient-boosted tree (LightGBM / XGBoost /
-  CatBoost) fits the whole set in a couple of minutes.
+- TRAIN ON THE FULL training set — do NOT subsample. 
 - USE ALL THE CORES: `n_jobs=-1` (scikit-learn / XGBoost / LightGBM), `thread_count=-1` (CatBoost).
-  A single-threaded fit on the full data WILL time out — the most common reason a good model fails
-  to finish.
-- Keep any ensemble or search bounded — a model that doesn't finish scores nothing. And note: some
-  libraries that manage their own thread pools don't co-exist cleanly in one process (CatBoost
-  alongside LightGBM/XGBoost is a known stall) — so if you want several, train each in its own
-  process (`multiprocessing` / `ProcessPoolExecutor`) and combine predictions.
 - Optimize for BALANCED accuracy: validate with stratified cross-validation and handle class
-  imbalance (class weights / resampling / threshold tuning).
-
-Before you submit — TEST IT (this is where attempts most often fail): actually RUN your script
-end-to-end in your sandbox (on a small sample if you like — a few thousand rows) and confirm it
-completes and writes `{PREDICTIONS_OUTPUT}` with the `id,class` columns and a row for every test
-row. A script that errors, times out, or skips rows is rejected outright — no partial credit — so
-never submit one you haven't watched run clean.
+imbalance (class weights / resampling / threshold tuning).
+- Keep any ensemble or search bounded — a model that doesn't finish scores nothing. And note: some
+libraries that manage their own thread pools don't co-exist cleanly in one process (CatBoost
+alongside LightGBM/XGBoost is a known stall) — so if you want several, train each in its own
+process (`multiprocessing` / `ProcessPoolExecutor`) and combine predictions.
 
 Deliver to `outbox/` each cycle: `{ENTRYPOINT}` (the script) and `{REQUIREMENTS}` (its pinned
 packages, e.g. `pandas==2.2.2`, one per line — the gate installs exactly these). The proposal
@@ -532,7 +518,4 @@ your honest best estimate of the held-out balanced accuracy this submission will
 `ESTIMATED_BALANCED_ACCURACY: 0.964`). It does not affect the verdict — report your real estimate,
 not an optimistic one.
 
-Domain signal: colour indices (differences between photometric bands, e.g. u-g, g-r, r-i, i-z) and
-`redshift` carry most of the signal. The categorical `spectral_type` and `galaxy_population` are
-present in train AND test — encode them for the model; don't feed raw string columns to the
-estimator. Because scoring is balanced accuracy, handle the class imbalance."""
+"""
