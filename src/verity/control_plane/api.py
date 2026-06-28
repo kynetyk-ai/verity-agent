@@ -514,7 +514,8 @@ class ControlPlane:
         task = self._task(task_id)
         task.run_context.cycle += 1  # advance the cycle stamp so this cycle's workers are labelled
         started = self._timer()
-        await self.serve_context(task_id, goal=goal, feedback=feedback)
+        served = await self.serve_context(task_id, goal=goal, feedback=feedback)
+        context = _context_metrics(served)  # F4: served-context size + provisioned-object bytes
         sandbox_started = self._timer()
         try:
             envelope = await task.sandbox.collect_proposal()
@@ -524,7 +525,8 @@ class ControlPlane:
             await task.sandbox.regenerate()  # discard the broken workspace; next cycle starts fresh
             result = IntakeResult(entered_protocol=False, sandbox_error=str(exc))
             self._record_cycle(task, goal, result, Timings(
-                cycle_ms=(self._timer() - started) * 1000, sandbox_ms=sandbox_ms))
+                cycle_ms=(self._timer() - started) * 1000, sandbox_ms=sandbox_ms),
+                context=context)
             return result
         sandbox_ms = (self._timer() - sandbox_started) * 1000
         commit_started = self._timer()
@@ -542,7 +544,7 @@ class ControlPlane:
             self._record_cycle(task, goal, result, Timings(
                 cycle_ms=(self._timer() - started) * 1000,
                 sandbox_ms=sandbox_ms, commit_ms=commit_ms),
-                agent_telemetry=envelope.agent_telemetry)
+                agent_telemetry=envelope.agent_telemetry, context=context)
             return result
         commit_ms = (self._timer() - commit_started) * 1000
         # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
@@ -551,15 +553,21 @@ class ControlPlane:
             task, goal, result,
             Timings(cycle_ms=(self._timer() - started) * 1000,
                     sandbox_ms=sandbox_ms, commit_ms=commit_ms),
-            agent_telemetry=envelope.agent_telemetry,
+            agent_telemetry=envelope.agent_telemetry, context=context,
         )
         return result
 
     def _record_cycle(
         self, task: TaskState, goal: str, result: IntakeResult, timings: Timings,
         *, agent_telemetry: Mapping[str, object] | None = None,
+        context: tuple[int, int] | None = None,
     ) -> None:
-        """Append this cycle's raw facts to the task's history (the RunReport's input, 5.3a/b)."""
+        """Append this cycle's raw facts to the task's history (the RunReport's input, 5.3a/b).
+
+        ``context`` is the (served-context chars, provisioned-object bytes) pair for the cycle (F4),
+        or ``None`` when the cycle never reached context assembly.
+        """
+        served_chars, provisioned_bytes = context if context is not None else (None, None)
         task.history.append(CycleInput(
             goal=goal,
             entered_protocol=result.entered_protocol,
@@ -569,6 +577,8 @@ class ControlPlane:
             commit=result.commit,
             timings=timings,
             agent_telemetry=agent_telemetry,
+            served_context_chars=served_chars,
+            provisioned_object_bytes=provisioned_bytes,
         ))
 
     async def run(self, task_id: str, *, goal: str) -> list[IntakeResult]:
@@ -697,6 +707,20 @@ class ControlPlane:
             if artifact_id in task.rationale:
                 return task.rationale[artifact_id]
         return None
+
+
+def _context_metrics(served: ServedContext) -> tuple[int, int]:
+    """The (served-context chars, provisioned-object bytes) pair for a cycle (exp-design F4).
+
+    The size of what the agent was actually served (system prompt + volatile tail + feedback) and
+    the total bytes of durable objects materialized into its workspace — the direct evidence for the
+    context-hygiene claim (curated conditions stay bounded; accumulating ones balloon).
+    """
+    served_chars = len(served.system_prompt) + len(served.tail) + len(served.feedback)
+    provisioned_bytes = sum(
+        len(blob) for files in served.workspace_objects.values() for blob in files.values()
+    )
+    return served_chars, provisioned_bytes
 
 
 def _feedback_from(result: IntakeResult) -> str:

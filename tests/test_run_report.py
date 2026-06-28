@@ -198,6 +198,37 @@ def test_report_round_trips_to_json(tmp_path: Path) -> None:
     assert parsed["agent_telemetry"] is None  # 5.3b slot present but unpopulated
 
 
+def test_context_size_is_recorded_per_cycle(tmp_path: Path) -> None:
+    # F4: every protocol cycle records the served-context size + provisioned-object bytes, and they
+    # round-trip through the report JSON. The fake domain provisions no objects, so bytes are 0.
+    cp, _store = _build(
+        tmp_path, items=[_note("n1", {"text": "a"})], verifier=build_fake_verifier(),
+        policy=OrchestrationPolicy(stop_on_accept=True),
+    )
+    asyncio.run(cp.run("t1", goal="g"))
+    report = cp.run_report("t1")
+    c0 = report.cycles[0]
+    assert c0.served_context_chars is not None and c0.served_context_chars > 0
+    assert c0.provisioned_object_bytes == 0
+    parsed = json.loads(report.to_json())
+    assert parsed["cycles"][0]["served_context_chars"] == c0.served_context_chars
+    assert parsed["cycles"][0]["provisioned_object_bytes"] == 0
+
+
+def test_failed_cycle_before_context_has_null_context_size(tmp_path: Path) -> None:
+    # A sandbox-failed cycle still assembled context (the failure is at collect_proposal), so it too
+    # carries a size — the None path is only for cycles that never reach assembly. Assert the
+    # recorded value is an int, keeping the field's optional contract explicit.
+    cp, _store = _build(
+        tmp_path, items=[SandboxError("boom")], verifier=build_fake_verifier(),
+        policy=OrchestrationPolicy(max_cycles=1),
+    )
+    asyncio.run(cp.run("t1", goal="g"))
+    c0 = cp.run_report("t1").cycles[0]
+    assert c0.sandbox_error is not None
+    assert isinstance(c0.served_context_chars, int) and c0.served_context_chars > 0
+
+
 # --------------------------------------------------------------------------- supersession
 
 

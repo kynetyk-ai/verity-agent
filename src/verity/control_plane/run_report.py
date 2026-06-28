@@ -81,6 +81,11 @@ class CycleInput:
     commit: CommitResult | None = None
     timings: Timings = field(default_factory=Timings)
     agent_telemetry: Mapping[str, Any] | None = None  # tokens / steps / model (5.3b), or None
+    # Context-hygiene instrumentation (experimental-design F4): the size of the context served this
+    # cycle (chars across system prompt + tail + feedback) and the bytes of durable objects
+    # provisioned into the workspace. Optional — older inputs / other tasks leave them None.
+    served_context_chars: int | None = None
+    provisioned_object_bytes: int | None = None
 
 
 # ----------------------------------------------------------------- the report (machine-readable)
@@ -152,6 +157,9 @@ class CycleReport:
     rationale: str | None
     timings: Timings
     agent_telemetry: JsonDict | None
+    # Context-hygiene instrumentation (experimental-design F4); optional, see :class:`CycleInput`.
+    served_context_chars: int | None = None
+    provisioned_object_bytes: int | None = None
 
     def to_dict(self) -> JsonDict:
         return {
@@ -162,6 +170,8 @@ class CycleReport:
             "commit": self.commit.to_dict() if self.commit else None,
             "rationale": self.rationale, "timings": self.timings.to_dict(),
             "agent_telemetry": self.agent_telemetry,
+            "served_context_chars": self.served_context_chars,
+            "provisioned_object_bytes": self.provisioned_object_bytes,
         }
 
 
@@ -263,6 +273,8 @@ def build_run_report(
             rationale=_rationale(rationale, ci.commit),
             timings=ci.timings,
             agent_telemetry=dict(ci.agent_telemetry) if ci.agent_telemetry is not None else None,
+            served_context_chars=ci.served_context_chars,
+            provisioned_object_bytes=ci.provisioned_object_bytes,
         )
         for i, ci in enumerate(cycles)
     ]

@@ -526,6 +526,12 @@ packages, e.g. `pandas==2.2.2`, one per line — the gate installs exactly these
 payload (via your submit/revises tool): `entrypoint` = "{ENTRYPOINT}", `requirements` =
 "{REQUIREMENTS}". The submission is the unit — don't report individual features.
 
+In the submit/revises tool's `rationale` (your private note — recorded for the audit trail, NEVER
+shown to the gate), include a line exactly of the form `ESTIMATED_BALANCED_ACCURACY: <float>` with
+your honest best estimate of the held-out balanced accuracy this submission will score (e.g.
+`ESTIMATED_BALANCED_ACCURACY: 0.964`). It does not affect the verdict — report your real estimate,
+not an optimistic one.
+
 Domain signal: colour indices (differences between photometric bands, e.g. u-g, g-r, r-i, i-z) and
 `redshift` carry most of the signal. The categorical `spectral_type` and `galaxy_population` are
 present in train AND test — encode them for the model; don't feed raw string columns to the
