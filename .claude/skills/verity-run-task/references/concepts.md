@@ -53,19 +53,29 @@ implements. The three shapes, and how to build each:
 
 - **Optimizer — supplant the incumbent with a better one** (one best answer survives).
   *Verifier:* a hard **scoring** gate that accepts only when the new artifact beats the incumbent **and
-  emits a supersession** (names the artifact it replaces). *Provisioning:* `LAST_ACCEPTED`, so the agent
-  iterates on the current best. *Run:* leave `--stop-on-accept` off (keep improving). This is the
-  feature-engineering / `fe-kaggle` behaviour.
+  emits a supersession** (names the artifact it replaces). *Provisioning (a free, separate axis — see
+  below):* `best_revised_or_accepted` hands the agent its single best prior; `all_accepted_or_superseded`
+  hands it the whole **lineage of bests** (the prior accepts the gate has since superseded). *Run:* leave
+  `--stop-on-accept` off (keep improving). This is the feature-engineering / `fe-kaggle` behaviour.
 - **Accumulate — keep every acceptable answer** (a collection, not a winner).
   *Verifier:* a hard **validity** gate that accepts on soundness and **never supersedes** → all sound
-  artifacts coexist as `accepted`. *Provisioning:* `ALL_ACCEPTED`. *Run:* `--stop-on-accept` off.
+  artifacts coexist as `accepted`. *Provisioning:* `all_accepted` (or `all`). *Run:* `--stop-on-accept` off.
 - **First-acceptable — take the first good one and stop** (no optimization once you have one).
   *Verifier:* a validity gate (accept on soundness). *Run:* **`--stop-on-accept`** — the loop ends at
   the first `accepted`. *Provisioning:* whatever you like (it won't iterate).
 
-Practically: the **mode lives in the verifier + composition** (an authoring choice when a task type is
-built), while **`--stop-on-accept` is the per-run CLI knob** you set at `create`/`run`. If you're only
-*running* installed task types, read each one's `verifier_approach` to know which mode you're getting.
+**Provisioning is configured independently of the acceptance behaviour** — it's *what the agent sees next
+cycle*, not *what counts as done*. Set `policy.provisioning` to a preset name (`best_revised_or_accepted`,
+`all_accepted_or_superseded`, `all_accepted`, `none`, …) **or** an explicit
+`{statuses: [...], select: all|last|best}` — any status subset (including `superseded`) × a selection. The
+acceptance choice never constrains it: an optimizer gate that supersedes prior bests can still provision
+the full superseded lineage. (For back-compat it also rides `verifier.knobs.provisioning` /
+`provisioning_mode`.)
+
+Practically: the **acceptance mode lives in the verifier + composition** (an authoring choice when a task
+type is built), while **`--stop-on-accept`** and **`policy.provisioning`** are the per-run knobs you set at
+`create`/`run`. If you're only *running* installed task types, read each one's `verifier_approach`
+(`verity catalog --type <t>`) to know which acceptance mode you're getting.
 
 ## Pointers (in the Verity source repo — not bundled with this skill)
 
