@@ -33,8 +33,8 @@ The loop is **read → propose → gate → commit**.
 | `store` (property) | sync | The durable provenance store — exposed so a task builder can seed its root inputs | No (accessor) |
 | `register_sandbox(key, factory)` | sync | Register a task's sandbox provider under `key` | No (registry wiring) |
 | `register_verifier(key, factory)` | sync | Register a task's verifier provider under `key` | No (registry wiring) |
-| `configure(config)` | **async** | Register a task: stamp schema + contract versions, provision + bind sandbox/verifier | Yes (schema/contract rows) |
-| `teardown(task_id)` | **async** | Tear down a task's sandbox and verifier | No (service lifecycle only) |
+| `configure(config)` | **async** | Register a task: stamp schema + contract versions, provision + bind the sandbox (the verifier is provisioned at run-start, #96) | Yes (schema/contract rows) |
+| `teardown(task_id)` | **async** | Tear down a task's sandbox (+ an idempotent verifier-teardown backstop; verifier teardown is run-scoped, #96) | No (service lifecycle only) |
 | `serve_context(task_id, *, goal, scratch, feedback)` | **async** | Assemble §9 bounded context and hand it to the sandbox | No (pure read) |
 | `submit_proposal(task_id, envelope)` | **async** | Shape-check → harvest objects → propose → run commit path | Yes (object store, rows, status) |
 | `run_cycle(task_id, *, goal, feedback)` | **async** | One read→propose→gate→commit cycle, then regenerate sandbox | Yes (via `submit_proposal`) |
@@ -181,7 +181,10 @@ async def configure(self, config: TaskConfig) -> None: ...
    (with an `orientation_digest`) recorded like the schema, not left ambient. Idempotent across tasks.
 3. Resolves the sandbox via `sandbox_providers.create(config.sandbox_key)` and the verifier via
    `verifier_providers.create(config.verifier_key)`.
-4. `await`s `sandbox.provision()` then `verifier.provision()` (the §3.4 lifecycle surface).
+4. `await`s `sandbox.provision()` (the §3.4 lifecycle surface). **The verifier is *not* provisioned
+   here** — its provision/teardown are **run-scoped** (`run` provisions it at run-start, tears it down
+   at run-end; #96), so an idle verifier sibling never outlives its run on a long-resident task. It is
+   still created + bound below; in-process verifiers provision as a no-op.
 5. Builds a `TaskState` with a fresh `RunContext(tenant_id=config.tenant_id, run_id=...)` and **binds
    it** to any service that implements `SupportsRunContext` (`service.bind_run_context(...)`) — so a
    backend-backed sandbox/verifier labels every worker it launches; an in-process stub ignores the
@@ -200,14 +203,16 @@ or the registries passed to `__init__`) before this call.
 
 ### `teardown`
 
-`src/verity/control_plane/api.py:262-265`
+`src/verity/control_plane/api.py:265-268`
 
 ```python
 async def teardown(self, task_id: str) -> None: ...
 ```
 
-**Does**: `await`s `task.sandbox.teardown()` then `task.verifier.teardown()` for the named task. Does
-**not** remove the task from `_tasks`, mutate the store, or release the schema version.
+**Does**: `await`s `task.sandbox.teardown()` then `task.verifier.teardown()` for the named task. The
+verifier is normally provisioned + torn down per-run (run-scoped, #96); the call here is an
+**idempotent backstop**. Does **not** remove the task from `_tasks`, mutate the store, or release the
+schema version.
 
 **Errors**: `UnknownTask` if `task_id` was never configured.
 
@@ -344,14 +349,17 @@ async def run_cycle(self, task_id: str, *, goal: str, feedback: str = "") -> Int
 
 ### `run`
 
-`src/verity/control_plane/api.py:559-605`
+`src/verity/control_plane/api.py:574-635`
 
 ```python
 async def run(self, task_id: str, *, goal: str) -> list[IntakeResult]: ...
 ```
 
 **Does**: drives `run_cycle` while `policy.should_continue(cycles_run=...)`. A run is one execution of
-a task (task ≠ run): it **mints a fresh `run_id`** and resets `cycle = 0` up front. After each cycle it
+a task (task ≠ run): it **mints a fresh `run_id`** and resets `cycle = 0` up front, then **provisions
+the task's verifier at run-start and tears it down in a `finally` at run-end** (run-scoped lifecycle,
+#96 — so an idle verifier sibling never outlives its run; `provision`/`teardown` are no-ops for
+in-process verifiers). After each cycle it
 feeds the cycle's correction back into the next (`_feedback_from`, `api.py:672-697` — a shape-error, a
 refine defect list, a sandbox-failure reason, a gate-unavailable note, **or** a rejection reason). It
 counts consecutive failed cycles and aborts with `OrchestrationError` at
