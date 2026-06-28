@@ -31,8 +31,30 @@ rides into the model seam (`sandbox.extra.seed`) so a seedable local model (Qwen
    python -m experiments.ablation.sweep spec.example.json --data <data-dir> --out results/
    ```
 
-Each cell's store-derived `RunReport` JSON lands in `results/<condition>-<model>-seedN.json`. The
-analysis/plotting layer (figures F1–F5) consumes that directory and is a separate, deferred step.
+Each cell's store-derived `RunReport` JSON lands in `results/<condition>-<model>-seedN.json`, plus a
+`manifest.json` (cell coordinates → report filename) the analysis layer reads.
 
 The orchestrator drives a `ControlService` directly (the same engine the daemon serves over HTTP),
 serially, so deltas reflect mechanism rather than contention.
+
+## Analyzing results
+
+Turn a results directory into the paper's figures + a machine-readable summary:
+
+```
+uv run --group analysis python -m experiments.ablation.analyze results/ --out figures/ --threshold 0.96
+```
+
+This writes `figures/summary.json` (per-`(condition, model)` metrics + the pre-registered deltas
+**A (3−2)** / **B (4−3)** / **B′ (4b−4)** with a Cliff's-delta effect size) and the figures:
+
+- **F1** — Exp 1 one-shot final-score distribution by model, with a headroom reference line.
+- **F2** — best-so-far trajectory (mean ± IQR), faceted by model, one line per loop rung.
+- **F3** — money plot: final score by condition × model, annotated with the ladder deltas.
+- **F4** — provisioned-context bytes per cycle, one line per condition (bounded vs ballooning).
+- **F5** — self-vs-independent divergence (fudge) by condition + the gate catch-rate bar.
+
+The analysis *projection* (`analyze.py`) is pure stdlib; only the *figures* need the `analysis`
+dependency group (matplotlib). A `summary.json`-only run works without it (the figures import is lazy).
+`--threshold` adds a tokens-to-threshold readout; `--reference` overrides the F1 headroom line.
+

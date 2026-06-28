@@ -364,3 +364,37 @@ def summary(cells: Iterable[CellData], *, threshold: float | None = None) -> Jso
             deltas[model] = model_deltas
 
     return {"cells": by_group, "deltas": deltas}
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI: ``python -m experiments.ablation.analyze RESULTS_DIR --out FIG_DIR [--threshold T]``.
+
+    Writes ``summary.json`` (pure stdlib) then renders F1–F5 (needs the ``analysis`` group:
+    ``uv run --group analysis``). The figures import is lazy, so a summary-only run needs no extra.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Analyze ablation sweep results into figures.")
+    parser.add_argument("results_dir", help="sweep output dir (per-cell reports + manifest.json)")
+    parser.add_argument("--out", required=True, help="dir for summary.json + F1-F5.png")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="held-out score for the tokens-to-threshold readout")
+    parser.add_argument("--reference", type=float, default=None,
+                        help="F1 headroom reference (default: best observed in the sweep)")
+    args = parser.parse_args(argv)
+
+    cells = load_results(args.results_dir)
+    result = summary(cells, threshold=args.threshold)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    from experiments.ablation import figures  # lazy: only rendering needs matplotlib
+
+    paths = figures.render_all(result, out, reference=args.reference)
+    print(f"analyzed {len(cells)} cells → summary.json + {len(paths)} figures in {out}")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - thin CLI wrapper over the tested projection
+    raise SystemExit(main())

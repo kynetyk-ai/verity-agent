@@ -7,6 +7,7 @@ catch-rate, final-quality aggregation, and the pre-registered Claim A/B/B′ del
 
 from __future__ import annotations
 
+import pytest
 from experiments.ablation.analyze import (
     CellData,
     cell_from_report,
@@ -140,3 +141,31 @@ def test_summary_reports_pre_registered_deltas_per_model() -> None:
     exp3 = out["cells"]["exp3|sonnet"]
     assert exp3["final_quality_mean"] == 0.91
     assert exp3["tokens_to_threshold"]["n_reached"] == 2
+
+
+# --------------------------------------------------------------------------- figures (smoke)
+
+
+def _full_ladder_summary() -> dict:
+    """A summary over all five rungs × 1 model × 2 seeds, so every figure has data to render."""
+    cells: list[CellData] = []
+    base = {"exp1": 0.80, "exp2": 0.82, "exp3": 0.90, "exp4": 0.91, "exp4b": 0.93}
+    for cond, score in base.items():
+        n_cycles = 1 if cond == "exp1" else 3
+        for seed in range(2):
+            cycles = [
+                _cycle(i, score=score + 0.01 * i + 0.005 * seed, estimate=score + 0.05,
+                       provisioned=100 * (i + 1) if cond in ("exp2", "exp3") else 100)
+                for i in range(n_cycles)
+            ]
+            cells.append(_cell(cond, "sonnet", seed, cycles))
+    return summary(cells)
+
+
+def test_render_all_writes_five_figures(tmp_path) -> None:
+    pytest.importorskip("matplotlib")
+    from experiments.ablation import figures
+
+    paths = figures.render_all(_full_ladder_summary(), tmp_path)
+    assert {p.name for p in paths} == {"F1.png", "F2.png", "F3.png", "F4.png", "F5.png"}
+    assert all(p.exists() and p.stat().st_size > 0 for p in paths)

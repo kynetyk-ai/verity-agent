@@ -70,6 +70,11 @@ notebook = [
     "nbconvert>=7.17.1",
     "pandas>=3.0.3",
 ]
+# The ablation analysis/plotting layer (experiments/ablation/figures): renders the F1-F5 figures.
+# The analysis *projection* (analyze.py) is pure stdlib and needs none of this; only the figures do.
+analysis = [
+    "matplotlib>=3.11.0",
+]
 
 [build-system]
 requires = ["hatchling"]
