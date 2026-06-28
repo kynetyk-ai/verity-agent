@@ -1,0 +1,26 @@
+{
+  "type_name": "fe-kaggle",
+  "goal": "Reach the top 50% of the real Kaggle leaderboard for the stellar competition, improving across cycles.",
+  "sandbox": {
+    "model": "qwen3.6:27b-coding-mxfp8",
+    "base_url": "http://host.docker.internal:11434/v1",
+    "sandbox_timeout_s": 1800,
+    "code_timeout_s": 1800
+  },
+  "verifier": {
+    "approach": "kaggle",
+    "knobs": {
+      "competition": "playground-series-s6e6",
+      "target_percentile": 50,
+      "proxy_margin": 0.001
+    }
+  },
+  "policy": {
+    "max_cycles": 10,
+    "stop_on_accept": false,
+    "provisioning": {
+      "statuses": ["accepted", "superseded", "revised"],
+      "select": "all"
+    }
+  }
+}
