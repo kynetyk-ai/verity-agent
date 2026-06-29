@@ -31,6 +31,7 @@ from verity.sandbox.container_io import (
     CONTAINER_INPUT_DIR,
     CONTAINER_WORKSPACE,
     CycleInput,
+    effective_recursion_limit,
     effective_step_budget,
 )
 from verity.sandbox.errors import SandboxError
@@ -89,7 +90,7 @@ class DeepAgentsContainerDriver:
                 system_prompt=system_prompt,
                 user_message=user_message,
                 operations=operations,
-                recursion_limit=self.recursion_limit,
+                recursion_limit=effective_recursion_limit(self.recursion_limit, self.step_budget),
                 # The soft wrap-up deadline is the container's hard timeout: the agent is nudged to
                 # finalize before the kill (5.2). The hard timeout stays the backstop.
                 deadline_s=self.timeout_s,

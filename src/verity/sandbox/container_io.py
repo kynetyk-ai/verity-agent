@@ -19,6 +19,7 @@ __all__ = [
     "CONTAINER_INPUT_PATH",
     "CycleInput",
     "effective_step_budget",
+    "effective_recursion_limit",
 ]
 
 # Fixed in-container mount points.
@@ -27,22 +28,40 @@ CONTAINER_OUTBOX = "/work/outbox"
 CONTAINER_INPUT_DIR = "/sandbox"
 CONTAINER_INPUT_PATH = "/sandbox/input.json"
 
-_STEP_BUDGET_FRACTION = 0.8  # derived step budget as a fraction of the framework recursion limit
+# The graceful per-cycle MODEL-STEP budget (#103): a fixed default in model-step units. Deliberately
+# NOT derived from recursion_limit, which counts LangGraph super-steps (model + tool + middleware
+# nodes) — a different unit. Generous over a real run (the accepted FE run used ~53 model steps) but
+# bounded, so a wandering agent gets nudged + stopped gracefully rather than crashing on recursion.
+_DEFAULT_STEP_BUDGET = 80
+# LangGraph super-steps per model turn (empirically ~5 for the Deep Agents stack): the headroom
+# factor so the recursion backstop sits comfortably ABOVE the model-step budget (8 = ~60% margin).
+_RECURSION_HEADROOM = 8
 
 
 def effective_step_budget(recursion_limit: int, step_budget: int | None) -> int:
-    """The per-cycle step budget to enforce, deriving a graceful default when none is set (#103).
+    """The per-cycle MODEL-STEP budget to enforce (#103).
 
-    An explicit ``step_budget`` always wins. When it is ``None`` we derive one from the framework's
-    ``recursion_limit`` so *every* cycle gets the soft "wrap up and submit" nudge + a **typed**
-    ``StepBudgetExceeded`` stop *before* the framework's ungraceful ``GraphRecursionError`` — the
-    always-on safety net (kept strictly below ``recursion_limit`` so it fires first). Lives here in
-    the framework-neutral cycle-input module so the host-side drivers can derive it without
-    importing the Deep Agents stack.
+    An explicit ``step_budget`` always wins; otherwise use a fixed graceful default in MODEL-STEP
+    units. The companion :func:`effective_recursion_limit` then sizes the framework's super-step
+    backstop ABOVE this, so the graceful ``StepBudgetExceeded`` fires before the framework's
+    ``GraphRecursionError``. (``recursion_limit`` is accepted for signature symmetry with that
+    companion; the default budget does not derive from it — the two are different units.)
     """
     if step_budget is not None:
         return step_budget
-    return max(1, int(_STEP_BUDGET_FRACTION * recursion_limit))
+    return _DEFAULT_STEP_BUDGET
+
+
+def effective_recursion_limit(recursion_limit: int, step_budget: int | None) -> int:
+    """The framework recursion backstop (LangGraph super-steps), clamped UP only.
+
+    Returns at least ``step_budget × _RECURSION_HEADROOM`` so the graceful model-step cap is always
+    reached first — the safety-net ordering holds *by construction*, independent of the exact
+    super-steps-per-turn constant. An explicitly-requested ``recursion_limit`` already above the
+    floor is honored (raised, never lowered), so callers asking for more headroom keep it.
+    """
+    floor = effective_step_budget(recursion_limit, step_budget) * _RECURSION_HEADROOM
+    return max(recursion_limit, floor)
 
 
 @dataclass(frozen=True, slots=True)

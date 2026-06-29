@@ -31,7 +31,7 @@ from verity.contracts.wire import (
     verifier_setup_to_dict,
 )
 from verity.sandbox.errors import SandboxError
-from verity.transport.base import Transport, TransportUnavailable
+from verity.transport.base import Transport, TransportError, TransportUnavailable
 from verity.transport.envelope import parse_result
 
 __all__ = ["RemoteVerifier", "RemoteSandbox"]
@@ -57,25 +57,32 @@ class RemoteVerifier:
 
     async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         body = json.dumps(verifier_request_to_dict(request)).encode("utf-8")
-        # An unreachable verifier is a recoverable infra failure (GateUnavailable), not a crash —
-        # exactly as a local verifier whose backend exhausted its retries (ROADMAP 5.1).
+        # A verifier that is unreachable OR reachable-but-misbehaving (an unmapped server error
+        # kind, a malformed/truncated envelope, or a verdict body that won't decode) is a
+        # *recoverable* infra failure (GateUnavailable), not a crash — symmetric with a local
+        # verifier whose backend exhausted its retries (ROADMAP 5.1; degrade-don't-crash). Only a
+        # genuine application error rides the envelope intact and is re-raised by parse_result as
+        # itself (e.g. VerifierError, a config bug) — that stays fatal. TransportUnavailable is a
+        # TransportError subclass, so the base catch covers the unreachable case too.
         try:
             result = parse_result(await self.transport.request("dispatch", body))
-        except TransportUnavailable as exc:
-            raise GateUnavailable(f"verifier unreachable: {exc}") from exc
-        return verdict_bundle_from_dict(result)
+            return verdict_bundle_from_dict(result)
+        except TransportError as exc:
+            raise GateUnavailable(f"verifier unreachable or misbehaving: {exc}") from exc
+        except (ValueError, KeyError, TypeError) as exc:
+            raise GateUnavailable(f"verifier returned an unreadable verdict: {exc}") from exc
 
     async def provision(self) -> None:
         # Ship the per-task data first (if any), then provision: the server builds its impl from the
         # setup payload, then provisions it and returns its identity (a sync attr in-process).
-        if self.setup_payload is not None:
-            setup = json.dumps(verifier_setup_to_dict(self.setup_payload)).encode("utf-8")
-            try:
+        try:
+            if self.setup_payload is not None:
+                setup = json.dumps(verifier_setup_to_dict(self.setup_payload)).encode("utf-8")
                 parse_result(await self.transport.request("setup", setup))
-            except TransportUnavailable as exc:
-                raise GateUnavailable(f"verifier unreachable: {exc}") from exc
-        result = parse_result(await self.transport.request("provision", b""))
-        self.identity = str(result["identity"])
+            result = parse_result(await self.transport.request("provision", b""))
+            self.identity = str(result["identity"])
+        except TransportError as exc:
+            raise GateUnavailable(f"verifier unreachable or misbehaving: {exc}") from exc
 
     async def teardown(self) -> None:
         # Best-effort wire teardown (the service may already be gone), then destroy the container if

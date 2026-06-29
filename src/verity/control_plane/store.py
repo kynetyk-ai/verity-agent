@@ -600,7 +600,13 @@ class SqliteStore:
     def put_object(self, data: bytes) -> ObjectRef:
         content_hash = hashlib.sha256(data).hexdigest()
         if self.object_dir is not None:
-            (self.object_dir / content_hash).write_bytes(data)
+            try:
+                (self.object_dir / content_hash).write_bytes(data)
+            except OSError as exc:
+                # A disk/IO failure at the object-store boundary is a typed store error, not a raw
+                # OSError that escapes to abort the run — the control plane's degrade-don't-crash
+                # path records it as a failed cycle (ROADMAP 5.1; degrade-don't-crash invariant).
+                raise StoreError(f"could not write object {content_hash}: {exc}") from exc
         else:
             self._objects[content_hash] = data
         return ObjectRef(blob_ref=f"sha256:{content_hash}", content_hash=content_hash)

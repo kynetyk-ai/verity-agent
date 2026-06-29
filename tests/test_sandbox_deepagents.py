@@ -520,11 +520,18 @@ class _FakeAgent:
         self.submit_on = submit_on
         self.calls = 0
 
-    def invoke(self, state: dict, config: dict) -> dict:  # noqa: ARG002 - mirror the real signature
+    def _step(self, messages: list) -> dict:
         self.calls += 1
         if self.submit_on is not None and self.calls == self.submit_on:
             (self.outbox / RESERVED_PROPOSAL_NAME).write_text("{}", encoding="utf-8")
-        return {"messages": [*state["messages"], AIMessage(content=f"step {self.calls}")]}
+        return {"messages": [*messages, AIMessage(content=f"step {self.calls}")]}
+
+    def stream(self, inputs: dict, config: dict, stream_mode: str = "values"):  # noqa: ARG002
+        # run_agent streams the main run (so messages survive a limit-end); yield one state.
+        yield self._step(inputs["messages"])
+
+    def invoke(self, state: dict, config: dict) -> dict:  # noqa: ARG002 - the finalize-guard re-invoke
+        return self._step(state["messages"])
 
 
 def test_finalize_guard_nudges_until_the_agent_submits(tmp_path: Path) -> None:
@@ -535,7 +542,9 @@ def test_finalize_guard_nudges_until_the_agent_submits(tmp_path: Path) -> None:
     run_agent(agent, "go", outbox=outbox)
     assert agent.calls == 2  # initial invoke + one finalize nudge
     assert (outbox / RESERVED_PROPOSAL_NAME).is_file()
-    assert not (outbox / "__transcript__.json").exists()  # succeeded → no failure diagnostic
+    # The transcript is now written EVERY cycle (instrumentation, F) — including a successful one —
+    # so a successful cycle leaves a step-level record too (it used to be a no-proposal-only diag).
+    assert (outbox / "__transcript__.json").is_file()
 
 
 def test_finalize_guard_exhausts_and_persists_transcript(tmp_path: Path) -> None:
@@ -550,6 +559,34 @@ def test_finalize_guard_exhausts_and_persists_transcript(tmp_path: Path) -> None
     assert not (outbox / RESERVED_PROPOSAL_NAME).is_file()
     transcript = json.loads((outbox / "__transcript__.json").read_text())
     assert transcript and transcript[-1]["type"] == "AIMessage"  # the rendered trace is captured
+
+
+def test_transcript_captures_step_index_tool_args_and_caps_large_fields(tmp_path: Path) -> None:
+    # F: the transcript is rich enough to reconstruct the trajectory — per message an index, the
+    # type/content, and tool calls with their ARGUMENTS — and overlong fields are truncated so a
+    # runaway tool dump can't bloat the content-addressed store.
+    import json
+
+    from verity.sandbox.deepagents_driver import _TRANSCRIPT_FIELD_CAP, _persist_transcript
+
+    class _AIMessage:
+        def __init__(self, content: str, tool_calls: list[dict] | None = None) -> None:
+            self.content = content
+            self.tool_calls = tool_calls or []
+
+    big = "x" * (_TRANSCRIPT_FIELD_CAP + 500)
+    result = {
+        "messages": [
+            _AIMessage("plan", tool_calls=[{"name": "execute", "args": {"cmd": "python x.py"}}]),
+            _AIMessage(big),  # an overlong content field must be truncated
+        ]
+    }
+    _persist_transcript(result, tmp_path)
+    entries = json.loads((tmp_path / "__transcript__.json").read_text())
+
+    assert [e["index"] for e in entries] == [0, 1]  # ordered, indexed
+    assert entries[0]["tool_calls"][0] == {"name": "execute", "args": {"cmd": "python x.py"}}
+    assert "truncated" in entries[1]["content"] and len(entries[1]["content"]) < len(big)
 
 
 def test_finalize_guard_survives_a_raising_reinvoke(tmp_path: Path) -> None:
@@ -567,3 +604,30 @@ def test_finalize_guard_survives_a_raising_reinvoke(tmp_path: Path) -> None:
     run_agent(_RaisingAgent(outbox, submit_on=None), "go", outbox=outbox)
     assert not (outbox / RESERVED_PROPOSAL_NAME).is_file()
     assert (outbox / "__transcript__.json").exists()
+
+
+def test_recursion_limit_end_still_persists_the_transcript(tmp_path: Path) -> None:
+    # The case that bit us live: the agent exhausts its recursion budget mid-run. Because run_agent
+    # STREAMS, the messages so far are kept, and the transcript is persisted before the error
+    # re-raises — so a no-proposal limit-end stays debuggable (container_entry catches it).
+    import json
+
+    from langgraph.errors import GraphRecursionError
+
+    from verity.sandbox.deepagents_driver import run_agent
+
+    class _ExhaustingAgent:
+        def stream(self, inputs: dict, config: dict, stream_mode: str = "values"):  # noqa: ARG002
+            yield {"messages": [AIMessage(content="step 1")]}
+            yield {"messages": [AIMessage(content="step 1"), AIMessage(content="step 2")]}
+            raise GraphRecursionError("Recursion limit of 300 reached")
+
+        def invoke(self, state: dict, config: dict) -> dict:  # noqa: ARG002
+            raise AssertionError("finalize guard must not run on a recursion-limit end")
+
+    with pytest.raises(GraphRecursionError):
+        run_agent(_ExhaustingAgent(), "go", outbox=tmp_path)
+
+    transcript = json.loads((tmp_path / "__transcript__.json").read_text())
+    assert len(transcript) == 2 and transcript[-1]["type"] == "AIMessage"  # last stream state kept
+    assert not (tmp_path / RESERVED_PROPOSAL_NAME).is_file()

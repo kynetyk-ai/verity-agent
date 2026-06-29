@@ -1,0 +1,26 @@
+# The Verity feature-engineering sandbox image: the base sandbox + the SYSTEM shared libraries the
+# common CPU ML wheels link at runtime. This lets an FE agent **install its own `requirements.txt`
+# and run/self-test its script** in the sandbox — exactly mirroring the gate's clean-container run —
+# which the base image can't do (its wheels would `import`-fail with `OSError: libgomp.so.1`, and it
+# has no system libs). We deliberately do NOT pre-install the Python ML packages: the gate installs
+# the agent's `requirements.txt` into a fresh container, so the agent must too, or its declared
+# dependencies go untested and the gate run fails on a missing/mismatched dep. Mirror, don't diverge.
+#
+# Build from the REPO ROOT, AFTER `verity-sandbox:latest`:
+#   docker build -f Dockerfile.sandbox    -t verity-sandbox:latest .
+#   docker build -f Dockerfile.fe-sandbox -t verity-fe-sandbox:latest .
+#
+# `fe-holdout` / `fe-kaggle` default their sandbox to this image
+# (verity.composition.fe.FE_SANDBOX_IMAGE); the trivial `code` task stays on the base image.
+FROM verity-sandbox:latest
+
+# The SYSTEM shared libraries the common ML wheels link at runtime (mirrors Dockerfile.coderunner):
+# `pip install lightgbm` succeeds on python:3.12-slim, yet `import lightgbm` dies with
+# `OSError: libgomp.so.1` without these. libgomp1 = OpenMP (LightGBM/XGBoost/sklearn hist);
+# libgfortran5 = some scipy paths; libgl1/libglib2.0-0 = OpenCV & friends. The agent installs the
+# Python packages itself (into a workspace dir; see the domain instructions) — the same
+# `requirements.txt` the gate installs, so a passing self-test proves those deps.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgomp1 libgl1 libglib2.0-0 libgfortran5 \
+    && rm -rf /var/lib/apt/lists/*

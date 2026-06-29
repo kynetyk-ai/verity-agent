@@ -135,10 +135,14 @@ def test_proposal_envelope_roundtrips_with_metadata_and_telemetry() -> None:
         artifact=_ARTIFACT, operation=_OP, metadata="I tried X because Y",
         objects={"submission.py": b"print(1)"},
         agent_telemetry={"input_tokens": 100, "model": "claude"},
+        transcript=b'[{"index": 0, "type": "AIMessage"}]',  # the step transcript (F)
     )
-    assert _roundtrip(proposal_envelope_to_dict, proposal_envelope_from_dict, env) == env
+    out = _roundtrip(proposal_envelope_to_dict, proposal_envelope_from_dict, env)
+    assert out == env
+    assert out.transcript == env.transcript  # the base64-encoded transcript survived the wire
     minimal = ProposalEnvelope(artifact=_ARTIFACT, operation=_OP)
     assert _roundtrip(proposal_envelope_to_dict, proposal_envelope_from_dict, minimal) == minimal
+    assert minimal.transcript is None
 
 
 def test_verifier_request_roundtrips_with_slice_and_objects() -> None:
@@ -147,6 +151,18 @@ def test_verifier_request_roundtrips_with_slice_and_objects() -> None:
         objects={"submission.py": b"print(1)"},
     )
     assert _roundtrip(verifier_request_to_dict, verifier_request_from_dict, req) == req
+
+
+def test_verifier_request_roundtrips_recorded_scores() -> None:
+    # The control plane's durable per-gate scores (G3) survive the wire to a remote verifier.
+    req = VerifierRequest(
+        proposal=_ARTIFACT,
+        store_slice=(_ARTIFACT_WITH_OBJECTS,),
+        scores={"inc": {"selection": 0.9213}, "p0": {"proxy-improves": 0.88, "kaggle": 0.91}},
+    )
+    out = _roundtrip(verifier_request_to_dict, verifier_request_from_dict, req)
+    assert out == req
+    assert out.scores["p0"]["kaggle"] == pytest.approx(0.91)
 
 
 def test_verifier_setup_roundtrips_with_objects_and_params() -> None:

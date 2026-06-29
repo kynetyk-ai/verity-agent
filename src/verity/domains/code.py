@@ -68,7 +68,13 @@ def build_code_domain(runner: CodeRunner) -> CodeDomain:
     schema = SchemaRegistry()
     schema.register_type(ArtifactTypeDef(DATASET, is_root=True))
     schema.register_type(ArtifactTypeDef(SUBMISSION))
-    schema.register_operation(OperationSignature("submit", inputs=(DATASET,), output=SUBMISSION))
+    schema.register_operation(
+        # ``entrypoint`` is the only payload key a Submission declares; naming it lets the control
+        # plane's payload-key allowlist strip any other key the agent rides to the gate (R1).
+        OperationSignature(
+            "submit", inputs=(DATASET,), output=SUBMISSION, object_payload_keys=("entrypoint",)
+        )
+    )
 
     # 'Submission' is gated; its checks judge the object attachment, not the store, so the declared
     # slice is empty (the verifier sees only the artifact under test, §8.3, §10).

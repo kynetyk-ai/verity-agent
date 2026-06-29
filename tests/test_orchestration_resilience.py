@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from tools.harness.stub_verifier import StubVerifier
 
 from verity.contracts import (
@@ -126,6 +128,92 @@ def test_a_failed_cycle_is_recorded_and_the_run_continues(tmp_path: Path) -> Non
     assert results[1].commit is not None and results[1].commit.outcome is CommitOutcome.ACCEPTED
     assert store.get_artifact("n1") is not None  # cycle 2 committed despite cycle 1's failure
     assert sandbox.regenerations == 2  # the broken workspace is still regenerated each cycle
+
+
+def test_a_failed_cycle_salvages_its_transcript(tmp_path: Path) -> None:
+    # A no-proposal cycle (e.g. a recursion/budget limit-end) carries its transcript on the
+    # SandboxError; the control plane stores it + references it in the report, so the failure stays
+    # debuggable — the case that matters most.
+    transcript = b'[{"index": 0, "type": "AIMessage", "content": "looped to the limit"}]'
+    cp, _sandbox, store = _build(
+        tmp_path,
+        items=[SandboxError("the agent produced no proposal", transcript=transcript)],
+        policy=OrchestrationPolicy(max_cycles=1, max_consecutive_sandbox_failures=0),
+    )
+    results = asyncio.run(cp.run("t1", goal="author a note"))
+
+    assert results[0].entered_protocol is False and results[0].transcript_ref is not None
+    ref = cp.run_report("t1").cycles[0].transcript_ref
+    assert ref is not None
+    assert store.get_object(ref) == transcript  # the salvaged transcript resolves from the store
+
+
+def test_a_failed_cycle_records_its_telemetry_and_stop_reason(tmp_path: Path) -> None:
+    # A no-proposal cycle carries its telemetry (incl. stop_reason) on the SandboxError; the control
+    # plane records it on the cycle so the report names *why* it stopped (e.g. a graceful
+    # StepBudgetExceeded), not an opaque failure.
+    telemetry = b'{"stop_reason": "StepBudgetExceeded: budget exhausted", "model_steps": 80}'
+    cp, _sandbox, _store = _build(
+        tmp_path,
+        items=[SandboxError("the agent produced no proposal", telemetry=telemetry)],
+        policy=OrchestrationPolicy(max_cycles=1, max_consecutive_sandbox_failures=0),
+    )
+    asyncio.run(cp.run("t1", goal="author a note"))
+
+    cycle = cp.run_report("t1").cycles[0]
+    assert cycle.agent_telemetry is not None
+    assert cycle.agent_telemetry["stop_reason"] == "StepBudgetExceeded: budget exhausted"
+    assert cycle.agent_telemetry["model_steps"] == 80
+
+
+def test_an_unexpected_boundary_failure_is_recorded_not_fatal(tmp_path: Path) -> None:
+    # S1: a failure that is NEITHER SandboxError nor GateUnavailable (here a raw RuntimeError, the
+    # shape a disk-full store-IO error or other predictable boundary failure takes) must still be a
+    # recorded failed cycle the run survives — not an un-recorded run abort. The catch-all records
+    # it under `sandbox_error` (prefixed) so the failure cap still bounds a persistent failure.
+    cp, sandbox, store = _build(
+        tmp_path,
+        items=[RuntimeError("disk full writing object"), _note("n1")],
+        policy=OrchestrationPolicy(max_cycles=5, stop_on_accept=True),
+    )
+    results = asyncio.run(cp.run("t1", goal="author a note"))  # does NOT raise
+
+    assert results[0].entered_protocol is False
+    assert results[0].sandbox_error is not None and "cycle failed" in results[0].sandbox_error
+    assert "disk full" in results[0].sandbox_error
+    assert results[1].commit is not None and results[1].commit.outcome is CommitOutcome.ACCEPTED
+    assert store.get_artifact("n1") is not None  # the run recovered and committed next cycle
+    assert sandbox.regenerations == 2  # the workspace is regenerated even on the unexpected failure
+
+
+@settings(max_examples=40, deadline=None)
+@given(kinds=st.lists(st.sampled_from(["good", "sandbox", "boom"]), min_size=1, max_size=6))
+def test_any_failure_sequence_is_fully_recorded_and_never_aborts(kinds: list[str]) -> None:
+    # Property (degrade-don't-crash, §3.4): with the failure cap disabled, ANY interleaving of
+    # good proposals, SandboxErrors, and unexpected boundary failures runs to completion without
+    # raising, and EVERY cycle is recorded with a definite outcome (success or a populated error)
+    # — the RunReport never silently drops a cycle.
+    items: list[object] = []
+    for i, kind in enumerate(kinds):
+        if kind == "good":
+            items.append(_note(f"n{i}"))
+        elif kind == "sandbox":
+            items.append(SandboxError(f"sandbox boom {i}"))
+        else:
+            items.append(RuntimeError(f"boundary boom {i}"))
+    cp, _sandbox, _store = _build(
+        Path("."),  # _build uses an in-memory SqliteStore; the path is unused
+        items=items,
+        policy=OrchestrationPolicy(
+            max_cycles=len(items), stop_on_accept=False, max_consecutive_sandbox_failures=0
+        ),
+    )
+    results = asyncio.run(cp.run("t1", goal="author a note"))  # must never raise
+
+    assert len(results) == len(items)
+    for r in results:
+        assert r.entered_protocol or r.sandbox_error or r.gate_error or r.shape_error is not None
+    assert cp.run_report("t1").summary.cycles_run == len(items)  # one recorded cycle per item
 
 
 def test_too_many_consecutive_failures_abort_the_run(tmp_path: Path) -> None:

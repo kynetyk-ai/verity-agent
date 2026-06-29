@@ -54,6 +54,7 @@ from verity.control_plane.registries import (
     OperationSignature,
     SchemaRegistry,
 )
+from verity.logging import get_logger
 from verity.verifier import (
     CodeRunner,
     GateStep,
@@ -61,6 +62,8 @@ from verity.verifier import (
     RunResult,
     SdkVerifier,
 )
+
+log = get_logger("verity.domains.feature_engineering")
 
 __all__ = [
     "DATASET_VERSION",
@@ -348,7 +351,7 @@ class _SubmissionGates:
         score = balanced_accuracy(self.reserved_labels, preds)
         self._scores[request.proposal.id] = score
 
-        best_id, baseline = self._best_incumbent(request.store_slice)
+        best_id, baseline = self._best_incumbent(request)
         trials = sum(1 for a in request.store_slice if a.status is ArtifactStatus.REJECTED)
         bar = baseline + self.margin + self.trial_deflation * trials
         detail = (
@@ -383,13 +386,30 @@ class _SubmissionGates:
             score=score,
         )
 
-    def _best_incumbent(self, store_slice: tuple[Artifact, ...]) -> tuple[str | None, float]:
-        """The top-scoring currently-accepted submission (status from the slice, score from us)."""
-        scored = [
-            (a.id, self._scores[a.id])
-            for a in store_slice
-            if a.status is ArtifactStatus.ACCEPTED and a.id in self._scores
-        ]
+    def _best_incumbent(self, request: VerifierRequest) -> tuple[str | None, float]:
+        """The top-scoring currently-accepted submission (status from the slice, score from the
+        control plane's durable record, falling back to our in-process ledger).
+
+        Reading the recorded score from ``request.scores`` first means the baseline survives a
+        verifier restart mid-run: a fresh verifier process has an empty ``_scores`` ledger, but the
+        control plane still holds every accepted incumbent's recorded balanced accuracy (G3). The
+        in-process ledger remains as a fast-path fallback for the steady state.
+        """
+        scored: list[tuple[str, float]] = []
+        restored = False
+        for a in request.store_slice:
+            if a.status is not ArtifactStatus.ACCEPTED:
+                continue
+            recorded = request.scores.get(a.id)
+            if a.id in self._scores:
+                scored.append((a.id, self._scores[a.id]))
+            elif recorded:
+                # No in-process score for an accepted incumbent → this verifier did not score it
+                # (a restart, almost always). Recover the baseline from the control plane's record.
+                scored.append((a.id, max(recorded.values())))
+                restored = True
+        if restored:
+            log.warning("verifier_restart_detected", recovered_from="control_plane_scores")
         if not scored:
             return None, 0.0
         return max(scored, key=lambda pair: pair[1])
@@ -465,17 +485,31 @@ is fair game — features, model choice, an ensemble, calibration, imbalance han
 mandated.
 
 ### Script Contract
-The script contract (the gate runs your script; honour it exactly):
+The script contract (the gate runs the script; honour it exactly):
 - Data dir = `os.environ.get("VERITY_DATA", "data")`; output dir =
-  `os.environ.get("VERITY_OUT", "out")` (the defaults work in your sandbox; the gate sets these).
+  `os.environ.get("VERITY_OUT", "out")` (the defaults work in the sandbox; the gate sets these).
 - Read training data from `<VERITY_DATA>/{TRAIN_INPUT}` and the rows to predict from
   `<VERITY_DATA>/{TEST_INPUT}`. The target is `class`; `{TEST_INPUT}` has none.
 - Train, then write predictions to `<VERITY_OUT>/{PREDICTIONS_OUTPUT}` with exactly two columns:
   `id,class`.
 - Deterministic (fix every seed) and self-contained.
 
-The runner (where the gate executes your script): a CPU-only Linux container, Python 3.12, ~16
-cores, ~16 GB RAM, with your pinned `{REQUIREMENTS}` pip-installed (network is on for the install
+The `{TEST_INPUT}` in the sandbox is a small **unlabelled sample** — just enough to verify the
+script runs end to end and writes a well-formed `{PREDICTIONS_OUTPUT}` over the real schema. It is
+**not** representative and **cannot be scored** (no labels). Estimate balanced accuracy with
+**stratified cross-validation on the training data**, and report that as
+`ESTIMATED_BALANCED_ACCURACY`. The gate re-runs the exact script on a larger reserved set, so do not
+spend the time budget predicting the sample repeatedly — get the pipeline right and submit.
+
+### Dependencies
+No packages are pre-installed in the sandbox — install and manage all dependencies with `pip` during
+the session. Test the script end-to-end before submitting. Deliver a clean, pinned `{REQUIREMENTS}`
+alongside `{ENTRYPOINT}`: the code-runner installs exactly it (with pip, in a fresh environment)
+before running the script, so it must cover every import. `{ENTRYPOINT}` must only `import` its
+libraries — never `pip install` from inside it.
+
+The runner (where the gate executes the script): a CPU-only Linux container, Python 3.12, ~16
+cores, ~16 GB RAM, with the pinned `{REQUIREMENTS}` pip-installed (network is on for the install
 only). scikit-learn, LightGBM, XGBoost, CatBoost, pandas, numpy all work. Do NOT use deep-learning
 frameworks (torch / tensorflow won't finish) or libraries with no prebuilt wheel (no compiler in
 the runner).
@@ -504,18 +538,18 @@ Train on ALL the data, and finish in time:
 imbalance (class weights / resampling / threshold tuning).
 - Keep any ensemble or search bounded — a model that doesn't finish scores nothing. And note: some
 libraries that manage their own thread pools don't co-exist cleanly in one process (CatBoost
-alongside LightGBM/XGBoost is a known stall) — so if you want several, train each in its own
+alongside LightGBM/XGBoost is a known stall) — so to use several, train each in its own
 process (`multiprocessing` / `ProcessPoolExecutor`) and combine predictions.
 
 Deliver to `outbox/` each cycle: `{ENTRYPOINT}` (the script) and `{REQUIREMENTS}` (its pinned
 packages, e.g. `pandas==2.2.2`, one per line — the gate installs exactly these). The proposal
-payload (via your submit/revises tool): `entrypoint` = "{ENTRYPOINT}", `requirements` =
-"{REQUIREMENTS}". The submission is the unit — don't report individual features.
+payload (via the submit/revises tool): `entrypoint` = "{ENTRYPOINT}", `requirements` =
+"{REQUIREMENTS}". The submission is the unit — do not report individual features.
 
-In the submit/revises tool's `rationale` (your private note — recorded for the audit trail, NEVER
+In the submit/revises tool's `rationale` (a private note — recorded for the audit trail, NEVER
 shown to the gate), include a line exactly of the form `ESTIMATED_BALANCED_ACCURACY: <float>` with
-your honest best estimate of the held-out balanced accuracy this submission will score (e.g.
-`ESTIMATED_BALANCED_ACCURACY: 0.964`). It does not affect the verdict — report your real estimate,
+an honest best estimate of the held-out balanced accuracy this submission will score (e.g.
+`ESTIMATED_BALANCED_ACCURACY: 0.964`). It does not affect the verdict — report the real estimate,
 not an optimistic one.
 
 """
