@@ -46,13 +46,16 @@ docker exec $CP verity catalog                       # step 0: discover task typ
 docker exec $CP verity create --type code \
   --model anthropic:claude-sonnet-4-6 --max-cycles 2 --stop-on-accept   # -> {"task_id": "..."}
 
-# or a data-bearing task like `fe-kaggle`. Data prep is YOURS (ADR 0005): you split it into
-# per-role bundles outside Verity (the CP routes opaque blobs). Ingest each role file, then create
-# with `--file ROLE:NAME=HANDLE`. Put the files under the daemon's exchange in/ dir, then:
+# or a data-bearing FE task: `fe-kaggle` (real public leaderboard, needs KAGGLE_* creds) or
+# `fe-holdout` (local reserved hold-out, NO creds — the ablation task; verifier role is a subset:
+# train.csv + holdout.csv + holdout_labels.csv). Data prep is YOURS (ADR 0005): split into per-role
+# bundles outside Verity with `uv run python -m tools.prepare_fe_data …` (run as a MODULE). Then put
+# the bundles under the daemon's exchange in/ dir, ingest each, and create with `--file ROLE:NAME=HANDLE`:
 docker exec $CP verity ingest agent/train.csv        # -> {"handle": "<h1>"} (subdir paths allowed)
 docker exec $CP verity ingest verifier/holdout_labels.csv  # -> {"handle": "<h2>"} (answer key, verifier-only)
-# ...ingest every agent/* and verifier/* file, then:
-docker exec $CP verity create --request-file /exchange/in/task.json \
+# ...ingest every agent/* and verifier/* file, then (fe-holdout shown; --request-file or flags both work):
+docker exec $CP verity create --type fe-holdout \
+  --model qwen3.6:27b-coding-mxfp8 --base-url http://host.docker.internal:11434/v1 \
   --file agent:train.csv=<h1> --file verifier:holdout_labels.csv=<h2> ...  # repeatable per file
 
 docker exec $CP verity run <task_id>                 # -> {"run_id": "..."}  (async)
@@ -85,6 +88,14 @@ bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type code --goal "write a script 
   pass `--url`/`--token`. The default Unix-socket (`docker exec`) path is local-only and unauthenticated.
 - **Degrade-don't-crash.** A failed cycle is recorded and fed back, not fatal — a run can finish with a
   mix of accept / refine / reject / sandbox-fail outcomes (see `results`).
+- **Pulling a transcript / object by hash.** `results` now carries a per-cycle `transcript_ref` (a
+  content hash — the agent's step-by-step record: message types, content, tool calls + args,
+  results). There is **no CLI/HTTP verb for a bare object by hash yet**; read it from the
+  **per-task** object store (you need the `task_id`, not just the run):
+  `docker exec verity-cp cat /var/lib/verity/tasks/<task_id>/objects/<hash>` (or host
+  `${VERITY_STORE_HOST:-/tmp/verity-store}/tasks/<task_id>/objects/<hash>`). `export` only writes
+  *declared* artifact objects, not the transcript. Pipe the JSON through `python tools/render_transcript.py -`
+  (repo checkout) for a readable Markdown view.
 - **Data prep is the user's, not the control plane's** (ADR 0005 / #74). You split inputs into
   per-role bundles *outside* Verity; the CP routes opaque, role-keyed blobs and interprets none of
   them (no `target`/`id_column`/split). Multi-input tasks (e.g. `fe-kaggle`) are created from a JSON

@@ -339,11 +339,15 @@ async def run_cycle(self, task_id: str, *, goal: str, feedback: str = "") -> Int
 2. `await serve_context(...)` (read).
 3. `envelope = await task.sandbox.collect_proposal()` — a `SandboxError` here is caught: the broken
    workspace is regenerated, the failure is recorded as a failed cycle (`sandbox_error`), and the run
-   continues (a single bad cycle cannot destroy a multi-round session, §3.4 / #21).
+   continues (a single bad cycle cannot destroy a multi-round session, §3.4 / #21). The transcript and
+   telemetry a failed/no-proposal cycle carries (`SandboxError.transcript` / `.telemetry` — e.g. a
+   recursion/step-budget limit-end) are still stored + recorded, so the failure stays debuggable and
+   the report names *why* it stopped (`stop_reason`).
 4. `result = await submit_proposal(...)` (gate + commit) — a `GateUnavailable` is caught symmetrically
    as a `gate_error` failed cycle.
 5. `await task.sandbox.regenerate()` — discards the ephemeral workspace (one ephemerality event, §3.5).
-6. `_record_cycle` appends this cycle's facts (timings + agent telemetry) to the task `history`.
+6. `_record_cycle` appends this cycle's facts (timings + agent telemetry + `transcript_ref`) to the
+   task `history`.
 
 **Returns**: the `IntakeResult` (carrying `commit`, or a `sandbox_error`/`gate_error`).
 
@@ -389,7 +393,10 @@ domain (decisions are projected verbatim, `score` nullable). `RunReport`
 (`control_plane/run_report.py:190`) carries `report_schema_version`, `task_id`, `tenant_id`,
 `generated_at`, `policy`, `cycles: list[CycleReport]`, a `summary: RunSummary` (with `cycles_run`,
 per-outcome counts, and the `accepted` ids), and run-total `agent_telemetry` (tokens / steps /
-tool-calls, or `None`). `RunReport.to_dict()` is the JSON form. The control plane **emits** it; parsing
+tool-calls, or `None`). Each `CycleReport` also carries a `transcript_ref` (content hash of the
+always-on step transcript) and, on a budget/recursion limit-end, a `stop_reason` inside its
+`agent_telemetry` (which `RunReport.render_text` surfaces on the failed-cycle line).
+`RunReport.to_dict()` is the JSON form. The control plane **emits** it; parsing
 it is the receiving service's job (the `verity.eval` benchmark and `verity.telemetry` sink both consume
 it).
 
@@ -587,7 +594,7 @@ folded into `system_prompt` (the cache-friendly stable prefix), not a separate f
 
 ### `ProposalEnvelope`
 
-`contracts/ports.py:131-148`
+`contracts/ports.py:157-176`
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -597,6 +604,7 @@ class ProposalEnvelope:
     metadata: str = ""                              # agent's how/why → provenance channel, OFF the verifier
     objects: Mapping[str, bytes] = {}               # outbox contents, harvested before teardown
     agent_telemetry: Mapping[str, object] | None = None  # tokens / steps / model (5.3b), or None
+    transcript: bytes | None = None                 # rendered step transcript (instrumentation), or None
 ```
 
 ### `VerdictBundle`

@@ -214,10 +214,12 @@ build (read the live set + each one's published contract with `verity catalog`):
 **Verifiers** — the opaque gate package that judges a proposal (ADR 0001), built from a gate-primitive
 SDK (deterministic-check, numeric-scorer, LLM-judge, auto-code-runner, human-in-the-loop) staged
 cheap → `tentative`, hard → `accepted`. Task types shipping today:
-- **`fe`** — feature engineering: runs-clean + features-defined + a balanced-accuracy selection gate on
+- **`fe-holdout`** — feature engineering: a runs-clean check + a balanced-accuracy selection gate on
   a reserved hold-out (optimizer mode).
-- **`fe-kaggle`** — the same, but the authoritative gate is the **real Kaggle leaderboard**.
+- **`fe-kaggle`** — the same domain, but the authoritative gate is the **real Kaggle leaderboard**.
 - **`code`** — a minimal code-execution task (parses + runs-clean).
+
+(Prefer `verity catalog` for the live installed set.)
 
 **Extensibility:** both are pluggable extension points — you can add a sandbox arm (or a whole harness)
 and a verifier approach without touching the kernel. **A how-to guide for adding sandboxes and verifiers
@@ -232,8 +234,10 @@ CLAUDE.md     orientation for coding agents working in this repo
 ROADMAP.md    the living path (now: post-MVP backlog)
 .env.example  copy to .env for the live demo
 pyproject.toml / justfile   uv project + dev commands
-Dockerfile.sandbox          the image the container sandbox runs the agent in
+Dockerfile.sandbox          the base image the container sandbox runs the agent in
+Dockerfile.fe-sandbox       FROM verity-sandbox + ML system libs; the FE tasks' agent image (Option A)
 Dockerfile.verifier         the standing advisory-verifier service image (Phase 7.1)
+Dockerfile.coderunner       the verifier's code-runner image (installs a submission's requirements.txt)
 Dockerfile.controlplane     the task-agnostic control-plane image (launches worker containers)
 infra/            compose files for the containerized topology (compose.daemon.yml — the standing daemon)
 docs/             API reference, guides, and architecture decision records (see Docs below)
@@ -248,6 +252,7 @@ src/verity/
   eval/           the cross-model benchmark harness (quality / cost / latency)
   transport/      networked port-RPC (loopback + HTTP) for the service split
   logging.py / retry.py / telemetry.py   structured logging, bounded-backoff retries, metrics sink
+tools/            prepare_fe_data.py (per-role input prep), render_transcript.py (transcript → Markdown)
 tools/harness/    non-product test doubles + the dataset-split helper
 tests/            test suite (offline by default; docker/live auto-skip)
 spec/             vendored specification + references (see above)

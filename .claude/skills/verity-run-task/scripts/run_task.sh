@@ -14,8 +14,9 @@
 #     --file agent:train.csv=agent/train.csv --file verifier:holdout_labels.csv=verifier/holdout_labels.csv ...
 #
 # DATA PREP IS YOURS (ADR 0005): split inputs into per-role bundles OUTSIDE Verity; the control plane
-# routes opaque, role-keyed blobs. For fe-kaggle, prepare with tools/prepare_fe_data.py (or just use
-# prototyping_datasci_test/run.sh, which does the prep + role routing for you).
+# routes opaque, role-keyed blobs. For fe-kaggle/fe-holdout, prepare with
+# `uv run python -m tools.prepare_fe_data …` (run as a MODULE, not by path — it imports tools.harness)
+# (or just use prototyping_datasci_test/run.sh, which does the prep + role routing for you).
 #
 # Options (with defaults):
 #   --type NAME             task type from `verity catalog`            (required unless --request-file)
