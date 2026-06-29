@@ -24,3 +24,15 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgomp1 libgl1 libglib2.0-0 libgfortran5 \
     && rm -rf /var/lib/apt/lists/*
+
+# Make `pip` work under the worker's read-only mount (only /work is writable). The baked venv
+# (/app/.venv), ~/.local, and ~/.cache are read-only and the default /tmp is a tiny tmpfs, so a plain
+# `pip install` otherwise dies with Errno 30 (read-only) / Errno 28 (no space). Point everything pip
+# needs at the writable /work so a bare `pip install -r requirements.txt` + `python submission.py`
+# just works (no per-command flags): install into /work/pylib (also on PYTHONPATH), skip the
+# read-only cache, build in /work. Safe: the runtime venv has no numpy/pandas/sklearn/scipy, so
+# /work/pylib (the agent's ML deps) never shadows a runtime dependency.
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_TARGET=/work/pylib \
+    PYTHONPATH=/work/pylib \
+    TMPDIR=/work

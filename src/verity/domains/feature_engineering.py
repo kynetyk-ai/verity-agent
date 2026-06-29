@@ -502,11 +502,12 @@ script runs end to end and writes a well-formed `{PREDICTIONS_OUTPUT}` over the 
 spend the time budget predicting the sample repeatedly — get the pipeline right and submit.
 
 ### Dependencies
-No packages are pre-installed in the sandbox — install and manage all dependencies with `pip` during
-the session. Test the script end-to-end before submitting. Deliver a clean, pinned `{REQUIREMENTS}`
-alongside `{ENTRYPOINT}`: the code-runner installs exactly it (with pip, in a fresh environment)
-before running the script, so it must cover every import. `{ENTRYPOINT}` must only `import` its
-libraries — never `pip install` from inside it.
+No packages are pre-installed — install them with `pip` during the session and test the script
+end-to-end before submitting. Deliver a clean, pinned `{REQUIREMENTS}` alongside `{ENTRYPOINT}`: the
+code-runner installs exactly it before running the script, so list **exactly** what `{ENTRYPOINT}`
+imports (nothing unused — every listed package must install) and pin **recent** versions with
+prebuilt py3.12 wheels. `{ENTRYPOINT}` must only `import` its libraries — never `pip install` from
+inside it.
 
 The runner (where the gate executes the script): a CPU-only Linux container, Python 3.12, ~16
 cores, ~16 GB RAM, with the pinned `{REQUIREMENTS}` pip-installed (network is on for the install
