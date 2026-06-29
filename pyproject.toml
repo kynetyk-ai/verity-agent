@@ -23,11 +23,13 @@ verity-reaper = "verity.provisioning.reaper:main"
 # NOTE: entry points come from INSTALLED dist metadata — run `uv sync` after editing these.
 [project.entry-points."verity.task_types"]
 fe-kaggle = "verity.composition.fe_kaggle:register"
+fe-holdout = "verity.composition.fe_holdout:register"
 code = "verity.composition.code:register"
 
 [project.entry-points."verity.verifier_types"]
 fake = "verity.domains.fake:register_verifier"
 fe-kaggle = "verity.verifier.fe_kaggle_service:register_verifier"
+holdout-experiment = "verity.verifier.holdout_service:register_verifier"
 
 [project.optional-dependencies]
 sandbox = [
@@ -68,6 +70,11 @@ notebook = [
     "nbconvert>=7.17.1",
     "pandas>=3.0.3",
 ]
+# The ablation analysis/plotting layer (experiments/ablation/figures): renders the F1-F5 figures.
+# The analysis *projection* (analyze.py) is pure stdlib and needs none of this; only the figures do.
+analysis = [
+    "matplotlib>=3.11.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -78,7 +85,7 @@ packages = ["src/verity"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests", "tools"]
+src = ["src", "tests", "tools", "experiments"]
 # Recorded agent submissions (verbatim model output kept as run artifacts, not maintained source)
 # and the exploratory run-data analysis notebook (a throwaway analysis artifact, not library code).
 extend-exclude = [

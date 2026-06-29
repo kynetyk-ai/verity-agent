@@ -9,9 +9,9 @@ system prompt against it.
 The **composed system prompt** (§3.4) is assembled *mechanically* — pure string assembly, no
 judgment, consistent with the control plane's unintelligence — from three layers:
 
-1. **Kernel orientation** (invariant across all domains) — the loop, the propose-only contract,
-   the workspace layout, where to write proposals/objects, and how shape-errors and refine
-   feedback come back. Rendered from the :class:`~verity.control_plane.workspace.WorkspaceContract`
+1. **Kernel orientation** (invariant across all domains) — work independently, the workspace
+   layout, where to write proposals/objects, self-verify-then-submit, and follow any correction
+   instructions. Rendered from the :class:`~verity.control_plane.workspace.WorkspaceContract`
    so it cannot drift from the actual roles.
 2. **Domain instructions** (per-domain; part of the domain definition, §8).
 3. **Task instructions** (per-task; the user writes intent, not paths).
@@ -112,24 +112,23 @@ class TaskConfig:
 
 
 KERNEL_ORIENTATION_TEMPLATE = """\
-You operate a single repeating loop: read -> propose -> gate -> commit.
-You PROPOSE artifacts; you never write durable state, and you never contact the verifier.
-A proposal is a new artifact plus the operation that produced it, with a short note on how and
-why you produced it.
+Work independently and diligently to complete the task provided:
+- Plan the steps that must be taken to achieve the goal
+- Execute the steps to complete a best-work proposal
+- **Do not** ask clarifying questions, request user input, or wait for permission. Execute
+  independently.
 
 Your workspace has a fixed layout (read-only inputs; writable-ephemeral working areas):
 {layout}
 
-Write your proposal and any object attachments (a script, a data file) to outbox/. The harness
-harvests the outbox; do not rely on any other path. The output schema lives under spec/.
-Put ONLY your proposal's declared objects in outbox/ — nothing else; the harness keeps exactly
-those and discards any other file you leave there.
-
-Two corrections may come back:
-- A shape-error means the proposal is malformed (wrong parts/types). Fix the formatting and
-  resubmit; nothing is recorded.
-- Refine feedback means the proposal is mostly sound but carries named defects. Produce a
-  tracked revision that addresses exactly those defects."""
+- The required output schema for the proposal lives under spec/.
+- Prepare to submit a proposal by moving any object attachments (a script, a data file) to outbox/;
+  do not rely on any other path.
+- Self-verify the shape of the proposal and if possible, test the proposal prior to submission.
+- Submit the proposal using the tool provided and within the time allotted.
+- If you receive instructions to correct a previously submitted proposal, follow them
+  precisely.
+"""
 
 
 def render_workspace_layout(contract: WorkspaceContract) -> str:

@@ -36,9 +36,9 @@ def test_compose_is_deterministic_and_three_layered() -> None:
     assert a.index("# Kernel orientation") < a.index("# Domain") < a.index("# Task")
     assert "Produce a Note." in a
     assert "Summarize the source." in a
-    # the invariant orientation mentions the loop and the outbox harvest source
-    assert "read -> propose -> gate -> commit" in a
-    assert "outbox/" in a
+    # the invariant orientation renders the workspace layout from the contract (every role appears)
+    for role in WORKSPACE_CONTRACT.roles:
+        assert f"{role.name}/" in a
 
 
 def test_task_config_system_prompt_uses_its_layers() -> None:

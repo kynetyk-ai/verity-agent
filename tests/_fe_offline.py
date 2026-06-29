@@ -162,6 +162,74 @@ def loopback_fe_kaggle_factory(backend, scorer):  # type: ignore[no-untyped-def]
     return make
 
 
+def loopback_holdout_factory(backend):  # type: ignore[no-untyped-def]
+    """An offline ``make_verifier`` for `configure_fe_holdout_task` — the §12 hold-out scorer over a
+    loopback `RemoteVerifier`, built from the shipped `VerifierSetup` (production seam, offline).
+    The ``accept_policy`` knob rides in the setup, so a cell's policy reaches the real scorer."""
+    from verity.contracts.ports import VerifierSetup
+    from verity.domains.feature_engineering import (
+        build_feature_engineering_verifier,
+        parse_label_csv,
+    )
+    from verity.transport import LoopbackTransport, RemoteVerifier, VerifierServer
+    from verity.verifier import BackendCodeRunner
+
+    def _builder(setup: VerifierSetup):  # type: ignore[no-untyped-def]
+        runner = BackendCodeRunner(backend=backend, config="holdout-experiment")
+        return build_feature_engineering_verifier(
+            runner,
+            agent_train_csv=setup.objects["train.csv"],
+            reserved_test_csv=setup.objects["holdout.csv"],
+            reserved_labels=parse_label_csv(setup.objects["holdout_labels.csv"]),
+            margin=float(setup.params.get("margin", 0.0)),
+            timeout_s=float(setup.params.get("timeout_s", 900.0)),
+            accept_policy=str(setup.params.get("accept_policy", "improve_over_best_prior")),
+        )
+
+    async def make(setup: VerifierSetup):  # type: ignore[no-untyped-def]
+        return RemoteVerifier(
+            LoopbackTransport(VerifierServer(builder=_builder).handle), setup_payload=setup
+        )
+
+    return make
+
+
+def offline_holdout_catalog():  # type: ignore[no-untyped-def]
+    """A `TaskCatalog` with the real `fe-holdout` task wired to the loopback hold-out verifier (no
+    Docker/model/network) — for offline ablation-sweep tests over a `FakeBackend`."""
+    from verity.composition.catalog import TaskCatalog
+    from verity.composition.fe import provisioning_config_from
+    from verity.composition.fe_holdout import (
+        FE_HOLDOUT_TASK_ID,
+        configure_fe_holdout_task,
+        describe_fe_holdout_task,
+    )
+    from verity.control_plane.registries import ObjectProvisionMode
+    from verity.domains.feature_engineering import ACCEPT_IMPROVE_OVER_BEST_PRIOR
+
+    async def _build_offline_fe_holdout(cp, *, backend, request):  # type: ignore[no-untyped-def]
+        agent_files = {
+            n: cp.store.get_object(r) for n, r in request.data.files_for("agent").items()
+        }
+        verifier_files = {
+            n: cp.store.get_object(r) for n, r in request.data.files_for("verifier").items()
+        }
+        knobs = request.verifier.knobs
+        return await configure_fe_holdout_task(
+            cp, backend=backend, make_verifier=loopback_holdout_factory(backend),
+            agent_files=agent_files, verifier_files=verifier_files,
+            accept_policy=str(knobs.get("accept_policy", ACCEPT_IMPROVE_OVER_BEST_PRIOR)),
+            provisioning_spec=request.policy.provisioning or ObjectProvisionMode.ALL,
+            provisioning=provisioning_config_from(request.sandbox),
+        )
+
+    catalog = TaskCatalog()
+    catalog.register(
+        FE_HOLDOUT_TASK_ID, _build_offline_fe_holdout, describe=describe_fe_holdout_task
+    )
+    return catalog
+
+
 def offline_catalog(scorer: KaggleScorer | None = None):  # type: ignore[no-untyped-def]
     """A `TaskCatalog` for offline service/daemon tests: the real `fe-kaggle` task wired to a
     `FakeKaggleScorer` (so the loop runs with no Kaggle creds/network), plus the `code` task.

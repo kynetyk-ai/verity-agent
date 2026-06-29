@@ -505,3 +505,65 @@ def test_extra_tools_are_bound_when_selected(tmp_path: Path) -> None:
     )
     bound = set(with_tool.get_graph().nodes["tools"].data.tools_by_name)
     assert "read_pdf" in bound and "author" in bound  # the seam tool + the propose tool coexist
+
+
+# ------------------------------------------------------------------------- the finalize guard
+
+
+class _FakeAgent:
+    """A stand-in langgraph agent: each ``invoke`` appends an AIMessage; an optional ``submit_on``
+    call number writes the proposal descriptor to the outbox (simulating the agent finally calling
+    its propose tool)."""
+
+    def __init__(self, outbox: Path, *, submit_on: int | None) -> None:
+        self.outbox = outbox
+        self.submit_on = submit_on
+        self.calls = 0
+
+    def invoke(self, state: dict, config: dict) -> dict:  # noqa: ARG002 - mirror the real signature
+        self.calls += 1
+        if self.submit_on is not None and self.calls == self.submit_on:
+            (self.outbox / RESERVED_PROPOSAL_NAME).write_text("{}", encoding="utf-8")
+        return {"messages": [*state["messages"], AIMessage(content=f"step {self.calls}")]}
+
+
+def test_finalize_guard_nudges_until_the_agent_submits(tmp_path: Path) -> None:
+    from verity.sandbox.deepagents_driver import run_agent
+
+    outbox = tmp_path
+    agent = _FakeAgent(outbox, submit_on=2)  # submits on the first nudge
+    run_agent(agent, "go", outbox=outbox)
+    assert agent.calls == 2  # initial invoke + one finalize nudge
+    assert (outbox / RESERVED_PROPOSAL_NAME).is_file()
+    assert not (outbox / "__transcript__.json").exists()  # succeeded → no failure diagnostic
+
+
+def test_finalize_guard_exhausts_and_persists_transcript(tmp_path: Path) -> None:
+    import json
+
+    from verity.sandbox.deepagents_driver import _FINALIZE_RETRIES, run_agent
+
+    outbox = tmp_path
+    agent = _FakeAgent(outbox, submit_on=None)  # never submits
+    run_agent(agent, "go", outbox=outbox)
+    assert agent.calls == 1 + _FINALIZE_RETRIES  # initial + bounded nudges, then give up
+    assert not (outbox / RESERVED_PROPOSAL_NAME).is_file()
+    transcript = json.loads((outbox / "__transcript__.json").read_text())
+    assert transcript and transcript[-1]["type"] == "AIMessage"  # the rendered trace is captured
+
+
+def test_finalize_guard_survives_a_raising_reinvoke(tmp_path: Path) -> None:
+    # A guard re-invoke that raises (a step/recursion limit) is best-effort: no proposal stands,
+    # the transcript from the last good result is still persisted, and run_agent does not raise.
+    from verity.sandbox.deepagents_driver import run_agent
+
+    class _RaisingAgent(_FakeAgent):
+        def invoke(self, state: dict, config: dict) -> dict:
+            if self.calls >= 1:
+                raise RuntimeError("recursion limit")
+            return super().invoke(state, config)
+
+    outbox = tmp_path
+    run_agent(_RaisingAgent(outbox, submit_on=None), "go", outbox=outbox)
+    assert not (outbox / RESERVED_PROPOSAL_NAME).is_file()
+    assert (outbox / "__transcript__.json").exists()

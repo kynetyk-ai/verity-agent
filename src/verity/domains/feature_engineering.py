@@ -65,6 +65,8 @@ from verity.verifier import (
 __all__ = [
     "DATASET_VERSION",
     "SUBMISSION",
+    "ACCEPT_IMPROVE_OVER_BEST_PRIOR",
+    "ACCEPT_ALWAYS",
     "ENTRYPOINT",
     "REQUIREMENTS",
     "TRAIN_INPUT",
@@ -77,10 +79,24 @@ __all__ = [
     "build_feature_engineering_verifier",
     "declared_objects",
     "balanced_accuracy",
+    "parse_label_csv",
 ]
 
 DATASET_VERSION = "DatasetVersion"
 SUBMISSION = "Submission"
+
+# The verdict-policy axis of the holdout scorer (the ablation knob, experimental-design §6.2). Both
+# policies share the same scoring run; only the accept verdict differs.
+#   ``improve_over_best_prior`` — ACCEPT iff the score beats the best prior, else REJECT (the §12
+#     ``selection`` behaviour). Under a binary accept/reject gate that never refines, "best
+#     accepted" and "best prior of any status" coincide, so the existing best-accepted baseline is
+#     exact for the ablation (Exp 3/4/4b).
+#   ``always`` — run, record the score, ACCEPT unconditionally (Exp 1/2). A non-runnable / non-
+#     scorable submission still rejects (there is no score to record) — the fair, non-hobbled
+#     construct, not "accept the failure" (experimental-design §7).
+ACCEPT_IMPROVE_OVER_BEST_PRIOR = "improve_over_best_prior"
+ACCEPT_ALWAYS = "always"
+_ACCEPT_POLICIES = (ACCEPT_IMPROVE_OVER_BEST_PRIOR, ACCEPT_ALWAYS)
 
 # The reserved object names the agent writes to outbox/ (the script + its declared package list).
 ENTRYPOINT = "submission.py"
@@ -197,6 +213,7 @@ def build_feature_engineering_verifier(
     margin: float = 0.0,
     trial_deflation: float = 0.0,
     timeout_s: float = 900.0,
+    accept_policy: str = ACCEPT_IMPROVE_OVER_BEST_PRIOR,
 ) -> SdkVerifier:
     """The opaque verifier package for the §12 domain — the two ``Submission`` gates (ADR 0001).
 
@@ -204,15 +221,26 @@ def build_feature_engineering_verifier(
     then scores **balanced accuracy** against ``reserved_labels`` — which it **holds and never
     exposes**, so a leaked-target submission inflates the agent's own score but is caught here (§12,
     §13.11). The cheap **runs-clean** gate (→ ``tentative``) requires the script to execute and
-    predict every reserved row; the hard **selection** gate (→ ``accepted``) requires the score to
-    beat the incumbent by ``margin``, with the bar raised ``trial_deflation`` per prior rejected
-    submission (the trial count is the rejected-log, §12). Reject-only — this domain issues no
-    ``refine``.
+    predict every reserved row.
+
+    ``accept_policy`` selects the hard verdict step over that one shared scoring run (the ablation
+    knob, experimental-design §6.2) — both policies score every submission identically:
+
+    * ``improve_over_best_prior`` (default) — the hard **selection** gate (→ ``accepted``) requires
+      the score to beat the incumbent by ``margin``, with the bar raised ``trial_deflation`` per
+      prior rejected submission (the trial count is the rejected-log, §12). Reject-only — no
+      ``refine``.
+    * ``always`` — the hard **score-and-accept** gate records the score and accepts unconditionally
+      (Exp 1/2); a non-scorable submission still rejects.
 
     The incumbents' scores come from the verifier's own measurement ledger (it scored them), keyed
     by the store-slice's *current* accepted ids — so independence holds (the slice carries status,
     the verifier the numbers it computed; no rationale or score round-trips through the store).
     """
+    if accept_policy not in _ACCEPT_POLICIES:
+        raise ValueError(
+            f"unknown accept_policy {accept_policy!r}; expected one of {_ACCEPT_POLICIES}"
+        )
     gates = _SubmissionGates(
         runner=runner,
         agent_train_csv=agent_train_csv,
@@ -226,13 +254,18 @@ def build_feature_engineering_verifier(
     # identity reach it, so its code-runner workers are labelled for audit + reaping (7.4.h). A pure
     # in-process runner (FakeCodeRunner) does not implement the capability and registers nothing.
     sinks = (runner,) if isinstance(runner, SupportsRunContext) else ()
+    hard_step = (
+        GateStep("score-and-accept", gates.score_and_accept, is_hard=True)
+        if accept_policy == ACCEPT_ALWAYS
+        else GateStep("selection", gates.selection, is_hard=True)
+    )
     return SdkVerifier(
         identity=FE_VERIFIER_IDENTITY,
         context_sinks=sinks,
         pipelines={
             SUBMISSION: (
                 GateStep("runs-clean", gates.runnable, is_hard=False),
-                GateStep("selection", gates.selection, is_hard=True),
+                hard_step,
             ),
         },
     )
@@ -328,6 +361,28 @@ class _SubmissionGates:
             )
         return GateVerdict(VerdictKind.REJECT, f"does not improve: {detail}", score=score)
 
+    async def score_and_accept(self, request: VerifierRequest) -> GateVerdict | None:
+        """Permissive policy: score the run, record it, ACCEPT unconditionally (Exp 1/2).
+
+        Records the score on the same ledger ``selection`` uses, so a run under this policy is
+        directly comparable to one under ``improve_over_best_prior``. A submission that produced no
+        scorable predictions still rejects — there is no number to record, and an unrunnable script
+        is not an "accept the failure" (the fair, non-hobbled construct, experimental-design §7).
+        Does not supersede: every accepted attempt is retained (the accumulating-context conditions
+        read all priors), and supersession is the improving ladder's concern, not this one.
+        """
+        result = await self._run(request)
+        preds = _parse_predictions(result.output) if result is not None else None
+        if preds is None or (self.reserved_labels.keys() - preds.keys()):
+            return GateVerdict(VerdictKind.REJECT, "submission produced no scorable predictions")
+        score = balanced_accuracy(self.reserved_labels, preds)
+        self._scores[request.proposal.id] = score
+        return GateVerdict(
+            VerdictKind.ACCEPT,
+            f"balanced-accuracy {score:.4f} (always-accept: score recorded, accepted)",
+            score=score,
+        )
+
     def _best_incumbent(self, store_slice: tuple[Artifact, ...]) -> tuple[str | None, float]:
         """The top-scoring currently-accepted submission (status from the slice, score from us)."""
         scored = [
@@ -370,6 +425,26 @@ def _parse_predictions(output: bytes | None) -> dict[str, str] | None:
     return preds or None
 
 
+def parse_label_csv(data: bytes, *, id_column: str = "id", target: str = "class") -> dict[str, str]:
+    """Parse a ``holdout_labels.csv`` (the answer key) into an ``{id: target}`` map (verifier-side).
+
+    Domain knowledge that lives with the verifier: since ADR 0005 the answer key arrives as a
+    routed verifier-role *file* (not a control-plane-derived dict), and the verifier image — which
+    owns the domain — turns it back into the lookup the gates score against. Falls back to the first
+    two columns when the header names differ, so a prep tool need not match the gate's column names.
+    """
+    reader = csv.reader(io.StringIO(data.decode("utf-8")))
+    rows = list(reader)
+    if not rows:
+        return {}
+    header = rows[0]
+    try:
+        id_idx, target_idx = header.index(id_column), header.index(target)
+    except ValueError:
+        id_idx, target_idx = 0, 1
+    return {r[id_idx]: r[target_idx] for r in rows[1:] if len(r) > max(id_idx, target_idx)}
+
+
 def balanced_accuracy(truth: Mapping[str, str], preds: Mapping[str, str]) -> float:
     """The §12 metric: the unweighted mean of per-class recall, so every class counts equally."""
     totals: dict[str, int] = {}
@@ -384,13 +459,12 @@ def balanced_accuracy(truth: Mapping[str, str], preds: Mapping[str, str]) -> flo
 
 
 FEATURE_ENGINEERING_INSTRUCTIONS = f"""\
-You are a discovery agent on a tabular prediction task. Each cycle you produce ONE submission: a
-self-contained Python script that reads the data, builds a predictive pipeline, and predicts every
-test row. Any technique that fits in a single script and improves the held-out score is fair game —
-features, model choice, an ensemble, calibration, imbalance handling. No method is mandated. Across
-cycles you climb into the TOP TIER of the real leaderboard: each submission either beats your best
-or is sent back to refine toward a competitive target.
+Produce a single self-contained Python script that reads the data, builds a predictive pipeline, and
+predicts every test row. Any technique that fits in a single script and improves the held-out score
+is fair game — features, model choice, an ensemble, calibration, imbalance handling. No method is
+mandated.
 
+### Script Contract
 The script contract (the gate runs your script; honour it exactly):
 - Data dir = `os.environ.get("VERITY_DATA", "data")`; output dir =
   `os.environ.get("VERITY_OUT", "out")` (the defaults work in your sandbox; the gate sets these).
@@ -406,52 +480,42 @@ only). scikit-learn, LightGBM, XGBoost, CatBoost, pandas, numpy all work. Do NOT
 frameworks (torch / tensorflow won't finish) or libraries with no prebuilt wheel (no compiler in
 the runner).
 
-How you are judged (you never see the judge's data): the gate runs your script on a reserved
-hold-out you can't see, scores BALANCED ACCURACY, and checks it against a competitive bar read live
-from the leaderboard. Below the bar — you're told your estimate, the target, and the gap, and asked
-to REVISE (no real submission spent). At or above it — the script is retrained on the full data and
-submitted to the REAL leaderboard, accepted only if its public score beats your best. So keep
-pushing the held-out score; each accepted submission is a real step up. Anything that peeks at the
-target looks great on your own split but fails on the hold-out and the real data.
+### Evaluation Criteria
+- The proposal will be evaluated based on BALANCED ACCURACY.
+- The proposed script is retrained on additional data not available in this environment; anything
+  that peeks at the target fails on the hold-out and real data.
+- The proposal should improve upon prior results, if prior submissions and their outcomes are
+  provided.
 
-Work the problem (you have a generous time budget each cycle — use it to explore, build, and TEST;
-past the halfway mark you'll get periodic "time remaining" notes, so pace yourself to finish):
-- First cycle (no prior work): explore the data with code to understand its structure and where the
-  signal is — what the columns are and their types, how balanced the classes are, and which
-  features actually separate them — and let what you find drive your first model. (Don't open the
-  raw files directly; they're large — load and summarize them in a script.)
-- Later cycles: your prior work is under `scratch/provided/` (see its `INDEX.md`) — your best
-  accepted submission, or, on a REVISE cycle, the exact script to revise. Treat each cycle as an
-  experiment: read it, form a hypothesis about where it's weak, make a focused change, and measure
-  it against the prior on your own held-out split before submitting — keep what demonstrably helps
-  and drop what doesn't, rather than rewriting from scratch.
+### Process Instructions
+
+Work the problem within the time allotted:
+- If no prior submissions have been provided, explore the data with code to understand its
+  structure, where the signal is, and non-obvious relationships (don't open the raw files directly;
+  they're large — load and summarize them in a script).
+- If prior submissions are provided, consider ways to optimize and/or combine the best approaches.
+- If prior scores appear to have plateaued, consider new directions (e.g. new features, different
+  models).
 
 Train on ALL the data, and finish in time:
-- TRAIN ON THE FULL training set — do NOT subsample. On this problem the amount of training data is
-  the dominant driver of balanced accuracy, and a gradient-boosted tree (LightGBM / XGBoost /
-  CatBoost) fits the whole set in a couple of minutes.
+- TRAIN ON THE FULL training set — do NOT subsample. 
 - USE ALL THE CORES: `n_jobs=-1` (scikit-learn / XGBoost / LightGBM), `thread_count=-1` (CatBoost).
-  A single-threaded fit on the full data WILL time out — the most common reason a good model fails
-  to finish.
-- Keep any ensemble or search bounded — a model that doesn't finish scores nothing. And note: some
-  libraries that manage their own thread pools don't co-exist cleanly in one process (CatBoost
-  alongside LightGBM/XGBoost is a known stall) — so if you want several, train each in its own
-  process (`multiprocessing` / `ProcessPoolExecutor`) and combine predictions.
 - Optimize for BALANCED accuracy: validate with stratified cross-validation and handle class
-  imbalance (class weights / resampling / threshold tuning).
-
-Before you submit — TEST IT (this is where attempts most often fail): actually RUN your script
-end-to-end in your sandbox (on a small sample if you like — a few thousand rows) and confirm it
-completes and writes `{PREDICTIONS_OUTPUT}` with the `id,class` columns and a row for every test
-row. A script that errors, times out, or skips rows is rejected outright — no partial credit — so
-never submit one you haven't watched run clean.
+imbalance (class weights / resampling / threshold tuning).
+- Keep any ensemble or search bounded — a model that doesn't finish scores nothing. And note: some
+libraries that manage their own thread pools don't co-exist cleanly in one process (CatBoost
+alongside LightGBM/XGBoost is a known stall) — so if you want several, train each in its own
+process (`multiprocessing` / `ProcessPoolExecutor`) and combine predictions.
 
 Deliver to `outbox/` each cycle: `{ENTRYPOINT}` (the script) and `{REQUIREMENTS}` (its pinned
 packages, e.g. `pandas==2.2.2`, one per line — the gate installs exactly these). The proposal
 payload (via your submit/revises tool): `entrypoint` = "{ENTRYPOINT}", `requirements` =
 "{REQUIREMENTS}". The submission is the unit — don't report individual features.
 
-Domain signal: colour indices (differences between photometric bands, e.g. u-g, g-r, r-i, i-z) and
-`redshift` carry most of the signal. The categorical `spectral_type` and `galaxy_population` are
-present in train AND test — encode them for the model; don't feed raw string columns to the
-estimator. Because scoring is balanced accuracy, handle the class imbalance."""
+In the submit/revises tool's `rationale` (your private note — recorded for the audit trail, NEVER
+shown to the gate), include a line exactly of the form `ESTIMATED_BALANCED_ACCURACY: <float>` with
+your honest best estimate of the held-out balanced accuracy this submission will score (e.g.
+`ESTIMATED_BALANCED_ACCURACY: 0.964`). It does not affect the verdict — report your real estimate,
+not an optimistic one.
+
+"""
