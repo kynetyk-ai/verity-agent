@@ -119,6 +119,49 @@ flow: prepare the bundles with `uv run python -m tools.prepare_fe_data …` (run
 `verifier.knobs.competition` (the slug) and `KAGGLE_USERNAME`/`KAGGLE_KEY` in the daemon env
 (setup.md → *Kaggle creds*). Read the live contract with `verity catalog --type <name>`.
 
+### Model targeting — native, local, and OpenAI-compatible endpoints
+
+The sandbox model is set by **`sandbox.model`** (+ optional `base_url`, `api_key_env`) in a request
+file, or **`--model`** (+ `--base-url`) on `create`. Two paths:
+
+- **Native provider** — a `provider:model` string, **no** `base_url`. The provider's key env is
+  forwarded into the worker automatically, so it just has to be set in the **daemon** env (the worker
+  inherits nothing else). Supported today: `anthropic:` (`ANTHROPIC_API_KEY`) and `openai:`
+  (`OPENAI_API_KEY`). The `:` splits provider from model — e.g. `anthropic:claude-sonnet-4-6`,
+  `openai:gpt-5.4-nano`.
+- **OpenAI-compatible endpoint** (any server speaking the OpenAI API — Ollama, vLLM, llama.cpp, LM
+  Studio, or a hosted gateway) — set **both** `base_url` **and** `model`, where `model` is the
+  endpoint's **literal** name and is **not** split on `:` (so an Ollama `name:tag` like `gpt-oss:20b`
+  stays intact). The system depends on the OpenAI-compatible *contract*, not any one server.
+
+Keys & host reachability for the endpoint path:
+- **Keyless local servers** (Ollama, a bare vLLM): omit `api_key_env` — the resolver sends `"EMPTY"`.
+- **Keyed endpoints**: set `api_key_env` to the env var **name** holding the key (e.g.
+  `"api_key_env": "OPENROUTER_API_KEY"`) and make sure that var is set in the daemon env; the worker
+  forwards it by name.
+- **Reaching a server on the Docker host**: use `host.docker.internal` in the `base_url`
+  (`http://host.docker.internal:11434/v1` for Ollama). The driver auto-adds
+  `--add-host=host.docker.internal:host-gateway` for any `*.docker.internal` host (required on Linux,
+  a no-op on macOS). A public URL needs no gateway.
+
+| Target | `model` | `base_url` | key |
+|---|---|---|---|
+| Anthropic (native) | `anthropic:claude-sonnet-4-6` | — | `ANTHROPIC_API_KEY` in daemon env |
+| OpenAI (native) | `openai:gpt-5.4-nano` | — | `OPENAI_API_KEY` in daemon env |
+| Ollama (host-local) | `gpt-oss:20b` | `http://host.docker.internal:11434/v1` | none (keyless → `EMPTY`) |
+| vLLM (host-local) | `<served-model-name>` | `http://host.docker.internal:8000/v1` | none, or `api_key_env` |
+| Hosted OpenAI-compatible | `<vendor model id>` | `https://…/v1` | `api_key_env` (var name) |
+
+```bash
+# native OpenAI, from flags:
+verity create --type fe-holdout --model openai:gpt-5.4-nano --goal "…" --file …
+# local Ollama, from flags (model NOT split on ':'):
+verity create --type fe-holdout --model gpt-oss:20b --base-url http://host.docker.internal:11434/v1 …
+```
+
+Match the model to the task: weaker local models may stumble on tool-calling or long agent loops
+(see `sandbox_notes` in `verity catalog --type <name>`).
+
 ## `run` — start a run (async) → a `run_id`
 
 ```bash

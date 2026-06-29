@@ -77,11 +77,15 @@ bash ${CLAUDE_SKILL_DIR}/scripts/run_task.sh --type code --goal "write a script 
 
 ## Guardrails (read before running)
 
-- **Local model name:** pass the **full** name with `--base-url`, e.g. `--model qwen3.6:27b-coding-mxfp8
-  --base-url http://host.docker.internal:11434/v1`. The colon belongs to the model tag — `--base-url` is
-  what makes it a literal OpenAI-compatible name (do not omit it for a local model).
-- **Anthropic model:** `--model anthropic:claude-sonnet-4-6` (no `--base-url`); the daemon forwards
-  `ANTHROPIC_API_KEY` to the worker, so it must be set in the daemon's environment.
+- **Local / OpenAI-compatible model:** pass the **full** name with `--base-url`, e.g.
+  `--model gpt-oss:20b --base-url http://host.docker.internal:11434/v1`. The colon belongs to the model
+  tag — `--base-url` is what makes it a literal OpenAI-compatible name (do not omit it for a local
+  model). Keyless local servers need no key; a keyed endpoint takes `api_key_env` (the env var name).
+- **Native provider model:** `--model anthropic:claude-sonnet-4-6` or `--model openai:gpt-5.4-nano`
+  (no `--base-url`); the daemon forwards `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` to the worker, so the
+  matching key must be set in the daemon's environment.
+- See **cli-reference.md → "Model targeting"** for the full matrix (native / local / hosted
+  OpenAI-compatible), keys, and the `host.docker.internal` gateway behavior.
 - **Files only via the exchange.** Inputs go in `<exchange>/in/`; outputs land in `<exchange>/out/<run_id>/`.
   Nothing else reaches a worker.
 - **Network surface needs auth.** `verity serve --http HOST:PORT` requires `VERITY_API_TOKEN`; clients
