@@ -61,6 +61,23 @@ _DEFAULT_RECURSION_LIMIT = 80
 _DEADLINE_WARN_FRACTION = 0.8  # warn the agent once it is this far into its time/step budget
 _DEADLINE_REMIND_FRACTION = 0.5  # start the recurring time-remaining awareness at the halfway mark
 
+# Finalize guard (#: end-of-loop, not time/step): a ReAct agent ends the moment the model returns a
+# message with no tool call — nothing structurally requires a proposal first. If the loop ends with
+# no proposal in the outbox, re-invoke with a salient "submit now" nudge a bounded number of times,
+# so a model that simply stopped (thinking it was "done") gets a clear chance to deliver. The two
+# DeadlineMiddleware/StepBudget nudges only fire under time/step PRESSURE; this catches the agent
+# that converges early and never submits.
+_FINALIZE_RETRIES = 2
+_FINALIZE_NUDGE = (
+    "You have NOT submitted a proposal — nothing is recorded and this cycle will be wasted. Your "
+    "one deliverable this cycle is a proposal. Do it NOW: write every declared object file to "
+    "outbox/ and CALL YOUR PROPOSE/SUBMIT TOOL. Do not stop until that tool returns success."
+)
+# A failure diagnostic written to the outbox when the guard is exhausted and still no proposal: the
+# rendered message transcript, so a no-proposal cycle is debuggable from the worker staging dir. Not
+# harvested (no proposal → no harvest); it persists in the worker's rw/work/outbox on the host.
+_TRANSCRIPT_NAME = "__transcript__.json"
+
 
 class DeadlineMiddleware(AgentMiddleware):
     """A two-tier soft-deadline ladder (ROADMAP 5.2, #102): pace early, then finalize before death.
@@ -248,19 +265,71 @@ def run_agent(
     recursion_limit: int = _DEFAULT_RECURSION_LIMIT,
     outbox: Path | None = None,
 ) -> None:
-    """Run the agent loop to completion (synchronous).
+    """Run the agent loop to completion (synchronous), with the end-of-loop finalize guard.
 
     When ``outbox`` is given, the loop's telemetry (tokens / steps / tool-calls / model) is written
     to the reserved ``__telemetry__.json`` there, harvested back to the host like the proposal
     descriptor (ROADMAP 5.3b). Best-effort: a model without ``usage_metadata`` yields zeros / nulls.
+
+    The **finalize guard**: a ReAct agent ends as soon as the model returns a message with no tool
+    call, with no structural requirement that it proposed first. If the loop ends with no proposal
+    in the outbox, re-invoke with a salient "submit now" nudge up to ``_FINALIZE_RETRIES`` times
+    (the accumulated history carried forward), so an agent that simply converged without delivering
+    gets a clear, bounded chance to. A guard re-invoke is best-effort — if it raises (e.g. a step or
+    recursion limit), we stop and let the no-proposal outcome stand. When the guard is exhausted and
+    there is still no proposal, the rendered transcript is persisted for debugging.
     """
     result = agent.invoke(
         {"messages": [{"role": "user", "content": user_message}]},
         {"recursion_limit": recursion_limit},
     )
     if outbox is not None:
+        result = _finalize_guard(agent, result, outbox, recursion_limit=recursion_limit)
         telemetry = _extract_telemetry(result)
         (outbox / RESERVED_TELEMETRY_NAME).write_bytes(json.dumps(telemetry).encode("utf-8"))
+        if not (outbox / RESERVED_PROPOSAL_NAME).is_file():
+            _persist_transcript(result, outbox)
+
+
+def _finalize_guard(
+    agent: Any, result: Any, outbox: Path, *, recursion_limit: int
+) -> Any:
+    """Re-invoke the agent to deliver when the loop ended with no proposal (bounded retries)."""
+    for attempt in range(1, _FINALIZE_RETRIES + 1):
+        if (outbox / RESERVED_PROPOSAL_NAME).is_file():
+            return result
+        log.warning("finalize_guard_nudge", attempt=attempt, max_attempts=_FINALIZE_RETRIES)
+        prior = result.get("messages", []) if isinstance(result, dict) else []
+        try:
+            result = agent.invoke(
+                {"messages": [*prior, HumanMessage(content=_FINALIZE_NUDGE)]},
+                {"recursion_limit": recursion_limit},
+            )
+        except Exception as exc:  # noqa: BLE001 — a guard re-invoke is best-effort; let the
+            # no-proposal outcome stand (the host records a recoverable failed cycle, #21).
+            log.warning("finalize_guard_invoke_failed", attempt=attempt, error=str(exc))
+            return result
+    return result
+
+
+def _persist_transcript(result: Any, outbox: Path) -> None:
+    """Write the rendered message transcript to the outbox — a no-proposal failure diagnostic.
+
+    Not harvested (no proposal → no harvest); it persists in the worker's staging ``rw/work/outbox``
+    on the host, so a cycle that ended without delivering can be read back after the worker is gone.
+    """
+    messages = result.get("messages", []) if isinstance(result, dict) else []
+    rendered = []
+    for m in messages:
+        rendered.append({
+            "type": type(m).__name__,
+            "content": getattr(m, "content", None),
+            "tool_calls": [tc.get("name") for tc in (getattr(m, "tool_calls", None) or [])],
+        })
+    try:
+        (outbox / _TRANSCRIPT_NAME).write_bytes(json.dumps(rendered, default=str).encode("utf-8"))
+    except OSError as exc:  # diagnostics are best-effort — never let them fail the cycle
+        log.warning("transcript_persist_failed", error=str(exc))
 
 
 def _extract_telemetry(result: Any) -> dict[str, Any]:
