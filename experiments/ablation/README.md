@@ -7,7 +7,7 @@ The sweep orchestrator for the core quantitative study in
 
 ## What a cell is
 
-A cell is one `(condition, model, seed)` triple. `spec.example.json` defines the five conditions:
+A cell is one `(condition, model, seed)` triple. The five conditions:
 
 | condition | `accept_policy` | provisioning | cycles | isolates |
 |---|---|---|---|---|
@@ -21,28 +21,45 @@ The loop conditions share `budgets.max_cycles` (the §1.3 equal-compute control 
 rejects a loop rung that pins its own multi-cycle budget). Seeds give N replicates per cell; the seed
 rides into the model seam (`sandbox.extra.seed`) so a seedable local model (Qwen) is reproducible.
 
+## The bottom rung runs separately
+
+The ladder is split into two specs so the **bottom rung (exp1) runs on its own, before the loop**:
+
+- **`spec.exp1.json`** — exp1 only (one cycle, `provisioning: none`). The per-model **calibration /
+  headroom** gate (§1, figure F1): it tells you each model's single-shot ceiling, so you can add or
+  drop models and tune budgets *before* committing to the expensive loop runs.
+- **`spec.loop.json`** — exp2–4b (the guarded/curated loop rungs), configured from what exp1 taught.
+- **`spec.example.json`** — all five in one sweep, if you'd rather not split.
+
+Each spec carries its own `models` / `budgets`, so the two phases can legitimately differ (e.g. more
+models in exp1, an adjusted cycle budget for the loop).
+
 ## Running it
 
 1. Prepare the dataset once (outside Verity, ADR 0005) with `tools/prepare_fe_data.py`, producing a
    data dir with `agent/{train,test}.csv` and `verifier/{train,holdout,holdout_labels}.csv`.
-2. Run the sweep (needs Docker + the worker images — it launches real sibling containers):
+2. Run each phase (needs Docker + the worker images — it launches real sibling containers):
 
    ```
-   python -m experiments.ablation.sweep spec.example.json --data <data-dir> --out results/
+   python -m experiments.ablation.sweep spec.exp1.json --data <data-dir> --out results/exp1/
+   # inspect F1 / per-model headroom, adjust spec.loop.json if needed, then:
+   python -m experiments.ablation.sweep spec.loop.json --data <data-dir> --out results/loop/
    ```
 
-Each cell's store-derived `RunReport` JSON lands in `results/<condition>-<model>-seedN.json`, plus a
-`manifest.json` (cell coordinates → report filename) the analysis layer reads.
+Each cell's store-derived `RunReport` JSON lands in `results/<phase>/<condition>-<model>-seedN.json`,
+plus a `manifest.json` (cell coordinates → report filename) the analysis layer reads.
 
 The orchestrator drives a `ControlService` directly (the same engine the daemon serves over HTTP),
 serially, so deltas reflect mechanism rather than contention.
 
 ## Analyzing results
 
-Turn a results directory into the paper's figures + a machine-readable summary:
+Turn the results into the paper's figures + a machine-readable summary. Pass **one or more** results
+dirs — the analysis merges them, so the separately-run bottom rung and the loop combine (F1 from
+exp1, the trajectory/context/fudge figures from the loop, the F3 money plot across all five rungs):
 
 ```
-uv run --group analysis python -m experiments.ablation.analyze results/ --out figures/ --threshold 0.96
+uv run --group analysis python -m experiments.ablation.analyze results/exp1/ results/loop/ --out figures/ --threshold 0.96
 ```
 
 This writes `figures/summary.json` (per-`(condition, model)` metrics + the pre-registered deltas

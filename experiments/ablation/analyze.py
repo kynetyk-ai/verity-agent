@@ -367,15 +367,19 @@ def summary(cells: Iterable[CellData], *, threshold: float | None = None) -> Jso
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI: ``python -m experiments.ablation.analyze RESULTS_DIR --out FIG_DIR [--threshold T]``.
+    """CLI: ``python -m experiments.ablation.analyze RESULTS_DIR... --out FIG_DIR [--threshold T]``.
 
-    Writes ``summary.json`` (pure stdlib) then renders F1–F5 (needs the ``analysis`` group:
-    ``uv run --group analysis``). The figures import is lazy, so a summary-only run needs no extra.
+    Accepts **one or more** results dirs and merges their cells, so a bottom rung run separately
+    (``spec.exp1.json``) and the loop (``spec.loop.json``) still combine into one analysis — F1 from
+    the exp1 cells, the trajectory/context/fudge figures from the loop, and the F3 money plot across
+    all five rungs. Writes ``summary.json`` (pure stdlib) then renders F1–F5 (needs the ``analysis``
+    group: ``uv run --group analysis``). The figures import is lazy — a summary-only run needs none.
     """
     import argparse
 
     parser = argparse.ArgumentParser(description="Analyze ablation sweep results into figures.")
-    parser.add_argument("results_dir", help="sweep output dir (per-cell reports + manifest.json)")
+    parser.add_argument("results_dir", nargs="+",
+                        help="one or more sweep output dirs (each with reports + manifest.json)")
     parser.add_argument("--out", required=True, help="dir for summary.json + F1-F5.png")
     parser.add_argument("--threshold", type=float, default=None,
                         help="held-out score for the tokens-to-threshold readout")
@@ -383,7 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="F1 headroom reference (default: best observed in the sweep)")
     args = parser.parse_args(argv)
 
-    cells = load_results(args.results_dir)
+    cells = [cell for d in args.results_dir for cell in load_results(d)]
     result = summary(cells, threshold=args.threshold)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

@@ -162,6 +162,39 @@ def _full_ladder_summary() -> dict:
     return summary(cells)
 
 
+def _write_results_dir(path, cells_meta) -> None:  # type: ignore[no-untyped-def]
+    """Write a sweep-style results dir: a manifest.json + one report per cell (score on a gate)."""
+    import json
+
+    path.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for cond, model, seed, score in cells_meta:
+        key = f"{cond}-{model}-seed{seed}"
+        report = {"cycles": [{"index": 0, "commit": {"outcome": "accepted", "decisions": [
+            {"gate": "score-and-accept", "score": score}]}, "rationale": "x"}]}
+        (path / f"{key}.json").write_text(json.dumps(report), encoding="utf-8")
+        manifest.append({"condition": cond, "model": model, "seed": seed,
+                         "run_id": key, "status": "complete", "report": f"{key}.json"})
+    (path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_load_results_merges_separately_run_rungs(tmp_path) -> None:
+    # The bottom rung (exp1) run on its own + the loop (exp3) run separately combine into one
+    # analysis — the §1 split: calibrate first, then run the guarded loop.
+    from experiments.ablation.analyze import load_results
+
+    exp1_dir = tmp_path / "exp1"
+    loop_dir = tmp_path / "loop"
+    _write_results_dir(exp1_dir, [("exp1", "m", 0, 0.80), ("exp1", "m", 1, 0.82)])
+    _write_results_dir(loop_dir, [("exp3", "m", 0, 0.90), ("exp3", "m", 1, 0.92)])
+
+    cells = [c for d in (exp1_dir, loop_dir) for c in load_results(d)]
+    out = summary(cells)
+    assert set(out["cells"]) == {"exp1|m", "exp3|m"}  # both rungs present from the two dirs
+    assert out["cells"]["exp1|m"]["final_quality_mean"] == 0.81
+    assert out["cells"]["exp3|m"]["final_quality_mean"] == 0.91
+
+
 def test_render_all_writes_five_figures(tmp_path) -> None:
     pytest.importorskip("matplotlib")
     from experiments.ablation import figures
