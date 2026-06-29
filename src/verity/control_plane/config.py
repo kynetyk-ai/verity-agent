@@ -118,7 +118,7 @@ Work independently and diligently to complete the task provided:
 - **Do not** ask clarifying questions, request user input, or wait for permission. Execute
   independently.
 
-Your workspace has a fixed layout (read-only inputs; writable-ephemeral working areas):
+The provided workspace has a fixed layout (read-only inputs; writable-ephemeral working areas):
 {layout}
 
 - The required output schema for the proposal lives under spec/.
