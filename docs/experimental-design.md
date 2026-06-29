@@ -40,6 +40,17 @@ competitive bar**. The verifier stack is truncated to `runs-clean → holdout-sc
 FE holdout scorer, not the full fe-kaggle ladder). The held-out labels live verifier-side (answer-key
 isolation by construction, ADR 0005); the agent never sees them.
 
+**Shared data (test-set sizing).** Prepared once outside Verity (`tools/prepare_fe_data.py`, ADR
+0005) and passed to every cell. The agent's role gets `train.csv` plus a **small unlabelled `test.csv`
+sample** (default **200 rows**, `--agent-test-rows`) — a *wiring/format check only* (does the script
+run and write a well-formed predictions file over the real schema?). It is unscoreable (no labels),
+so the agent estimates balanced accuracy via **stratified cross-validation on the training data**. The
+verifier role holds the full `train.csv` + the reserved `holdout.csv` and its answer-key
+`holdout_labels.csv`, and the gate scores the agent's script on that **full** reserved hold-out. The
+small sample is the deliberate decision: it verifies wiring as well as the full set at a fraction of
+the cost and keeps a capable model from over-fitting to a peek at the test schema. Identical across
+all conditions, so it never confounds a rung.
+
 **Shared models:** `sonnet`, `gpt-5.4-mini` *(exact id TBD)*, local `qwen`. **N = 10 runs per cell.**
 → 5 conditions × 3 models × 10 = **150 ablation runs**.
 

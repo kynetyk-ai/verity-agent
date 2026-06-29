@@ -37,7 +37,11 @@ models in exp1, an adjusted cycle budget for the loop).
 ## Running it
 
 1. Prepare the dataset once (outside Verity, ADR 0005) with `tools/prepare_fe_data.py`, producing a
-   data dir with `agent/{train,test}.csv` and `verifier/{train,holdout,holdout_labels}.csv`.
+   data dir with `agent/{train,test}.csv` and `verifier/{train,holdout,holdout_labels}.csv`. The
+   agent's `test.csv` is a **small unlabelled sample** (`--agent-test-rows`, default **200**) — a
+   wiring/format check only; the agent estimates its score via stratified **CV on `train`**, while the
+   gate scores on the verifier's **full** reserved `holdout`. Keep `--agent-test-rows` identical
+   across phases so the agent's inputs never differ between conditions.
 2. Run each phase (needs Docker + the worker images — it launches real sibling containers):
 
    ```
