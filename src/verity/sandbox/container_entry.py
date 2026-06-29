@@ -50,8 +50,15 @@ def main() -> None:
     model = resolve_model(spec)
     # Shell-capable backend: the agent's native `execute` runs code IN the container (the container
     # is the isolation). This replaces the old custom run_shell tool.
+    # `inherit_env=True` so `execute` sees the container env — PATH + the image's pip config
+    # (PIP_TARGET=/work/pylib, TMPDIR=/work, PIP_NO_CACHE_DIR) — so a bare `pip install` works under
+    # the read-only mount. Without it the backend runs commands with an EMPTY env and pip dies on a
+    # read-only venv/cache (Errno 30) or the tiny /tmp (Errno 28). Blank the model API key so it is
+    # NOT exposed to the LLM-controlled shell (the runtime reads it from os.environ directly).
+    key_env = spec.key_env()
     backend = LocalShellBackend(
-        root_dir=Path(CONTAINER_WORKSPACE), virtual_mode=False, timeout=_EXECUTE_TIMEOUT_S
+        root_dir=Path(CONTAINER_WORKSPACE), virtual_mode=False, timeout=_EXECUTE_TIMEOUT_S,
+        inherit_env=True, env={key_env: ""} if key_env else None,
     )
     agent = build_deepagents_agent(
         model=model,
