@@ -33,6 +33,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from verity.logging import get_logger
+from verity.proc import communicate_capped
 from verity.provisioning.backend import (
     CompletedWorker,
     Labels,
@@ -297,11 +298,12 @@ class DockerBackend:
                 f"could not launch worker via {self.docker_bin!r}: {exc}"
             ) from exc
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+            # Capped capture (V3): a runaway submission can't OOM the host via an unbounded pipe.
+            out, err = await asyncio.wait_for(communicate_capped(proc), timeout=timeout_s)
         except TimeoutError:
             await self._kill(name)
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                await asyncio.wait_for(communicate_capped(proc), timeout=5.0)
             return CompletedWorker(exit_code=-1, stdout="", stderr="", timed_out=True)
         return CompletedWorker(
             exit_code=proc.returncode if proc.returncode is not None else -1,

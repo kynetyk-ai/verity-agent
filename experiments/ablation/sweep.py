@@ -104,6 +104,12 @@ class Budgets:
     sandbox_timeout_s: float = 1500.0
     code_timeout_s: float = 12960.0
     recursion_limit: int = 200
+    # The selection gate's noise-floor margin (audit C / V2): a submission must beat the incumbent
+    # by MORE than this to be accepted, so scoring noise of magnitude ~ε can neither manufacture a
+    # spurious "improvement" nor ratchet the bar past genuine progress. Shared across all conditions
+    # (it's part of "the gate", not a per-condition treatment); `always` conditions ignore it. Set
+    # to ~2–3× the measured ε (see docs/experimental-design.md §7) before a real sweep; 0.0 = off.
+    selection_margin: float = 0.0
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> Budgets:
@@ -112,6 +118,7 @@ class Budgets:
             sandbox_timeout_s=float(d.get("sandbox_timeout_s", 1500.0)),
             code_timeout_s=float(d.get("code_timeout_s", 12960.0)),
             recursion_limit=int(d.get("recursion_limit", 200)),
+            selection_margin=float(d.get("selection_margin", 0.0)),
         )
 
 
@@ -207,7 +214,13 @@ def build_task_request(
         type_name=spec.task_type,
         goal=spec.goal,
         sandbox=sandbox,
-        verifier=VerifierRequest(knobs={"accept_policy": condition.accept_policy}),
+        verifier=VerifierRequest(
+            knobs={
+                "accept_policy": condition.accept_policy,
+                # The noise-floor margin is shared across conditions (C/V2); `always` ignores it.
+                "margin": budgets.selection_margin,
+            }
+        ),
         policy=PolicyRequest(
             max_cycles=condition.max_cycles or budgets.max_cycles,
             stop_on_accept=condition.stop_on_accept,

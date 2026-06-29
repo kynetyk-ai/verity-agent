@@ -36,6 +36,7 @@ from verity.sandbox.container_io import (
     CONTAINER_OUTBOX,
     CONTAINER_WORKSPACE,
     CycleInput,
+    effective_recursion_limit,
     effective_step_budget,
 )
 from verity.sandbox.errors import SandboxError
@@ -114,7 +115,7 @@ class BackendSandboxDriver:
             system_prompt=system_prompt,
             user_message=user_message,
             operations=operations,
-            recursion_limit=self.recursion_limit,
+            recursion_limit=effective_recursion_limit(self.recursion_limit, self.step_budget),
             deadline_s=self.timeout_s,  # the soft wrap-up budget is the worker's hard timeout (5.2)
             tool_names=self.tool_names,
             step_budget=effective_step_budget(self.recursion_limit, self.step_budget),

@@ -46,6 +46,7 @@ from verity.logging import get_logger
 from verity.sandbox.descriptor import (
     RESERVED_PROPOSAL_NAME,
     RESERVED_TELEMETRY_NAME,
+    RESERVED_TRANSCRIPT_NAME,
     ProposalDescriptor,
 )
 from verity.sandbox.driver import SandboxDriver
@@ -178,16 +179,27 @@ class AgentSandbox:
             raise SandboxError(f"could not harvest the outbox: {exc}") from exc
         descriptor_bytes = harvested.pop(RESERVED_PROPOSAL_NAME, None)
         telemetry_bytes = harvested.pop(RESERVED_TELEMETRY_NAME, None)
+        # The step transcript is split out like the telemetry (so it never becomes a domain object);
+        # carried on the envelope for the control plane to content-address + reference (instrument).
+        transcript_bytes = harvested.pop(RESERVED_TRANSCRIPT_NAME, None)
         if descriptor_bytes is None:
+            # No proposal (e.g. a recursion/step-budget limit-end). Carry the transcript AND the
+            # telemetry (incl. stop_reason) on the err so the control plane can store + record them,
+            # a failed cycle stays debuggable, and the report names *why* it stopped.
             raise SandboxError(
                 "the agent produced no proposal "
-                f"(no {RESERVED_PROPOSAL_NAME} in the outbox); outbox had: {sorted(harvested)}"
+                f"(no {RESERVED_PROPOSAL_NAME} in the outbox); outbox had: {sorted(harvested)}",
+                transcript=transcript_bytes,
+                telemetry=telemetry_bytes,
             )
         descriptor = ProposalDescriptor.from_json(descriptor_bytes)
         # Telemetry is advisory (5.3b): a corrupt __telemetry__.json must never sink an otherwise
         # good proposal, so parse defensively and degrade to None on any decode error.
         agent_telemetry = _parse_telemetry(telemetry_bytes)
-        envelope = self._mint(descriptor, objects=harvested, agent_telemetry=agent_telemetry)
+        envelope = self._mint(
+            descriptor, objects=harvested,
+            agent_telemetry=agent_telemetry, transcript=transcript_bytes,
+        )
         log.info(
             "proposal_collected",
             op=descriptor.op_name,
@@ -205,6 +217,7 @@ class AgentSandbox:
         *,
         objects: Mapping[str, bytes],
         agent_telemetry: Mapping[str, object] | None = None,
+        transcript: bytes | None = None,
     ) -> ProposalEnvelope:
         """Mint the typed artifact + provenance edge from the agent's declaration (host-trusted)."""
         signature = self.schema.operation(descriptor.op_name)
@@ -236,6 +249,7 @@ class AgentSandbox:
             metadata=descriptor.metadata,
             objects=dict(objects),
             agent_telemetry=agent_telemetry,
+            transcript=transcript,
         )
 
     def _user_message(self, served: ServedContext) -> str:
@@ -243,9 +257,9 @@ class AgentSandbox:
         if served.tail.strip():
             parts.append(served.tail.strip())
         if served.feedback.strip():
-            parts.append("# Correction from your previous attempt\n" + served.feedback.strip())
+            parts.append("# Correction from the previous attempt\n" + served.feedback.strip())
         parts.append(
-            "Do the work, then call exactly one operation tool to submit your proposal. "
+            "Do the work, then call exactly one operation tool to submit the proposal. "
             "Reference the input artifact id(s) from the context above as `parents`."
         )
         return "\n\n".join(parts)

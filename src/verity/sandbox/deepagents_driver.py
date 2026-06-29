@@ -31,14 +31,16 @@ from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.errors import GraphRecursionError
 
 from verity.control_plane.registries import OperationSignature
 from verity.control_plane.workspace import ProvisionedWorkspace
 from verity.logging import get_logger
-from verity.sandbox.container_io import effective_step_budget
+from verity.sandbox.container_io import effective_recursion_limit, effective_step_budget
 from verity.sandbox.descriptor import (
     RESERVED_PROPOSAL_NAME,
     RESERVED_TELEMETRY_NAME,
+    RESERVED_TRANSCRIPT_NAME,
     ProposalDescriptor,
 )
 from verity.sandbox.errors import SandboxError
@@ -51,6 +53,7 @@ __all__ = [
     "StepBudgetMiddleware",
     "StepBudgetExceeded",
     "build_deepagents_agent",
+    "effective_recursion_limit",
     "effective_step_budget",
     "run_agent",
 ]
@@ -69,14 +72,17 @@ _DEADLINE_REMIND_FRACTION = 0.5  # start the recurring time-remaining awareness 
 # that converges early and never submits.
 _FINALIZE_RETRIES = 2
 _FINALIZE_NUDGE = (
-    "You have NOT submitted a proposal — nothing is recorded and this cycle will be wasted. Your "
-    "one deliverable this cycle is a proposal. Do it NOW: write every declared object file to "
-    "outbox/ and CALL YOUR PROPOSE/SUBMIT TOOL. Do not stop until that tool returns success."
+    "NO proposal submitted yet — nothing is recorded and this cycle is wasted without one. The one "
+    "deliverable this cycle is a proposal. Do it NOW: write every declared object file to "
+    "outbox/ and CALL THE PROPOSE/SUBMIT TOOL. Do not stop until that tool returns success."
 )
-# A failure diagnostic written to the outbox when the guard is exhausted and still no proposal: the
-# rendered message transcript, so a no-proposal cycle is debuggable from the worker staging dir. Not
-# harvested (no proposal → no harvest); it persists in the worker's rw/work/outbox on the host.
-_TRANSCRIPT_NAME = "__transcript__.json"
+# The rendered message transcript is written to the outbox EVERY cycle (not only on a no-proposal
+# failure) under the reserved name, harvested like the telemetry, and content-addressed into the
+# store — the step-level record the experiments read back. See ``RESERVED_TRANSCRIPT_NAME``.
+_TRANSCRIPT_NAME = RESERVED_TRANSCRIPT_NAME
+# Per-field byte cap in the transcript (message content / tool args / tool result) — a runaway tool
+# dump (a CSV echo, a stack trace) is truncated so it can't bloat the content-addressed store.
+_TRANSCRIPT_FIELD_CAP = 8192
 
 
 class DeadlineMiddleware(AgentMiddleware):
@@ -137,8 +143,8 @@ class DeadlineMiddleware(AgentMiddleware):
             "messages": [
                 HumanMessage(content=(
                     f"Time almost up: ~{remaining}s of {int(self._deadline_s)}s left. STOP "
-                    "exploring and finalize NOW, even if imperfect: build your best, "
-                    "properly-shaped proposal and submit it by CALLING YOUR PROPOSE/SUBMIT "
+                    "exploring and finalize NOW, even if imperfect: build the best, "
+                    "properly-shaped proposal and submit it by CALLING THE PROPOSE/SUBMIT "
                     "TOOL. Doing the work but never calling the tool records nothing — submit now."
                 ))
             ]
@@ -172,8 +178,8 @@ class DeadlineMiddleware(AgentMiddleware):
         remaining = max(0, int(self._deadline_s - elapsed))
         return (
             f"[time budget] ~{remaining}s of {int(self._deadline_s)}s remaining this cycle. "
-            "Budget your remaining time; don't start work (long trainings, broad searches) you "
-            "can't finish and submit before the deadline."
+            "Budget the remaining time; do not start work (long trainings, broad searches) that "
+            "cannot finish and submit before the deadline."
         )
 
 
@@ -211,7 +217,7 @@ class StepBudgetMiddleware(AgentMiddleware):
                 "messages": [
                     HumanMessage(content=(
                         f"Step budget almost spent: {self._steps} of {self._max} model steps used. "
-                        "Stop exploring now — finalize and submit your best proposal immediately."
+                        "Stop exploring now — finalize and submit the best proposal immediately."
                     ))
                 ]
             }
@@ -271,24 +277,47 @@ def run_agent(
     to the reserved ``__telemetry__.json`` there, harvested back to the host like the proposal
     descriptor (ROADMAP 5.3b). Best-effort: a model without ``usage_metadata`` yields zeros / nulls.
 
+    The run is **streamed**, not ``invoke``-d, so the accumulated message state is recoverable even
+    when the run hits a recursion / step-budget limit: ``GraphRecursionError`` does not return the
+    messages, so an ``invoke`` that raises would lose the whole trace — the case we most want
+    to inspect. We keep the last streamed state and persist diagnostics from it before re-raising.
+
     The **finalize guard**: a ReAct agent ends as soon as the model returns a message with no tool
     call, with no structural requirement that it proposed first. If the loop ends with no proposal
     in the outbox, re-invoke with a salient "submit now" nudge up to ``_FINALIZE_RETRIES`` times
     (the accumulated history carried forward), so an agent that simply converged without delivering
     gets a clear, bounded chance to. A guard re-invoke is best-effort — if it raises (e.g. a step or
-    recursion limit), we stop and let the no-proposal outcome stand. When the guard is exhausted and
-    there is still no proposal, the rendered transcript is persisted for debugging.
+    recursion limit), we stop and let the no-proposal outcome stand. The telemetry + rendered
+    transcript are persisted EVERY cycle (success, normal no-proposal, AND a recursion/budget
+    limit-end), harvested + content-addressed by the host like the proposal descriptor (5.3b).
     """
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": user_message}]},
-        {"recursion_limit": recursion_limit},
-    )
+    inputs = {"messages": [{"role": "user", "content": user_message}]}
+    config = {"recursion_limit": recursion_limit}
+    result: Any = {"messages": []}
+    try:
+        for state in agent.stream(inputs, config, stream_mode="values"):
+            result = state  # keep the latest full state (messages survive an exhaustion below)
+    except (GraphRecursionError, StepBudgetExceeded):
+        # Budget/recursion exhausted — a graceful, EXPECTED stop (#103). We still have the streamed
+        # state, so persist diagnostics from it BEFORE re-raising, so a no-proposal limit-end cycle
+        # is still debuggable. container_entry catches the re-raise, annotates the stop reason, and
+        # exits 0; the host then harvests this transcript like any other.
+        if outbox is not None:
+            _write_diagnostics(result, outbox)
+        raise
     if outbox is not None:
         result = _finalize_guard(agent, result, outbox, recursion_limit=recursion_limit)
+        _write_diagnostics(result, outbox)
+
+
+def _write_diagnostics(result: Any, outbox: Path) -> None:
+    """Persist the loop's telemetry + step transcript to the outbox (best-effort; never fatal)."""
+    try:
         telemetry = _extract_telemetry(result)
         (outbox / RESERVED_TELEMETRY_NAME).write_bytes(json.dumps(telemetry).encode("utf-8"))
-        if not (outbox / RESERVED_PROPOSAL_NAME).is_file():
-            _persist_transcript(result, outbox)
+    except OSError as exc:  # diagnostics are best-effort — never let them fail/mask the cycle
+        log.warning("telemetry_persist_failed", error=str(exc))
+    _persist_transcript(result, outbox)  # already OSError-guarded
 
 
 def _finalize_guard(
@@ -313,23 +342,45 @@ def _finalize_guard(
 
 
 def _persist_transcript(result: Any, outbox: Path) -> None:
-    """Write the rendered message transcript to the outbox — a no-proposal failure diagnostic.
+    """Write the rendered step transcript to the outbox — the per-cycle instrumentation record.
 
-    Not harvested (no proposal → no harvest); it persists in the worker's staging ``rw/work/outbox``
-    on the host, so a cycle that ended without delivering can be read back after the worker is gone.
+    Captures, per message: an ``index``, the message ``type`` and ``content``, the tool calls
+    (name **+ arguments**), and any tool ``result`` — enough to reconstruct the agent's trajectory
+    (what it did, in what order, with what inputs/outputs). Large ``content``/args/results are
+    truncated to ``_TRANSCRIPT_FIELD_CAP`` bytes (a runaway tool dump can't bloat the store); the
+    write is best-effort (a transcript must never fail a cycle). The host harvests it like the
+    telemetry and content-addresses it into the object store.
     """
     messages = result.get("messages", []) if isinstance(result, dict) else []
-    rendered = []
-    for m in messages:
-        rendered.append({
+    rendered: list[dict[str, Any]] = []
+    for index, m in enumerate(messages):
+        tool_calls = [
+            {"name": tc.get("name"), "args": _cap(tc.get("args"))}
+            for tc in (getattr(m, "tool_calls", None) or [])
+        ]
+        entry: dict[str, Any] = {
+            "index": index,
             "type": type(m).__name__,
-            "content": getattr(m, "content", None),
-            "tool_calls": [tc.get("name") for tc in (getattr(m, "tool_calls", None) or [])],
-        })
+            "content": _cap(getattr(m, "content", None)),
+        }
+        if tool_calls:
+            entry["tool_calls"] = tool_calls
+        # A ToolMessage carries the tool's *result*; record it (capped) so the loop is legible.
+        if type(m).__name__ == "ToolMessage" and getattr(m, "name", None) is not None:
+            entry["tool_name"] = m.name
+        rendered.append(entry)
     try:
         (outbox / _TRANSCRIPT_NAME).write_bytes(json.dumps(rendered, default=str).encode("utf-8"))
-    except OSError as exc:  # diagnostics are best-effort — never let them fail the cycle
+    except OSError as exc:  # instrumentation is best-effort — never let it fail the cycle
         log.warning("transcript_persist_failed", error=str(exc))
+
+
+def _cap(value: Any, limit: int = _TRANSCRIPT_FIELD_CAP) -> Any:
+    """Truncate an overlong rendered field so a runaway tool dump can't bloat the transcript."""
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    if len(text) <= limit:
+        return value
+    return text[:limit] + f"…[truncated {len(text) - limit} chars]"
 
 
 def _extract_telemetry(result: Any) -> dict[str, Any]:
@@ -404,7 +455,8 @@ class DeepAgentsInProcessDriver:
         try:
             await asyncio.to_thread(
                 run_agent, agent, user_message,
-                recursion_limit=self._recursion_limit, outbox=workspace.outbox(),
+                recursion_limit=effective_recursion_limit(self._recursion_limit, self._step_budget),
+                outbox=workspace.outbox(),
             )
         except Exception as exc:
             # A runaway loop (GraphRecursionError) or any in-loop failure becomes a cycle-level
@@ -436,7 +488,7 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
         if not isinstance(payload, dict) or not payload:
             return "rejected: payload must be a non-empty JSON object"
         if not parents:
-            return "rejected: parents must include the input artifact id(s) from your context"
+            return "rejected: parents must include the input artifact id(s) from the context"
         # Enforceable: every object the payload declares must actually be in outbox/ — catch a
         # missing/misplaced file in-cycle (a fixable rejected, no gate cycle spent) instead of a
         # runs-clean reject downstream. Generic: the keys come from the op, not hardcoded names.
@@ -446,7 +498,7 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
                 if p.is_file() and p.name != RESERVED_PROPOSAL_NAME
             ) if outbox.is_dir() else []
             return (
-                f"rejected: you declared {', '.join(missing)} but no such file is in outbox/. "
+                f"rejected: declared {', '.join(missing)} but no such file is in outbox/. "
                 f"Write the file(s) to outbox/ then call again. "
                 f"outbox/ now has: {present or 'nothing'}."
             )
@@ -457,8 +509,8 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
         # `tested` is a self-attestation (we cannot verify it) — a nudge, not a gate. Submitting an
         # untested script is the top cause of an outright reject, so we warn when it is not set.
         warn = "" if tested else (
-            " NOTE: tested=false — you did not attest that you RAN this end-to-end. If you have "
-            "not run it (your execute tool), it may fail the gate — run it first next time."
+            " NOTE: tested=false — no attestation that this was RUN end-to-end. If it has not been "
+            "run (via the execute tool), it may fail the gate — run it first next time."
         )
         return (
             f"proposal recorded ({op_name} -> {out_type}); "
@@ -469,16 +521,16 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
     propose.__qualname__ = op_name
     propose.__doc__ = (
         f"Propose a {out_type} via {op_name} (inputs: {in_types}). Call once, last.\n\n"
-        f"Before you call this:\n"
+        f"Before calling this:\n"
         f"  1. Write every declared object file to outbox/ (this tool rejects the call if a file\n"
         f"     the payload names is not there).\n"
-        f"  2. Actually RUN your script end-to-end with your execute tool and confirm its output\n"
+        f"  2. Actually RUN the script end-to-end with the execute tool and confirm its output\n"
         f"     — a crash, timeout, or missing output is an outright reject, no partial credit.\n\n"
         f"Args:\n"
-        f"    parents: ids of the input artifact(s) of type {in_types}, taken from your context.\n"
+        f"    parents: ids of the input artifact(s) of type {in_types}, from the context above.\n"
         f"    payload: the {out_type} payload as a JSON object (see domain instructions / spec).\n"
         f"    rationale: brief note on how/why (audit trail; never shown to the verifier).\n"
-        f"    tested: set true ONLY after you actually ran the script end-to-end and saw its\n"
-        f"        output. Attestation only (not verified) — but untested is what keeps failing."
+        f"    tested: set true ONLY after the script was run end-to-end and its output seen.\n"
+        f"        Attestation only (not verified) — but untested is what keeps failing."
     )
     return propose

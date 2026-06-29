@@ -31,6 +31,8 @@ check: lint typecheck test
 # Files cross via the exchange: drop inputs into the exchange's in/ dir, find exports under out/.
 cp-serve:
     docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
+    # FE sandbox extends the base with the CPU ML stack so FE agents can self-test (build it AFTER).
+    docker build -f Dockerfile.fe-sandbox -t verity-fe-sandbox:latest .
     docker build -f Dockerfile.coderunner -t verity-code-runner:latest .
     docker build -f Dockerfile.verifier -t verity-verifier:latest .
     docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
@@ -39,7 +41,8 @@ cp-serve:
     # --env-file .env: compose otherwise resolves ${KAGGLE_*} against infra/.env (the compose-file's
     # project dir), not repo-root .env, so the daemon would launch with EMPTY Kaggle creds and fail
     # only later at the submission gate. Point compose at the repo-root .env explicitly.
-    docker compose --env-file .env -f infra/compose.daemon.yml up -d
+    # Use the Compose V2 plugin (`docker compose`) if present, else the standalone `docker-compose`.
+    C="$(docker compose version >/dev/null 2>&1 && echo 'docker compose' || echo docker-compose)"; $C --env-file .env -f infra/compose.daemon.yml up -d
 
 # Run a `verity` client subcommand against the standing daemon, e.g. `just cp catalog`.
 cp *args:
@@ -47,4 +50,4 @@ cp *args:
 
 # Stop and remove the standing control-plane daemon (volumes/exchange persist on the host).
 cp-down:
-    docker compose -f infra/compose.daemon.yml down
+    C="$(docker compose version >/dev/null 2>&1 && echo 'docker compose' || echo docker-compose)"; $C -f infra/compose.daemon.yml down

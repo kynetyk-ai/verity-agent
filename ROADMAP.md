@@ -351,7 +351,11 @@ Harden the loop and make it measurable before scaling models or splitting servic
   workspace-contract / orientation version into the store (with an orientation digest) like the
   schema version (§3.4). **#13** enforces JSON-object proposal payloads at intake (+ an optional
   per-operation required-keys schema). A per-cycle **step budget** (`StepBudgetMiddleware`) nudges
-  then hard-stops a non-converging agent. "A failed step is recorded, not fatal" is a property test.
+  then hard-stops a non-converging agent — a **fixed model-step default** (`_DEFAULT_STEP_BUDGET`,
+  warn at 0.8×) with the LangGraph `recursion_limit` clamped **up** to a super-step backstop
+  (`effective_recursion_limit` = `step_budget × headroom`), so the graceful `StepBudgetExceeded` fires
+  before the ungraceful `GraphRecursionError` (#103). "A failed step is recorded, not fatal" is a
+  property test.
   Durable failure-provenance (recording failed cycles in the store, not just the in-memory
   `RunReport`) is split out as **#32**.
   - *Deferred — LLM-judge reproducibility (**#11**, §5.8).* The `llm_judge` primitive + `ModelClient`
@@ -712,12 +716,39 @@ the genericity guard and the sandbox byte-provenance isolation invariant hold th
   an entry point, with no control-plane rebuild**. Unblocks the clean multi-tenancy engine (a tenant's
   task/verifier set becomes deploy-time config, not an image).
 
+### Pre-ablation audit hardening (2026-06-29) 🚧
+
+Remediation of `docs/audit/pre-ablation-audit.md` ahead of the ablation runs. **Landed:** restart-safe
+score baseline (the verifier reads incumbents' durably-recorded scores from `VerifierRequest.scores`,
+so a verifier restart can't collapse the bar to 0 and break monotonicity — G3); control-plane
+degrade-don't-crash on every boundary (typed store-IO error, base-`TransportError`→`GateUnavailable`,
+a `run_cycle` catch-all that records+regenerates, isolated child-harvest — S1–S3); verifier kernel
+guards (no hard-less/empty pipeline → no silent accept G1; single authoritative supersession G2;
+payload-key allowlist at intake so free-text can't ride to a gate R1); answer-key isolation backstop
+(content-hash guard + agent `test.csv` target-strip — I1/I2); always-on harvested **transcript**
+instrumentation referenced from the RunReport (F); capped subprocess output (`verity.proc`, V3); and
+the selection-margin noise-floor lever wired through the sweep (`Budgets.selection_margin`, C/V2).
+
+- *Deferred (tracked here / file issues):*
+  - **pip-freeze / resolved-env recording (V6).** Record the installed dependency set per run
+    (auditable drift) rather than pinning a closed wheelhouse (which would reject legitimate
+    submissions). Belongs with the code-runner config work below.
+  - **ε measurement + the `selection_margin` value (C).** Operator pre-flight: measure the scorer's
+    run-to-run balanced-accuracy spread and set the margin (see `docs/experimental-design.md` §7/§8).
+  - **fe-kaggle production should-fixes:** offline run-phase (network only for `pip`, V1) and optional
+    single-thread determinism — out of the ablation path; the public-leaderboard exfil risk is real
+    there. Part of the code-runner hardening item below.
+  - **Nice-to-knows:** harvest a complete proposal on a hard wall-clock kill (F4); reap orphaned
+    code-runner containers if the verifier crashes mid-run (V5); a two-directional bundle-consistency
+    assertion (G5); bound the kaggle `_run_cache` growth (G7).
+
 ### Woven through Phases 6–7
 
 - **Code-runner hardening / generalization** — a declarative runner config (image, network policy,
   resource + output caps, mount layout, deps strategy), an offline / pinned-wheels install option to
   reclaim reproducibility, and a cleaner validity-rung vs scoring-rung split. Revisits the accepted
-  network-on tradeoff.
+  network-on tradeoff. *(The output cap — V3 — and the network/deps items above intersect this; fold
+  the deferred V1/V6 work in here.)*
 - **Configuration guide + a Claude Agent Skill for setting up the system** — now that the configuration
   surface has stabilized through Phase 6, make standing up a new task / domain / model low-friction.
   (a) A **configuration guide** in `docs/` covering the whole surface: building a domain (schema +

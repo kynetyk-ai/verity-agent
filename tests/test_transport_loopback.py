@@ -170,12 +170,14 @@ def test_setup_ships_data_and_builds_the_verifier_before_dispatch() -> None:
     assert built[0].params == {"competition": "demo", "reserved_labels": {"7": "x"}}
 
 
-def test_dispatch_before_setup_is_a_transport_error() -> None:
-    # A builder-backed server has no impl until `setup`; dispatching first must fail informatively,
-    # not crash with an AttributeError.
+def test_dispatch_before_setup_degrades_to_gate_unavailable() -> None:
+    # A builder-backed server has no impl until `setup`; dispatching first must fail informatively
+    # (not an AttributeError). A reachable-but-misbehaving verifier is a *recoverable* boundary
+    # failure (GateUnavailable) so the run degrades this cycle rather than aborting (S2) — the
+    # informative message is preserved, and a persistent failure is bounded by the failure cap.
     server = VerifierServer(builder=lambda _setup: _RecordingVerifier())
     remote = RemoteVerifier(LoopbackTransport(server.handle))
-    with pytest.raises(TransportError, match="not set up yet"):
+    with pytest.raises(GateUnavailable, match="not set up yet"):
         asyncio.run(remote.dispatch(VerifierRequest(proposal=_ARTIFACT)))
 
 
@@ -230,10 +232,13 @@ def test_sandbox_error_crosses_the_wire_as_itself() -> None:
         asyncio.run(remote.collect_proposal())
 
 
-def test_unknown_error_degrades_to_transport_error() -> None:
-    # An error kind the envelope doesn't know about must not vanish — it surfaces as TransportError.
+def test_unknown_error_degrades_to_gate_unavailable() -> None:
+    # An error kind the envelope doesn't know about must not vanish. At the transport layer it
+    # surfaces as TransportError; the RemoteVerifier then maps that to GateUnavailable so a
+    # reachable-but-misbehaving verifier degrades the cycle instead of aborting the run (S2). The
+    # original message is preserved end to end.
     remote = _remote_verifier(_RecordingVerifier(raises=ValueError("something odd")))
-    with pytest.raises(TransportError, match="something odd"):
+    with pytest.raises(GateUnavailable, match="something odd"):
         asyncio.run(remote.dispatch(VerifierRequest(proposal=_ARTIFACT)))
 
 

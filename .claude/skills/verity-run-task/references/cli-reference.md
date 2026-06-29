@@ -66,7 +66,7 @@ verity create --request-file task.json \
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--type` | — | task type from `verity catalog` (e.g. `code`, `fe-kaggle`); required unless `--request-file` is given |
+| `--type` | — | task type from `verity catalog` (e.g. `code`, `fe-holdout`, `fe-kaggle`); required unless `--request-file` is given |
 | `--request-file` | — | path to a full `TaskRequest` JSON (e.g. a task package's `task.json`); supersedes the request-shaping flags — only `--file`/`--goal` still apply |
 | `--file` | — | `ROLE:NAME=HANDLE` — route a pre-prepared input (from `verity ingest`) to a worker role; **repeatable**. Data prep is yours (ADR 0005); the CP routes opaque blobs. |
 | `--goal` | `""` | the run goal (task instructions) |
@@ -94,10 +94,30 @@ verity create --request-file task.json \
   --file agent:train.csv={h1} --file verifier:holdout_labels.csv={h2} ...   # -> {task_id}
 ```
 
-`fe-kaggle` (the real-leaderboard gate) needs exactly this: prepare the bundles with
-`tools/prepare_fe_data.py` (or let `prototyping_datasci_test/run.sh` do it), and its `task.json`
-carries `verifier.knobs.competition` (the slug); the daemon must have `KAGGLE_USERNAME`/`KAGGLE_KEY`
-in its env (setup.md → *Kaggle creds*). Read its live contract with `verity catalog --type fe-kaggle`.
+The `TaskRequest` JSON shape (a `--request-file`; committed examples under
+`prototyping_datasci_test/task*.json`):
+
+```jsonc
+{
+  "type_name": "fe-holdout",                 // a catalog task type
+  "goal": "…the run goal…",
+  "sandbox": {                               // model + per-worker budgets (all optional)
+    "model": "qwen3.6:27b-coding-mxfp8",     // bare literal name WHEN base_url is set (else provider:model)
+    "base_url": "http://host.docker.internal:11434/v1",
+    "recursion_limit": 300, "sandbox_timeout_s": 2400, "code_timeout_s": 1800
+  },
+  "verifier": { "knobs": { "accept_policy": "always" } },  // fe-kaggle uses knobs.competition (the slug)
+  "policy": { "max_cycles": 1, "stop_on_accept": false, "provisioning": "none" },
+  "data": {}                                 // role files come from the repeated --file flags
+}
+```
+
+`fe-holdout` (local hold-out, **no creds**) and `fe-kaggle` (real leaderboard) both use the role-file
+flow: prepare the bundles with `uv run python -m tools.prepare_fe_data …` (run as a MODULE; or let
+`prototyping_datasci_test/run.sh` do it). `fe-holdout`'s verifier role is a subset
+(`train.csv` + `holdout.csv` + `holdout_labels.csv`); `fe-kaggle` additionally needs
+`verifier.knobs.competition` (the slug) and `KAGGLE_USERNAME`/`KAGGLE_KEY` in the daemon env
+(setup.md → *Kaggle creds*). Read the live contract with `verity catalog --type <name>`.
 
 ## `run` — start a run (async) → a `run_id`
 
@@ -120,6 +140,30 @@ verity export <run_id>    # writes durable artifacts to <exchange>/out/<run_id>/
 Poll pattern: call `status` until it is `done` or `failed`, then read `results`. A run can finish with a
 mix of outcomes (`accepted` / `revised` / `rejected` / `sandbox_failed`) — a failed cycle is **recorded
 and fed back, not fatal** (degrade-don't-crash).
+
+### Pulling the agent transcript (or any object by content hash)
+
+`results` includes, per cycle, a `transcript_ref` — the content hash of the agent's rendered
+**step transcript** (message types, content, tool calls + args, results; the step-by-step record).
+There is **no CLI/HTTP verb for a bare object by hash yet**, and `export` only writes *declared
+artifact* objects — so fetch the transcript straight from the **per-task** object store by its hash
+(the store is keyed by `task_id`, so you need both):
+
+```bash
+R=$(verity results <run_id>)
+TASK=$(echo "$R" | python3 -c "import sys,json;print(json.load(sys.stdin)['task_id'])")
+HASH=$(echo "$R" | python3 -c "import sys,json;print(json.load(sys.stdin)['report']['cycles'][0]['transcript_ref'])")
+docker exec verity-cp cat /var/lib/verity/tasks/$TASK/objects/$HASH   # host: ${VERITY_STORE_HOST:-/tmp/verity-store}/tasks/$TASK/objects/$HASH
+```
+
+The transcript is a JSON array; from a repo checkout, pipe it through the standalone renderer for a
+readable Markdown view (`--full` to disable truncation, `-o file.md` to write):
+
+```bash
+docker exec verity-cp cat /var/lib/verity/tasks/$TASK/objects/$HASH | python tools/render_transcript.py -
+```
+
+(Known gap — a `verity object <run_id> <hash>` verb / `GET /objects/{hash}` route is tracked.)
 
 ---
 

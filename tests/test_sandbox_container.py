@@ -64,16 +64,33 @@ def test_cycle_input_roundtrips() -> None:
     assert back.operations[0].object_payload_keys == ("entrypoint", "requirements")
 
 
-def test_effective_step_budget_derives_a_graceful_default() -> None:
-    # #103: an explicit step budget wins; an unset one derives a default strictly below the
-    # framework recursion limit, so the typed StepBudgetExceeded fires before GraphRecursionError.
-    from verity.sandbox.container_io import effective_step_budget
+def test_effective_step_budget_is_a_fixed_model_step_default() -> None:
+    # #103: an explicit step budget wins; an unset one is a FIXED default in MODEL-STEP units (NOT a
+    # fraction of recursion_limit, which counts super-steps — the bug that defeated the safety net).
+    from verity.sandbox.container_io import _DEFAULT_STEP_BUDGET, effective_step_budget
 
     assert effective_step_budget(300, 250) == 250  # explicit override
-    derived = effective_step_budget(300, None)
-    assert derived == 240 and derived < 300  # derived default, below the framework limit
-    assert effective_step_budget(80, None) == 64
-    assert effective_step_budget(1, None) >= 1  # never zero
+    # The default no longer depends on recursion_limit (was 0.8*recursion_limit; now fixed).
+    assert effective_step_budget(300, None) == _DEFAULT_STEP_BUDGET == 80
+    assert effective_step_budget(80, None) == 80
+    assert effective_step_budget(1, None) == 80
+
+
+def test_effective_recursion_limit_is_a_backstop_clamped_above_the_step_budget() -> None:
+    # The recursion backstop must sit ABOVE the model-step budget so the graceful StepBudgetExceeded
+    # fires before the ungraceful GraphRecursionError — by construction, clamped UP only.
+    from verity.sandbox.container_io import (
+        _RECURSION_HEADROOM,
+        effective_recursion_limit,
+        effective_step_budget,
+    )
+
+    assert effective_recursion_limit(200, None) == 640  # 80*8 floor raises the 200 default
+    assert effective_recursion_limit(800, None) == 800  # explicit higher request honored (kept)
+    assert effective_recursion_limit(300, 250) == 2000  # 250*8 — sized to the explicit step budget
+    # Invariant: the backstop is always >= step_budget * headroom, for any inputs.
+    for r, b in [(80, None), (200, None), (300, 250), (1000, 50), (50, None)]:
+        assert effective_recursion_limit(r, b) >= effective_step_budget(r, b) * _RECURSION_HEADROOM
 
 
 def test_a_missing_docker_binary_degrades_to_a_sandbox_error() -> None:

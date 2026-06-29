@@ -118,7 +118,7 @@ Work independently and diligently to complete the task provided:
 - **Do not** ask clarifying questions, request user input, or wait for permission. Execute
   independently.
 
-Your workspace has a fixed layout (read-only inputs; writable-ephemeral working areas):
+The provided workspace has a fixed layout (read-only inputs; writable-ephemeral working areas):
 {layout}
 
 - The required output schema for the proposal lives under spec/.
@@ -126,8 +126,7 @@ Your workspace has a fixed layout (read-only inputs; writable-ephemeral working 
   do not rely on any other path.
 - Self-verify the shape of the proposal and if possible, test the proposal prior to submission.
 - Submit the proposal using the tool provided and within the time allotted.
-- If you receive instructions to correct a previously submitted proposal, follow them
-  precisely.
+- If given instructions to correct a previously submitted proposal, follow them precisely.
 """
 
 

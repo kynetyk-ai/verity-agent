@@ -24,6 +24,7 @@ What it does (the §3.4 API contract):
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -73,6 +74,7 @@ from verity.control_plane.store import (
     ObjectRef,
     Provenance,
     SqliteStore,
+    StoreError,
     default_clock,
 )
 from verity.logging import get_logger
@@ -129,6 +131,8 @@ class IntakeResult:
     harvested: dict[str, ObjectRef] = field(default_factory=dict)
     sandbox_error: str | None = None
     gate_error: str | None = None
+    # The content-addressed reference to this cycle's step transcript (instrumentation), or None.
+    transcript_ref: ObjectRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,17 +351,36 @@ class ControlPlane:
             )
         objects = {name: data for name, data in envelope.objects.items() if name in declared}
 
+        # R1 — payload-key allowlist. The payload reaches the verifier verbatim (it *is*
+        # request.proposal), so an agent could otherwise smuggle free-text self-justification past
+        # the presence-only shape check into a gate's input, defeating §10 independence the moment a
+        # gate reads payload text. Where the operation declares its payload keys, keep ONLY those —
+        # the structural mirror of the undeclared-object drop above. (An operation that declares no
+        # payload keys has no schema to enforce, so its payload is left untouched.)
+        clean_payload = envelope.artifact.payload
+        signature = task.config.schema.operation(envelope.operation.op_name)
+        if signature is not None and isinstance(clean_payload, dict):
+            allowed = set(signature.required_payload_keys) | set(signature.object_payload_keys)
+            extra = sorted(k for k in clean_payload if k not in allowed) if allowed else []
+            if extra:
+                log.warning(
+                    "undeclared_payload_keys_dropped",
+                    task_id=task_id, artifact_id=envelope.artifact.id, dropped=extra,
+                )
+                clean_payload = {k: v for k, v in clean_payload.items() if k in allowed}
+
         # Harvest the declared objects BEFORE the sandbox is regenerated, content-addressing each
         # into the object store (§3.4). Harvest-before-teardown is the hard ordering constraint.
         harvested = {name: self._store.put_object(data) for name, data in objects.items()}
 
         # Record the object refs as a control-plane-owned **sidecar** on the artifact (§4.1, ADR
-        # 0001) — the domain payload is stored verbatim; the control plane never reaches into it.
-        artifact = (
-            replace(envelope.artifact, objects=tuple(harvested.items()))
-            if harvested
-            else envelope.artifact
-        )
+        # 0001) — the domain payload is stored verbatim (modulo the allowlist strip above); the
+        # control plane never reaches into the surviving payload values.
+        artifact = envelope.artifact
+        if clean_payload is not envelope.artifact.payload:
+            artifact = replace(artifact, payload=clean_payload)
+        if harvested:
+            artifact = replace(artifact, objects=tuple(harvested.items()))
 
         # The agent's rationale is provenance/context — stored here, NEVER sent to a gate (§10).
         if envelope.metadata:
@@ -376,9 +399,40 @@ class ControlPlane:
         # On acceptance, harvest the domain's child artifacts (e.g. one Feature per declared
         # feature, §12): each is an inspectable node, committed through its own declared gate.
         if result.outcome is CommitOutcome.ACCEPTED and task.config.harvester is not None:
-            await self._harvest_children(task, artifact)
+            try:
+                await self._harvest_children(task, artifact)
+            except Exception as exc:  # noqa: BLE001 — S3: the parent is ALREADY committed ACCEPTED.
+                # A child-harvest failure (a child gate going unavailable, a store-IO error) must
+                # not propagate out and let `run_cycle` rewrite this cycle's outcome into a failure
+                # — that would desync the store (accepted) from the RunReport (gate_error) and
+                # wrongly bump the consecutive-failure counter. Record it; keep the parent's result.
+                log.warning(
+                    "harvest_children_failed", task_id=task_id, parent_id=artifact.id,
+                    error=str(exc),
+                )
         log.info("proposal_committed", task_id=task_id, outcome=result.outcome.value)
-        return IntakeResult(entered_protocol=True, commit=result, harvested=harvested)
+        transcript_ref = self._store_transcript(envelope.transcript)
+        return IntakeResult(
+            entered_protocol=True, commit=result, harvested=harvested,
+            transcript_ref=transcript_ref,
+        )
+
+    def _store_transcript(self, transcript: bytes | None) -> ObjectRef | None:
+        """Content-address a cycle's step transcript into the object store (instrumentation).
+
+        Best-effort and never fatal: a transcript is an observation, not part of the artifact or its
+        verdict, so a store failure here must not sink an otherwise-good cycle. Returns the object
+        reference for the cycle's report, or None when there is no transcript (or the write failed).
+        Used both for a successful proposal (``envelope.transcript``) and a failed/no-proposal cycle
+        (``SandboxError.transcript`` — e.g. a recursion/budget limit-end), so failures stay legible.
+        """
+        if transcript is None:
+            return None
+        try:
+            return self._store.put_object(transcript)
+        except StoreError as exc:  # instrumentation is best-effort — degrade to no reference
+            log.warning("transcript_store_failed", error=str(exc))
+            return None
 
     async def _harvest_children(self, task: TaskState, parent: Artifact) -> None:
         """Mint the domain's harvested children from an accepted parent and gate each (§4.1, §12).
@@ -439,10 +493,14 @@ class ControlPlane:
 
         def dispatch(artifact: Artifact) -> VerdictBundle:
             declared = task.config.gated_types.resolve(artifact.type) or frozenset()
+            store_slice = resolve_declared_slice(self._store, artifact, declared)
             request = VerifierRequest(
                 proposal=artifact,
-                store_slice=resolve_declared_slice(self._store, artifact, declared),
+                store_slice=store_slice,
                 objects=bound_objects,
+                # Hand the verifier its own durably-recorded measurements for the slice, so a gate's
+                # "best prior" baseline survives a verifier restart instead of resetting to 0 (G3).
+                scores=self._recorded_scores(store_slice),
             )
             future = asyncio.run_coroutine_threadsafe(task.verifier.dispatch(request), loop)
             try:
@@ -466,6 +524,27 @@ class ControlPlane:
             clock=self._clock,
             refine_exhausted=refine_exhausted,
         )
+
+    def _recorded_scores(
+        self, store_slice: tuple[Artifact, ...]
+    ) -> dict[str, dict[str, float]]:
+        """The control plane's durably-recorded per-gate scores for the slice ({id: {gate: score}}).
+
+        Reconstructed from the stored :class:`Decision` rows so a gate can read its prior
+        measurements from the (durable) control plane rather than its own in-process ledger — which
+        a verifier restart mid-run would have wiped (G3). Domain-agnostic: the control plane copies
+        the gate name + score verbatim without interpreting either.
+        """
+        recorded: dict[str, dict[str, float]] = {}
+        for artifact in store_slice:
+            gate_scores = {
+                d.gate: d.score
+                for d in self._store.decisions_for(artifact.id)
+                if d.score is not None
+            }
+            if gate_scores:
+                recorded[artifact.id] = gate_scores
+        return recorded
 
     def _count_lineage_refines(self, operation: Operation) -> int:
         """How many ancestors of this (revising) proposal are ``revised`` — the refine depth (§3.4).
@@ -514,48 +593,78 @@ class ControlPlane:
         task = self._task(task_id)
         task.run_context.cycle += 1  # advance the cycle stamp so this cycle's workers are labelled
         started = self._timer()
-        served = await self.serve_context(task_id, goal=goal, feedback=feedback)
-        context = _context_metrics(served)  # F4: served-context size + provisioned-object bytes
-        sandbox_started = self._timer()
+        context: tuple[int, int] | None = None
+        # The whole cycle runs under a final catch-all (below): the two inner handlers classify the
+        # *expected* boundary failures (SandboxError, GateUnavailable); anything else predictable —
+        # a store-IO error harvesting objects or assembling context, a verifier handoff neither
+        # typed error covered — is still a recorded failed cycle with the workspace regenerated,
+        # never an un-recorded run abort ("a failed step is recorded, not fatal", §3.4).
         try:
-            envelope = await task.sandbox.collect_proposal()
-        except SandboxError as exc:
+            served = await self.serve_context(task_id, goal=goal, feedback=feedback)
+            context = _context_metrics(served)  # F4: served-context size + provisioned-object bytes
+            sandbox_started = self._timer()
+            try:
+                envelope = await task.sandbox.collect_proposal()
+            except SandboxError as exc:
+                sandbox_ms = (self._timer() - sandbox_started) * 1000
+                log.warning("sandbox_cycle_failed", task_id=task_id, error=str(exc))
+                # Salvage the transcript AND telemetry a failed/no-proposal cycle carries (e.g. a
+                # recursion/budget limit-end) so it stays debuggable and the report names *why* it
+                # stopped (stop_reason). Store + reference / record before discarding the workspace.
+                # Best-effort; never blocks the degrade-don't-crash path.
+                transcript_ref = self._store_transcript(getattr(exc, "transcript", None))
+                agent_telemetry = _failed_cycle_telemetry(getattr(exc, "telemetry", None))
+                await task.sandbox.regenerate()  # discard the broken workspace; next starts fresh
+                result = IntakeResult(
+                    entered_protocol=False, sandbox_error=str(exc), transcript_ref=transcript_ref,
+                )
+                self._record_cycle(task, goal, result, Timings(
+                    cycle_ms=(self._timer() - started) * 1000, sandbox_ms=sandbox_ms),
+                    agent_telemetry=agent_telemetry, context=context)
+                return result
             sandbox_ms = (self._timer() - sandbox_started) * 1000
-            log.warning("sandbox_cycle_failed", task_id=task_id, error=str(exc))
-            await task.sandbox.regenerate()  # discard the broken workspace; next cycle starts fresh
-            result = IntakeResult(entered_protocol=False, sandbox_error=str(exc))
-            self._record_cycle(task, goal, result, Timings(
-                cycle_ms=(self._timer() - started) * 1000, sandbox_ms=sandbox_ms),
-                context=context)
-            return result
-        sandbox_ms = (self._timer() - sandbox_started) * 1000
-        commit_started = self._timer()
-        try:
-            result = await self.submit_proposal(task_id, envelope)
-        except GateUnavailable as exc:
-            # Symmetric with the sandbox path: a gate that could not render a verdict (transient
-            # model/container failure, or a timed-out handoff) is a recoverable failed cycle, not a
-            # run abort. The proposal may already be recorded as `proposed`; it simply went un-gated
-            # this cycle. Discard the workspace and feed the reason back (ROADMAP 5.1).
-            commit_ms = (self._timer() - commit_started) * 1000
-            log.warning("gate_cycle_failed", task_id=task_id, error=str(exc))
-            await task.sandbox.regenerate()
-            result = IntakeResult(entered_protocol=False, gate_error=str(exc))
-            self._record_cycle(task, goal, result, Timings(
-                cycle_ms=(self._timer() - started) * 1000,
-                sandbox_ms=sandbox_ms, commit_ms=commit_ms),
-                agent_telemetry=envelope.agent_telemetry, context=context)
-            return result
-        commit_ms = (self._timer() - commit_started) * 1000
-        # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
-        await task.sandbox.regenerate()
-        self._record_cycle(
-            task, goal, result,
-            Timings(cycle_ms=(self._timer() - started) * 1000,
+            commit_started = self._timer()
+            try:
+                result = await self.submit_proposal(task_id, envelope)
+            except GateUnavailable as exc:
+                # Symmetric with the sandbox path: a gate that could not render a verdict (transient
+                # model/container failure, or a timed-out handoff) is a recoverable failed cycle,
+                # not a run abort. The proposal may already be recorded as `proposed`; it simply
+                # went un-gated this cycle. Discard the workspace and feed the reason back (5.1).
+                commit_ms = (self._timer() - commit_started) * 1000
+                log.warning("gate_cycle_failed", task_id=task_id, error=str(exc))
+                await task.sandbox.regenerate()
+                result = IntakeResult(entered_protocol=False, gate_error=str(exc))
+                self._record_cycle(task, goal, result, Timings(
+                    cycle_ms=(self._timer() - started) * 1000,
                     sandbox_ms=sandbox_ms, commit_ms=commit_ms),
-            agent_telemetry=envelope.agent_telemetry, context=context,
-        )
-        return result
+                    agent_telemetry=envelope.agent_telemetry, context=context)
+                return result
+            commit_ms = (self._timer() - commit_started) * 1000
+            # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
+            await task.sandbox.regenerate()
+            self._record_cycle(
+                task, goal, result,
+                Timings(cycle_ms=(self._timer() - started) * 1000,
+                        sandbox_ms=sandbox_ms, commit_ms=commit_ms),
+                agent_telemetry=envelope.agent_telemetry, context=context,
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001 — degrade-don't-crash: an unexpected boundary
+            # failure (e.g. a raw store-IO error) is a recorded failed cycle, not a run abort. It
+            # rides the `sandbox_error` field so the run loop's failure check + consecutive-failure
+            # cap still bound a persistently-failing boundary (it cannot spin forever).
+            log.warning("cycle_failed", task_id=task_id, error=str(exc))
+            try:
+                await task.sandbox.regenerate()
+            except Exception as regen_exc:  # noqa: BLE001 — cleanup is best-effort
+                log.warning("regenerate_after_cycle_failure_failed", task_id=task_id,
+                            error=str(regen_exc))
+            result = IntakeResult(entered_protocol=False, sandbox_error=f"cycle failed: {exc}")
+            self._record_cycle(
+                task, goal, result,
+                Timings(cycle_ms=(self._timer() - started) * 1000), context=context)
+            return result
 
     def _record_cycle(
         self, task: TaskState, goal: str, result: IntakeResult, timings: Timings,
@@ -579,6 +688,9 @@ class ControlPlane:
             agent_telemetry=agent_telemetry,
             served_context_chars=served_chars,
             provisioned_object_bytes=provisioned_bytes,
+            transcript_ref=(
+                result.transcript_ref.content_hash if result.transcript_ref is not None else None
+            ),
         ))
 
     async def run(self, task_id: str, *, goal: str) -> list[IntakeResult]:
@@ -723,6 +835,22 @@ def _context_metrics(served: ServedContext) -> tuple[int, int]:
     return served_chars, provisioned_bytes
 
 
+def _failed_cycle_telemetry(raw: bytes | None) -> dict[str, object] | None:
+    """Parse the ``__telemetry__.json`` bytes a failed cycle carries on its ``SandboxError``.
+
+    The dict (incl. ``stop_reason``) is recorded on the cycle so a no-proposal limit-end names *why*
+    it stopped. Best-effort and advisory: malformed/empty telemetry degrades to ``None``.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        log.warning("failed_cycle_telemetry_unparseable", error=str(exc))
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _feedback_from(result: IntakeResult) -> str:
     """Render the cycle's correction for the next served context (§3.5, widened — issue #21).
 
@@ -733,13 +861,13 @@ def _feedback_from(result: IntakeResult) -> str:
     """
     if result.sandbox_error is not None:
         return (
-            f"sandbox-error: your previous attempt did not produce a valid submission "
+            f"sandbox-error: the previous attempt did not produce a valid submission "
             f"({result.sandbox_error}); produce exactly one complete proposal within the budget"
         )
     if result.gate_error is not None:
         return (
-            f"gate-unavailable: the verifier could not evaluate your last proposal "
-            f"({result.gate_error}) — this was not a rejection; submit your proposal again"
+            f"gate-unavailable: the verifier could not evaluate the last proposal "
+            f"({result.gate_error}) — this was not a rejection; submit the proposal again"
         )
     if not result.entered_protocol and result.shape_error is not None:
         return f"shape-error: {result.shape_error.message}"

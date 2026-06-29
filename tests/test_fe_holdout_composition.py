@@ -130,3 +130,20 @@ def test_build_validates_verifier_role_files() -> None:
     cp = ControlPlane(store)
     with pytest.raises(ValueError, match="holdout_labels.csv"):
         asyncio.run(build_fe_holdout_task(cp, backend=FakeBackend(), request=request))
+
+
+def test_fe_tasks_default_to_the_ml_equipped_sandbox_image() -> None:
+    # FE tasks must run on the ML-equipped sandbox so the agent can self-test its script (else it
+    # submits blind and the gate eats runnable bugs). The generic base default is swapped for the FE
+    # image; an explicit operator override is respected.
+    from verity.composition.fe import (
+        BASE_SANDBOX_IMAGE,
+        FE_SANDBOX_IMAGE,
+        ProvisioningConfig,
+        with_fe_sandbox_image,
+    )
+
+    assert ProvisioningConfig().sandbox_image == BASE_SANDBOX_IMAGE  # the generic default
+    assert with_fe_sandbox_image(ProvisioningConfig()).sandbox_image == FE_SANDBOX_IMAGE
+    custom = ProvisioningConfig(sandbox_image="my-custom-sandbox:tag")
+    assert with_fe_sandbox_image(custom).sandbox_image == "my-custom-sandbox:tag"

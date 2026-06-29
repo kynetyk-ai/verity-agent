@@ -262,17 +262,21 @@ def proposal_envelope_to_dict(e: ProposalEnvelope) -> JsonDict:
         "metadata": e.metadata,  # the rationale channel — provenance-bound, never sent to a gate
         "objects": objects_to_wire(e.objects),
         "agent_telemetry": dict(e.agent_telemetry) if e.agent_telemetry is not None else None,
+        # The step transcript rides as the same tagged inline-base64 blob as any object attachment.
+        "transcript": _object_to_wire(e.transcript) if e.transcript is not None else None,
     }
 
 
 def proposal_envelope_from_dict(d: Mapping[str, Any]) -> ProposalEnvelope:
     telemetry = d.get("agent_telemetry")
+    transcript = d.get("transcript")
     return ProposalEnvelope(
         artifact=artifact_from_dict(d["artifact"]),
         operation=operation_from_dict(d["operation"]),
         metadata=d.get("metadata", ""),
         objects=objects_from_wire(d.get("objects", {})),
         agent_telemetry=dict(telemetry) if telemetry is not None else None,
+        transcript=_object_from_wire(transcript) if transcript is not None else None,
     )
 
 
@@ -283,6 +287,8 @@ def verifier_request_to_dict(r: VerifierRequest) -> JsonDict:
         "proposal": artifact_to_dict(r.proposal),
         "store_slice": [artifact_to_dict(a) for a in r.store_slice],
         "objects": objects_to_wire(r.objects),
+        # Durably-recorded per-gate measurements (not rationale): {artifact_id: {gate: score}}.
+        "scores": {aid: dict(gates) for aid, gates in r.scores.items()},
     }
 
 
@@ -291,6 +297,10 @@ def verifier_request_from_dict(d: Mapping[str, Any]) -> VerifierRequest:
         proposal=artifact_from_dict(d["proposal"]),
         store_slice=tuple(artifact_from_dict(a) for a in d.get("store_slice", [])),
         objects=objects_from_wire(d.get("objects", {})),
+        scores={
+            aid: {g: float(s) for g, s in gates.items()}
+            for aid, gates in d.get("scores", {}).items()
+        },
     )
 
 

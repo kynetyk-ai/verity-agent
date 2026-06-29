@@ -53,7 +53,7 @@ class SandboxRequest:
     sandbox_memory: str = "4g"
     code_memory: str = "2g"
     code_tmpfs_size: str = "1g"
-    recursion_limit: int = 200
+    recursion_limit: int = 200  # a floor; the driver clamps it UP to step_budget*headroom (#103)
     sandbox_timeout_s: float = 1500.0
     # Gate per-script budget. Calibrated (#111): 3x the slowest clean full-data run measured across
     # the prototyping corpus (4312s, a 5-fold RF+ET+LGBM+XGB stack) -> 12960s, so no valid heavy

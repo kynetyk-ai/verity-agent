@@ -45,7 +45,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ing.add_argument("file", help="path under the exchange's in/ directory (subdirs allowed)")
 
     create = sub.add_parser("create", help="create a task instance from a declarative request")
-    create.add_argument("--type", help="task type (code/fe-kaggle); or from --request-file")
+    create.add_argument("--type", help="task type (see `verity catalog`, e.g. code/fe-holdout/"
+                        "fe-kaggle); or from --request-file")
     create.add_argument("--goal", default="", help="the run goal")
     create.add_argument(
         "--file", action="append", default=[], metavar="ROLE:NAME=HANDLE", dest="files",
@@ -56,8 +57,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--request-file", help="path to a full TaskRequest JSON (e.g. a task package's task.json); "
         "supersedes the request-shaping flags below (only --file/--goal still apply)"
     )
-    create.add_argument("--model", help="provider:model string (e.g. anthropic:claude-sonnet-4-6)")
-    create.add_argument("--base-url", help="OpenAI-compatible endpoint for a local/hosted model")
+    create.add_argument(
+        "--model",
+        help="native `provider:model` (e.g. anthropic:claude-sonnet-4-6); OR, WITH --base-url, a "
+             "literal OpenAI-compatible model name that may contain colons (e.g. "
+             "qwen3.6:27b-coding-mxfp8) — it is NOT split on ':' when --base-url is set",
+    )
+    create.add_argument(
+        "--base-url",
+        help="OpenAI-compatible endpoint for a local/hosted model (e.g. "
+             "http://host.docker.internal:11434/v1 for host Ollama); makes --model a literal name",
+    )
     create.add_argument("--max-cycles", type=int, default=4)
     create.add_argument("--stop-on-accept", action="store_true")
 

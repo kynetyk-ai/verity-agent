@@ -101,6 +101,16 @@ def test_build_task_request_maps_the_condition_axes() -> None:
     assert req3.verifier.knobs["accept_policy"] == "improve_over_best_prior"
 
 
+def test_selection_margin_rides_the_verifier_knobs_for_every_condition() -> None:
+    # C/V2: the shared noise-floor margin reaches the gate via the verifier knobs, identically for
+    # every condition (it is part of "the gate", not a per-condition treatment).
+    spec = SweepSpec.from_dict(_spec_dict(budgets={"max_cycles": 1, "selection_margin": 0.005}))
+    arm = spec.models[0]
+    for cond in spec.conditions:
+        req = build_task_request(spec, cond, arm, seed=0)
+        assert req.verifier.knobs["margin"] == 0.005
+
+
 def test_single_shot_condition_overrides_max_cycles() -> None:
     spec = SweepSpec.from_dict(
         _spec_dict(conditions=[

@@ -198,7 +198,7 @@ def test_feedback_threads_a_gate_unavailable_reason() -> None:
     from verity.control_plane.api import IntakeResult
 
     feedback = _feedback_from(IntakeResult(entered_protocol=False, gate_error="backend down"))
-    assert feedback.startswith("gate-unavailable:") and "submit your proposal again" in feedback
+    assert feedback.startswith("gate-unavailable:") and "submit the proposal again" in feedback
 
 
 # ----------------------------------------------------------------- the invariant, property-tested

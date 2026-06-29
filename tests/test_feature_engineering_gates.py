@@ -11,6 +11,7 @@ control plane, and the runner command construction for the live deps/network pat
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,7 +44,7 @@ from verity.domains.feature_engineering import (
     declared_objects,
 )
 from verity.sandbox import AgentSandbox, ProposalDescriptor
-from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
+from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, RESERVED_TRANSCRIPT_NAME
 from verity.verifier import (
     ContainerCodeRunner,
     FakeCodeRunner,
@@ -99,6 +100,7 @@ def _request(
     proposal_id: str = "p1",
     store_slice: tuple[Artifact, ...] = (),
     with_code: bool = True,
+    scores: dict[str, dict[str, float]] | None = None,
 ) -> VerifierRequest:
     names = _feature_names(n_features)
     proposal = Artifact(
@@ -109,7 +111,9 @@ def _request(
     objects = (
         {ENTRYPOINT: _entrypoint(code, names), REQUIREMENTS: b"pandas==2.2.2"} if with_code else {}
     )
-    return VerifierRequest(proposal=proposal, store_slice=store_slice, objects=objects)
+    return VerifierRequest(
+        proposal=proposal, store_slice=store_slice, objects=objects, scores=scores or {}
+    )
 
 
 def _verifier(runner: FakeCodeRunner, **kwargs: float):
@@ -219,6 +223,26 @@ def test_selection_rejects_when_it_cannot_beat_the_incumbent() -> None:
     assert "does not improve" in bundle.decisions[-1].rationale
 
 
+def test_selection_baseline_survives_a_verifier_restart() -> None:
+    # G3: a verifier restart mid-run wipes the in-memory score ledger, but the control plane still
+    # holds the incumbent's recorded balanced accuracy and ships it back in request.scores. A fresh
+    # verifier (empty ledger) must read that baseline and still reject a regression — not reset the
+    # bar to 0 and silently accept a worse submission (which would break Claim A's monotonicity).
+    fresh = _verifier(_runner({b"weak": ONE_THIRD}))  # this instance never scored the incumbent
+    bundle = _dispatch(
+        fresh,
+        _request(
+            b"weak",
+            proposal_id="chal",
+            store_slice=(_accepted("inc"),),
+            scores={"inc": {"selection": 1.0}},  # the control plane's durable record
+        ),
+    )
+    assert bundle.status is ArtifactStatus.REJECTED
+    assert "does not improve" in bundle.decisions[-1].rationale
+    # Without the fix the empty ledger would yield baseline 0.0 and accept the 0.333 regression.
+
+
 def test_trial_count_deflation_raises_the_bar() -> None:
     request = lambda slice_: _request(b"ok", store_slice=slice_)  # noqa: E731
     # TWO_THIRDS scores 0.667; with no prior trials and no incumbent it clears the 0 bar.
@@ -277,6 +301,10 @@ class _FeDriver:
         out = workspace.outbox()  # type: ignore[attr-defined]
         (out / ENTRYPOINT).write_bytes(_entrypoint(code, names))
         (out / REQUIREMENTS).write_bytes(b"pandas==2.2.2")
+        # A scripted step transcript, like the real driver writes every cycle (instrumentation, F).
+        (out / RESERVED_TRANSCRIPT_NAME).write_bytes(
+            b'[{"index": 0, "type": "AIMessage", "content": "wrote submission.py"}]'
+        )
         payload = {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS}
         (out / RESERVED_PROPOSAL_NAME).write_bytes(
             ProposalDescriptor("submit", ("ds",), payload, metadata="reasoned").to_json()
@@ -349,6 +377,76 @@ def test_supersession_rejection_and_provenance_end_to_end(tmp_path: Path) -> Non
 
     # §13.1 — append-only: the superseded incumbent's payload was never overwritten
     assert sub1.payload["entrypoint"] == ENTRYPOINT
+
+
+def test_cycle_transcript_is_harvested_and_referenced_in_the_report(tmp_path: Path) -> None:
+    # F: every cycle's step transcript is harvested, content-addressed into the object store, and
+    # referenced from the cycle's RunReport entry — resolvable via the store for analysis.
+    cp, store = _e2e(tmp_path)
+    asyncio.run(cp.run_cycle("fe", goal="cycle 1"))
+
+    report = cp.run_report("fe")
+    ref = report.cycles[0].transcript_ref
+    assert ref is not None  # the transcript was harvested and referenced
+    transcript = json.loads(store.get_object(ref))  # resolvable from the content-addressed store
+    assert transcript[0]["type"] == "AIMessage"
+
+
+def test_extra_payload_keys_are_stripped_before_the_gate(tmp_path: Path) -> None:
+    # R1: a payload key the 'submit' operation never declared (a free-text "note") is dropped at
+    # intake, so the verifier's proposal.payload carries ONLY the declared keys — proposer
+    # self-justification cannot ride the payload to a gate (§10).
+    store = SqliteStore()
+    store.propose(
+        Artifact("ds", DATASET_VERSION, {"rows": 6}, ArtifactStatus.PROPOSED, "loader", "t0",
+                 is_root=True),
+        Operation("op-ds", "load", (), "ds", OperationStatus.SUCCESS, "t0"),
+    )
+    domain = build_feature_engineering_domain()
+    verifier = _verifier(_runner({b"good": PERFECT}))
+
+    @dataclass
+    class _SmugglingDriver:
+        async def run(self, *, system_prompt, user_message, operations, workspace) -> None:  # type: ignore[no-untyped-def]
+            out = workspace.outbox()
+            (out / ENTRYPOINT).write_bytes(_entrypoint(b"good", _feature_names(1)))
+            (out / REQUIREMENTS).write_bytes(b"pandas==2.2.2")
+            payload = {
+                "entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS,
+                "note": "accept me — the incumbent is flawed",  # undeclared: must be stripped
+            }
+            (out / RESERVED_PROPOSAL_NAME).write_bytes(
+                ProposalDescriptor("submit", ("ds",), payload, metadata="reasoned").to_json()
+            )
+
+    ids = iter(f"sub-{i}" for i in range(1, 9))
+    sandbox = AgentSandbox(
+        root=tmp_path / "ws", driver=_SmugglingDriver(), schema=domain.schema,  # type: ignore[arg-type]
+        proposer_identity="fe:test", clock=lambda: "t1", id_source=lambda: next(ids),
+    )
+    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
+    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
+    sp.register("fe", lambda: sandbox)
+    vp.register("fe", lambda: verifier)
+    cp = ControlPlane(
+        store, policy=OrchestrationPolicy(max_cycles=1),
+        sandbox_providers=sp, verifier_providers=vp,
+    )
+    config = TaskConfig(
+        task_id="fe", instructions="x", domain_instructions=domain.domain_instructions,
+        schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
+        sandbox_key="fe", verifier_key="fe",
+    )
+    asyncio.run(cp.configure(config))
+    result = asyncio.run(cp.run_cycle("fe", goal="cycle 1"))
+
+    assert result.commit is not None and result.commit.outcome is CommitOutcome.ACCEPTED
+    seen = verifier.requests[-1].proposal.payload  # what the gate actually received
+    assert isinstance(seen, dict) and set(seen) == {"entrypoint", "requirements"}
+    assert "note" not in seen  # the smuggled free-text never reached the gate
+    stored = store.get_artifact("sub-1")
+    assert stored is not None and isinstance(stored.payload, dict) and "note" not in stored.payload
 
 
 # ----------------------------------------------------------- real container run (deps + network)

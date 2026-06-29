@@ -86,6 +86,9 @@ class CycleInput:
     # provisioned into the workspace. Optional — older inputs / other tasks leave them None.
     served_context_chars: int | None = None
     provisioned_object_bytes: int | None = None
+    # The content hash of this cycle's step transcript in the object store (instrumentation, F),
+    # or None when the harness emitted none / it failed to store. Resolve via the byte data plane.
+    transcript_ref: str | None = None
 
 
 # ----------------------------------------------------------------- the report (machine-readable)
@@ -160,6 +163,8 @@ class CycleReport:
     # Context-hygiene instrumentation (experimental-design F4); optional, see :class:`CycleInput`.
     served_context_chars: int | None = None
     provisioned_object_bytes: int | None = None
+    # The object-store content hash of this cycle's step transcript (instrumentation, F), or None.
+    transcript_ref: str | None = None
 
     def to_dict(self) -> JsonDict:
         return {
@@ -172,6 +177,7 @@ class CycleReport:
             "agent_telemetry": self.agent_telemetry,
             "served_context_chars": self.served_context_chars,
             "provisioned_object_bytes": self.provisioned_object_bytes,
+            "transcript_ref": self.transcript_ref,
         }
 
 
@@ -238,7 +244,11 @@ class RunReport:
                 )
             )
             who = c.proposal.artifact_id if c.proposal else "(no proposal)"
-            lines.append(f"  [{c.index}] {outcome}: {who}")
+            # On a sandbox failure, name *why* it stopped if the telemetry carried a stop_reason
+            # (e.g. a graceful StepBudgetExceeded vs an opaque GraphRecursionError).
+            stop = (c.agent_telemetry or {}).get("stop_reason") if c.sandbox_error else None
+            suffix = f" [{stop}]" if stop else ""
+            lines.append(f"  [{c.index}] {outcome}: {who}{suffix}")
         return "\n".join(lines)
 
 
@@ -275,6 +285,7 @@ def build_run_report(
             agent_telemetry=dict(ci.agent_telemetry) if ci.agent_telemetry is not None else None,
             served_context_chars=ci.served_context_chars,
             provisioned_object_bytes=ci.provisioned_object_bytes,
+            transcript_ref=ci.transcript_ref,
         )
         for i, ci in enumerate(cycles)
     ]

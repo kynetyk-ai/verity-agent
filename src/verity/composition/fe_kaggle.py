@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from verity.composition.description import OperationDescription, TaskTypeDescription
-from verity.composition.fe import ProvisioningConfig, provisioning_config_from
+from verity.composition.fe import (
+    ProvisioningConfig,
+    assert_answer_key_isolated,
+    provisioning_config_from,
+    with_fe_sandbox_image,
+)
 from verity.composition.task_request import TaskRequest
 from verity.composition.verifier_launch import (
     DEFAULT_VERIFIER_IMAGE,
@@ -131,7 +136,7 @@ def _verifier_factory_from_env(backend: WorkerBackend) -> VerifierFactory:
 
 
 _FE_KAGGLE_INSTRUCTIONS = (
-    "Improve balanced accuracy across cycles; each submission should beat your previous best. "
+    "Improve balanced accuracy across cycles; each submission must beat the previous best. "
     "Predict every row."
 )
 
@@ -193,6 +198,8 @@ async def configure_fe_kaggle_task(
     provisioning = provisioning or ProvisioningConfig()
     spec = provisioning.model_spec
     model = spec.provider_string() if spec is not None else _DEFAULT_MODEL
+    # Defense-in-depth: refuse to wire the task if the answer key leaked into the agent role (I1).
+    assert_answer_key_isolated(agent_files, verifier_files)
     domain = build_feature_engineering_domain()
 
     cp.store.propose(
@@ -320,7 +327,7 @@ async def build_fe_kaggle_task(
         competition=str(competition),
         daily_submission_limit=int(limit_knob) if limit_knob is not None else None,
         provisioning_spec=provisioning_spec,
-        provisioning=provisioning_config_from(request.sandbox),
+        provisioning=with_fe_sandbox_image(provisioning_config_from(request.sandbox)),
         wait_deadline_s=float(knobs.get("wait_deadline_s", 86_400.0)),
         poll_interval_s=float(knobs.get("budget_poll_interval_s", 60.0)),
         score_poll_interval_s=float(knobs.get("score_poll_interval_s", 20.0)),

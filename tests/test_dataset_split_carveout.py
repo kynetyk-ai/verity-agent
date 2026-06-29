@@ -119,3 +119,40 @@ def test_prep_isolates_the_answer_key_in_the_verifier_bundle(tmp_path: object) -
     assert labels and all(labels[i] == truth[i] for i in labels)
     agent_train_ids = set(_ids((out / "agent" / "train.csv").read_bytes()))
     assert agent_train_ids.isdisjoint(labels), "a hold-out row leaked into the agent's train set"
+
+
+def test_prep_strips_the_target_from_the_agent_test_set(tmp_path: object) -> None:
+    # I2: even if --test is pointed at a labelled file, the agent's test.csv must carry no target
+    # column — the prep strips it defensively at the boundary.
+    import pathlib
+
+    raw = _make_csv(6, ("STAR", "GALAXY"))
+    labelled_test = b"id,a,class\n100,200,STAR\n101,202,GALAXY\n"  # a target accidentally present
+    out = pathlib.Path(str(tmp_path))
+    prepare(
+        train=raw, test=labelled_test, out=out,
+        target="class", id_column="id", per_class=100, reserved_fraction=0.5,
+    )
+    agent_test_header = next(
+        csv.reader(io.StringIO((out / "agent" / "test.csv").read_text()))
+    )
+    assert "class" not in agent_test_header  # the smuggled target was stripped
+    assert agent_test_header == ["id", "a"]
+
+
+def test_assert_answer_key_isolated_rejects_a_leak_and_passes_clean_inputs() -> None:
+    # I1: the control-plane-side defense-in-depth guard rejects an agent role that carries the
+    # answer-key bytes (under any filename), and is a no-op when isolation holds.
+    from verity.composition.fe import ANSWER_KEY_FILE, assert_answer_key_isolated
+
+    answer_key = b"id,class\n1,STAR\n2,GALAXY\n"
+    verifier_files = {ANSWER_KEY_FILE: answer_key, "train.csv": b"id,a,class\n1,2,STAR\n"}
+
+    # Clean: the agent never holds the answer-key bytes -> no raise.
+    assert_answer_key_isolated({"train.csv": b"id,a,class\n1,2,STAR\n"}, verifier_files)
+
+    # Leak: the answer-key bytes appear in the agent role (here under a misleading name) -> raise.
+    import pytest
+
+    with pytest.raises(ValueError, match="answer-key isolation violated"):
+        assert_answer_key_isolated({"test.csv": answer_key}, verifier_files)

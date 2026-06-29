@@ -115,7 +115,10 @@ score, with a self-calibrating proxy→public estimate; trusted-submitter so cre
 worker), **live-validated** at 0.92253 balanced accuracy on `playground-series-s6e6` with local Qwen
 (under the pre-competitive-bar config). (The earlier single-tier basic-`fe` task type was removed; its §12 domain — schema, shape,
 scoring, and the standalone verifier exercised by `tests/test_feature_engineering_*.py` — is reused by
-`fe-kaggle`. The installed catalog is `{code, fe-kaggle}`.) The three **acceptance modes** (optimizer / accumulate / first-acceptable) are documented as
+both `fe-kaggle` and `fe-holdout`. The installed catalog is `{code, fe-kaggle, fe-holdout}` — `fe-holdout`
+is the ablation task: the same §12 FE domain scored on a **local reserved hold-out** (no Kaggle, no
+competitive bar; the `holdout-experiment` verifier), driven by `experiments/ablation/`. Prefer
+`verity catalog` for the live set.) The three **acceptance modes** (optimizer / accumulate / first-acceptable) are documented as
 emergent from verifier gate composition × `--stop-on-accept` × object-provisioning mode (README + the
 `verity-run-task` skill).
 

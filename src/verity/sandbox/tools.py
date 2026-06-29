@@ -23,10 +23,10 @@ class UnknownToolError(KeyError):
 
 
 def read_pdf(path: str) -> str:
-    """Extract the text of a PDF file in your workspace.
+    """Extract the text of a PDF file in the workspace.
 
     Args:
-        path: Path to the PDF file (relative to your working directory, or absolute within it).
+        path: Path to the PDF file (relative to the working directory, or absolute within it).
 
     Returns:
         The text content of the PDF, with one page per block separated by blank lines.

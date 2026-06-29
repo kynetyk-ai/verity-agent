@@ -161,6 +161,16 @@ All metrics derive from the store / the store-derived RunReport (provenance is t
   `best` provisioning (4b); possible under the unguarded loop (2).
 - **Compute / tokens to a quality threshold.**
 
+**Step-level instrumentation (pre-ablation audit, workstream F)**
+- Every cycle's agent **transcript** is captured — written by the sandbox driver each cycle (success
+  *and* failure, including a recursion/step-budget limit-end), content-addressed into the object
+  store, and referenced from the cycle's RunReport entry as `transcript_ref` (a content hash; read it
+  from the per-task object store, `…/tasks/<task_id>/objects/<hash>`, and render it with
+  `tools/render_transcript.py`). Each entry records, per message, an index, the type/content, and tool
+  calls with their **arguments** (large fields capped). This is the step-by-step record for
+  qualitative analysis — previously only a no-proposal failure diagnostic, now always-on for both the
+  in-process and container sandboxes.
+
 **Figure catalogue**
 - **F1** (Exp 1) — one-shot score distribution by model, with a headroom annotation (gap to a
   reference best). *The calibration gate: do not advance a model with no room to improve.*
@@ -275,6 +285,26 @@ require it). This stays control-plane-generic: it reads a recorded score, not ve
   re-checking artifacts (not the agent's claims) and by reporting judge agreement / spot human audits.
 - **Non-determinism.** Hosted models and (Exp 5) a live leaderboard; mitigate with seeded replicates
   where possible, acknowledge where not.
+- **Scoring noise → the bar-ratchet (pre-ablation audit, C/V2).** The holdout scorer trains
+  multi-threaded (`n_jobs=-1`), so an identical submission's balanced accuracy wobbles by ~ε at the
+  bit level (only boundary-row argmax flips). Under `improve_over_best_prior` (strict `score > best`)
+  that wobble can *manufacture* a spurious "improvement" or *block* real progress, distorting the
+  consistent-improvement signal and the gate-catch/regression metrics. **Mitigation:** the selection
+  gate's `margin` (a noise floor; an improvement must exceed it) is wired as a shared knob across the
+  guarded conditions (`Budgets.selection_margin` in `experiments/ablation/sweep.py`). We do **not**
+  pin single-thread determinism — full-data single-core training is prohibitively slow and would
+  force a script-contract change. **Pre-flight:** measure ε once (run a fixed submission ~5× through
+  the real holdout coderunner — the `docker`-marked path in `tests/test_feature_engineering_gates.py`
+  is the substrate — and look at the balanced-accuracy spread) and set `selection_margin` to ~2–3×ε.
+  Record the measured ε and the chosen margin here before the run. If ε proves large, fall back to
+  scoring each submission N× and averaging.
+- **Goal wording differs between the bottom rung and the loop (X1).** `spec.exp1.json` ends "Submit
+  your best work" while `spec.loop.json` ends "improve upon any previous submissions" — intentional
+  (exp1 is single-cycle, so "improve on previous" is inapplicable) and the layer-2/3 instruction text
+  is otherwise identical across conditions. We deliberately **do not** unify it; flagged here so the
+  one-clause difference is on record (run all conditions from `spec.example.json` if a single goal is
+  preferred). Dependency drift across days is recorded, not pinned (a closed wheelhouse would reject
+  legitimate submissions); see the deferred-items note in ROADMAP.
 - **N.** 10/cell makes the ablation deltas estimable; report distributions + nonparametric effect
   sizes, pre-register 3−2 and 4−3 as the primary comparisons.
 
@@ -286,3 +316,4 @@ require it). This stays control-plane-generic: it reads a recorded score, not ve
 - Exact `gpt-5.4-mini` model id and the "large hosted model" for Exp 5.
 - Exp 5 tuned configuration — finalized from the Exp 1–4b findings.
 - Exp 6 full design — task scope, rubric text, sandbox tooling, output schema.
+- **Measured ε + chosen `selection_margin`** (§7, scoring-noise) — measure before the run and record.

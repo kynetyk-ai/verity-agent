@@ -37,7 +37,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from verity.contracts import (
-    Artifact,
     ArtifactStatus,
     GateUnavailable,
     GateVerdict,
@@ -149,13 +148,22 @@ class _KaggleGates:
         return code, result
 
     def _best(
-        self, ledger: dict[str, float], store_slice: tuple[Artifact, ...]
+        self, ledger: dict[str, float], request: VerifierRequest, gate: str
     ) -> tuple[str | None, float]:
-        scored = [
-            (a.id, ledger[a.id])
-            for a in store_slice
-            if a.status is ArtifactStatus.ACCEPTED and a.id in ledger
-        ]
+        """Best **accepted** incumbent under ``gate``'s score (proxy or real).
+
+        Prefers the control plane's durably-recorded score for ``gate`` (``request.scores``), so the
+        baseline survives a verifier restart mid-run; falls back to this process's in-memory
+        ``ledger`` for the steady state (G3)."""
+        scored: list[tuple[str, float]] = []
+        for a in request.store_slice:
+            if a.status is not ArtifactStatus.ACCEPTED:
+                continue
+            recorded = request.scores.get(a.id, {}).get(gate)
+            if a.id in ledger:
+                scored.append((a.id, ledger[a.id]))
+            elif recorded is not None:
+                scored.append((a.id, recorded))
         if not scored:
             return None, 0.0
         return max(scored, key=lambda pair: pair[1])
@@ -194,7 +202,7 @@ class _KaggleGates:
             return GateVerdict(VerdictKind.REJECT, "no scorable hold-out predictions")
         net = balanced_accuracy(self.reserved_labels, preds)
         self._proxy_scores[request.proposal.id] = net
-        _, best = self._best(self._proxy_scores, request.store_slice)
+        _, best = self._best(self._proxy_scores, request, "proxy-improves")
         detail = (
             f"local proxy balanced-accuracy {net:.4f} vs best accepted {best:.4f} "
             f"(margin {self.proxy_margin:.4f})"
@@ -276,7 +284,7 @@ class _KaggleGates:
             result.output, message=self.submit_message, wait_deadline_s=self.wait_deadline_s
         )
         self._real_scores[request.proposal.id] = real
-        best_id, best_real = self._best(self._real_scores, request.store_slice)
+        best_id, best_real = self._best(self._real_scores, request, "kaggle")
         detail = f"Kaggle public score {real:.5f} vs best accepted {best_real:.5f}"
         if real > best_real:
             return GateVerdict(

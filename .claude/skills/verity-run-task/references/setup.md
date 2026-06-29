@@ -18,15 +18,21 @@ on the host Docker daemon. This is the deployment the `verity` CLI talks to.
   - **Hosted (Anthropic):** an `ANTHROPIC_API_KEY` (put it in `.env`; `cp .env.example .env`).
 - **`uv`** + **`just`** for local dev convenience (optional — raw `docker compose` equivalents below).
 
-## Build the two images (once)
+## Build the images (once)
 
 ```bash
-docker build -f Dockerfile.sandbox      -t verity-sandbox:latest .   # the agent worker
+docker build -f Dockerfile.sandbox      -t verity-sandbox:latest .   # the agent worker (runtime only)
+docker build -f Dockerfile.fe-sandbox   -t verity-fe-sandbox:latest .  # base + ML system libs (libgomp…) — FE tasks default to this so the agent can install reqs + self-test (build AFTER the base)
 docker build -f Dockerfile.coderunner   -t verity-code-runner:latest .  # the gate's code-runner (system libs for the CPU ML stack)
+docker build -f Dockerfile.verifier     -t verity-verifier:latest .  # the verifier sibling (gates + kaggle extra; §9.1)
 docker build -f Dockerfile.controlplane -t verity-controlplane:latest .  # the daemon (carries the docker CLI + service extra)
 ```
 
-`just cp-serve` builds both for you.
+`just cp-serve` builds all of them for you. (The `code` task uses the base `verity-sandbox`; `fe-holdout`/`fe-kaggle` use `verity-fe-sandbox`.)
+
+> **credsStore hang at build:** if a `docker build` hangs reaching a registry, Docker Desktop's
+> credential helper is the culprit — build with a throwaway empty config:
+> `DOCKER_CONFIG="$(mktemp -d)" docker build …` (or `DOCKER_CONFIG="$(mktemp -d)" just cp-serve`).
 
 ## Bring up the daemon
 
@@ -38,12 +44,21 @@ just cp catalog      # smoke: lists installed task types
 just cp-down         # stop (volumes/exchange persist on the host)
 ```
 
-**Raw `docker compose` (no `just`):**
+**Raw compose (no `just`):**
+
+> **Compose binary:** `just cp-serve` and these examples assume the **Compose V2 plugin**
+> (`docker compose`). If your host only has the **standalone** `docker-compose` binary
+> (`docker compose` → "unknown command"), substitute `docker-compose` in every command below — it
+> behaves the same. (`just cp-serve` hardcodes `docker compose`; if you only have the standalone
+> binary, run the steps by hand or edit the recipe.)
 
 ```bash
 export VERITY_EXCHANGE_HOST=/tmp/verity-exchange VERITY_STORE_HOST=/tmp/verity-store VERITY_WORKER_STAGING=/tmp/verity-staging
 mkdir -p "$VERITY_EXCHANGE_HOST/in" "$VERITY_EXCHANGE_HOST/out" "$VERITY_STORE_HOST" "$VERITY_WORKER_STAGING"
-docker compose -f infra/compose.daemon.yml up -d
+# --env-file .env: without it, compose resolves ${KAGGLE_*} against infra/.env (absent) and the
+# daemon launches with EMPTY Kaggle creds — fine for `code`/`fe-holdout`, but `fe-kaggle` then fails
+# only later at the submission gate. Harmless to always pass it.
+docker compose --env-file .env -f infra/compose.daemon.yml up -d   # or: docker-compose --env-file .env -f …
 docker exec verity-cp verity catalog
 docker compose -f infra/compose.daemon.yml down
 ```
@@ -88,6 +103,10 @@ uses is the one you pass to `verity create`** (`--model` / `--base-url`).
   container's env (set on the host before `up`).
 
 ## Kaggle creds (only for the `fe-kaggle` task)
+
+**Creds matrix:** `code` and `fe-holdout` need **no** credentials (a local model needs no API key
+either); only `fe-kaggle` needs Kaggle creds (it submits to the live leaderboard). A hosted *model*
+(Anthropic/OpenAI) needs its API key in the daemon env regardless of task type.
 
 The `fe-kaggle` task type submits to a live competition, so its gate needs a Kaggle API token:
 

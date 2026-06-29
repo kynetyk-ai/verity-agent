@@ -93,11 +93,19 @@ class VerifierRequest:
     rejected-log, …); it is a tuple of :class:`Artifact`, which has no rationale field, so the
     proposer's reasoning cannot ride along (§10). ``objects`` are the harvested attachments a check
     may need to *execute* (e.g. submitted code), keyed by name (§3.4).
+
+    ``scores`` carries the control-plane's **durably recorded** per-gate measurements for the
+    artifacts in ``store_slice`` (``{artifact_id: {gate: score}}``), reconstructed from the stored
+    :class:`Decision` rows. A gate that derives a "best prior" baseline (e.g. feature-engineering's
+    selection rung) reads it instead of relying on its own in-process ledger, so the baseline
+    survives a verifier restart mid-run (the durable state stays in the control plane). It carries
+    *measurements*, never rationale, so §10 segregation is unaffected.
     """
 
     proposal: Artifact
     store_slice: tuple[Artifact, ...] = ()
     objects: Mapping[str, bytes] = field(default_factory=dict)
+    scores: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -153,7 +161,11 @@ class ProposalEnvelope:
     the :class:`VerifierRequest` (the rationale channel, decision recorded for this engagement).
     ``objects`` are what the agent wrote to the outbox, harvested before teardown (§3.4).
     ``agent_telemetry`` is the loop's optional usage record (tokens / steps / model, ROADMAP 5.3b),
-    carried for the RunReport — ``None`` when the harness emits none.
+    carried for the RunReport — ``None`` when the harness emits none. ``transcript`` is the loop's
+    optional rendered step transcript (JSON bytes), carried for the same instrumentation path: the
+    control plane content-addresses it into the object store and references it from the cycle's
+    report (``None`` when the harness emits none). Like ``metadata``/``agent_telemetry`` it is
+    provenance/instrumentation — never part of a :class:`VerifierRequest`.
     """
 
     artifact: Artifact
@@ -161,6 +173,7 @@ class ProposalEnvelope:
     metadata: str = ""
     objects: Mapping[str, bytes] = field(default_factory=dict)
     agent_telemetry: Mapping[str, object] | None = None
+    transcript: bytes | None = None
 
 
 @runtime_checkable

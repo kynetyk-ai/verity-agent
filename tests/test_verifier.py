@@ -15,6 +15,7 @@ from verity.contracts import (
     Artifact,
     ArtifactStatus,
     GateUnavailable,
+    GateVerdict,
     VerdictKind,
     VerifierPort,
     VerifierRequest,
@@ -319,6 +320,70 @@ def test_sdk_verifier_short_circuits_on_reject() -> None:
     bundle = asyncio.run(verifier.dispatch(_request()))
     assert bundle.status is ArtifactStatus.REJECTED
     assert [d.gate for d in bundle.decisions] == ["no"]  # the hard check never ran
+
+
+def _accept_superseding(target: str):
+    async def _plugin(_r: VerifierRequest) -> GateVerdict:
+        return GateVerdict(VerdictKind.ACCEPT, "ok", supersedes=target)
+
+    return _plugin
+
+
+def test_sdk_verifier_rejects_a_pipeline_with_no_hard_gate() -> None:
+    # G1: a gated type whose pipeline declares only cheap checks would fall through to ACCEPTED
+    # having ruled on no hard gate — an implicit accept. Caught loudly at construction.
+    with pytest.raises(VerifierError, match="no hard gate"):
+        SdkVerifier(
+            identity="v",
+            pipelines={
+                "Feature": (
+                    GateStep(
+                        "cheap-only",
+                        deterministic_check(lambda _r: CheckOutcome(ok=True, rationale="ok")),
+                        is_hard=False,
+                    ),
+                )
+            },
+        )
+
+
+def test_sdk_verifier_rejects_an_empty_pipeline() -> None:
+    # G1: the degenerate case — an empty pipeline would also fall straight through to ACCEPTED.
+    with pytest.raises(VerifierError, match="no hard gate"):
+        SdkVerifier(identity="v", pipelines={"Feature": ()})
+
+
+def test_only_a_hard_acceptance_sets_supersedes() -> None:
+    # G2: a cheap gate naming a supersedes is ignored — only the authoritative hard ACCEPT retires
+    # an incumbent.
+    verifier = SdkVerifier(
+        identity="v",
+        pipelines={
+            "Feature": (
+                GateStep("cheap-claims", _accept_superseding("ignored"), is_hard=False),
+                GateStep("hard", _accept_superseding("inc"), is_hard=True),
+            )
+        },
+    )
+    bundle = asyncio.run(verifier.dispatch(_request()))
+    assert bundle.status is ArtifactStatus.ACCEPTED
+    assert bundle.supersedes == "inc"  # the cheap gate's "ignored" claim did not win
+
+
+def test_sdk_verifier_rejects_conflicting_supersessions() -> None:
+    # G2: two hard ACCEPTs naming *different* incumbents to retire is an inconsistency, not a
+    # silently-applied last-writer-wins retirement.
+    verifier = SdkVerifier(
+        identity="v",
+        pipelines={
+            "Feature": (
+                GateStep("h1", _accept_superseding("incA"), is_hard=True),
+                GateStep("h2", _accept_superseding("incB"), is_hard=True),
+            )
+        },
+    )
+    with pytest.raises(VerifierError, match="more than one incumbent"):
+        asyncio.run(verifier.dispatch(_request()))
 
 
 def test_sdk_verifier_uncovered_type_is_a_loud_error_not_a_silent_pass() -> None:

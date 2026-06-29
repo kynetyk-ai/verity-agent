@@ -31,7 +31,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from verity.composition.description import OperationDescription, TaskTypeDescription
-from verity.composition.fe import ProvisioningConfig, provisioning_config_from
+from verity.composition.fe import (
+    ProvisioningConfig,
+    assert_answer_key_isolated,
+    provisioning_config_from,
+    with_fe_sandbox_image,
+)
 from verity.composition.task_request import TaskRequest
 from verity.composition.verifier_launch import (
     RUNNER_ENV,
@@ -96,8 +101,7 @@ _FE_HOLDOUT_ENV_PASSTHROUGH = RUNNER_ENV
 _FE_HOLDOUT_INSTRUCTIONS = (
     "Optimize stellar-class prediction for balanced accuracy. Each cycle, improve upon any prior "
     "submission. The mechanics — the script contract and the held-out check — are in the domain "
-    "instructions above; execute them well rather than restating them. Scoring is on a reserved "
-    "hold-out you never see; there is no leaderboard and no real submission."
+    "instructions above; execute them well rather than restating them."
 )
 
 _FE_HOLDOUT_VERIFIER_APPROACH = (
@@ -134,6 +138,8 @@ async def configure_fe_holdout_task(
     ``holdout-experiment`` sibling (§9.1), shipped the 3-file verifier role + ``{accept_policy,
     margin, timeout_s}`` as its :class:`VerifierSetup`. No gate code or Kaggle client is imported.
     """
+    # Defense-in-depth: refuse to wire the task if the answer key leaked into the agent role (I1).
+    assert_answer_key_isolated(agent_files, verifier_files)
     provisioning = provisioning or ProvisioningConfig()
     spec = provisioning.model_spec
     model = spec.provider_string() if spec is not None else _DEFAULT_MODEL
@@ -222,7 +228,7 @@ async def build_fe_holdout_task(
         accept_policy=str(knobs.get("accept_policy", ACCEPT_IMPROVE_OVER_BEST_PRIOR)),
         margin=float(knobs.get("margin", 0.0)),
         provisioning_spec=provisioning_spec,
-        provisioning=provisioning_config_from(request.sandbox),
+        provisioning=with_fe_sandbox_image(provisioning_config_from(request.sandbox)),
     )
 
 
