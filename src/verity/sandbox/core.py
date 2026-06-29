@@ -164,12 +164,26 @@ class AgentSandbox:
             raise SandboxError("collect_proposal called before serve_context")
         workspace = self._require_workspace()
 
-        await self.driver.run(
-            system_prompt=served.system_prompt,
-            user_message=self._user_message(served),
-            operations=self.schema.operations(),
-            workspace=workspace,
-        )
+        try:
+            await self.driver.run(
+                system_prompt=served.system_prompt,
+                user_message=self._user_message(served),
+                operations=self.schema.operations(),
+                workspace=workspace,
+            )
+        except SandboxError as exc:
+            # The driver failed (e.g. a HARD wall-clock timeout that SIGKILLs the worker mid-run).
+            # The workspace is bind-mounted, so the incrementally-written transcript/telemetry
+            # survive on the host even though the worker never exited cleanly — salvage them onto
+            # the error so even a timeout stays debuggable (F4). Best-effort; never mask it.
+            if exc.transcript is None or exc.telemetry is None:
+                try:
+                    salvaged = self.layout.harvest(workspace)
+                except OSError:
+                    salvaged = {}
+                exc.transcript = exc.transcript or salvaged.get(RESERVED_TRANSCRIPT_NAME)
+                exc.telemetry = exc.telemetry or salvaged.get(RESERVED_TELEMETRY_NAME)
+            raise
 
         try:
             harvested = self.layout.harvest(workspace)

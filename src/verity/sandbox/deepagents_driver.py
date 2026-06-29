@@ -297,6 +297,11 @@ def run_agent(
     try:
         for state in agent.stream(inputs, config, stream_mode="values"):
             result = state  # keep the latest full state (messages survive an exhaustion below)
+            # Persist after every step so the trace survives even a HARD wall-clock timeout that
+            # SIGKILLs the worker mid-run (#103 / F4): the workspace is bind-mounted, so the last
+            # write lands on the host and the control plane salvages it. Cheap + best-effort.
+            if outbox is not None:
+                _write_diagnostics(result, outbox)
     except (GraphRecursionError, StepBudgetExceeded):
         # Budget/recursion exhausted — a graceful, EXPECTED stop (#103). We still have the streamed
         # state, so persist diagnostics from it BEFORE re-raising, so a no-proposal limit-end cycle
