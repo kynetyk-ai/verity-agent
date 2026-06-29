@@ -145,6 +145,43 @@ def test_no_proposal_raises(tmp_path: Path) -> None:
         asyncio.run(go())
 
 
+@dataclass
+class _TimeoutDriver:
+    """Writes an incremental transcript/telemetry to the outbox, then raises as if the worker was
+    SIGKILLed by a hard wall-clock timeout (F4) — the writes persist on the bind mount."""
+
+    transcript: bytes
+    telemetry: bytes
+
+    async def run(self, *, system_prompt: str, user_message: str, operations: object,
+                  workspace: ProvisionedWorkspace) -> None:
+        from verity.sandbox.descriptor import RESERVED_TRANSCRIPT_NAME
+        (workspace.outbox() / RESERVED_TRANSCRIPT_NAME).write_bytes(self.transcript)
+        (workspace.outbox() / RESERVED_TELEMETRY_NAME).write_bytes(self.telemetry)
+        raise SandboxError("sandbox container timed out after 1800s")
+
+
+def test_hard_timeout_salvages_transcript_and_telemetry_from_the_outbox(tmp_path: Path) -> None:
+    # F4: a hard timeout SIGKILLs the worker mid-run (no clean exit, no harvest), but the
+    # incrementally-written transcript/telemetry survive on the bind-mounted outbox, and
+    # collect_proposal salvages them onto the SandboxError so even a timeout stays debuggable.
+    tx = b'[{"index": 0, "type": "AIMessage", "content": "training..."}]'
+    tel = b'{"model_steps": 7, "model": "x"}'
+    driver = _TimeoutDriver(transcript=tx, telemetry=tel)
+    sandbox = _sandbox(tmp_path / "ws", driver, _note_schema())
+
+    async def go() -> None:
+        await sandbox.provision()
+        await sandbox.serve_context(ServedContext(system_prompt="SYS"))
+        await sandbox.collect_proposal()
+
+    with pytest.raises(SandboxError) as ei:
+        asyncio.run(go())
+    assert "timed out" in str(ei.value)
+    assert ei.value.transcript == tx
+    assert ei.value.telemetry == tel
+
+
 def test_unknown_operation_raises(tmp_path: Path) -> None:
     driver = FakeDriver(descriptor=ProposalDescriptor("nope", ("src-1",), {"text": "hi"}))
     sandbox = _sandbox(tmp_path / "ws", driver, _note_schema())
