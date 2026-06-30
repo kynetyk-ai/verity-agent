@@ -841,7 +841,7 @@ item. **#77** (full verifier fleet lifecycle) is the live Phase-9-adjacent remai
 
 | Issue | Folds into |
 | --- | --- |
-| **#55** re-audit `docs/context-and-data-flow.md` to the current build | docs housekeeping |
+| ~~**#55** re-audit `docs/context-and-data-flow.md`~~ | **closed** — the file no longer exists; data-flow content lives in `docs/api-surface.md` |
 | **#66** extender docs for sandboxes & verifiers | the woven "configuration guide" item (docs slice) |
 
 **Spec housekeeping:**
