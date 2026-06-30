@@ -387,3 +387,26 @@ def test_code_domain_full_cycle_accepts(tmp_path: Path) -> None:
     assert got is not None and got.status is ArtifactStatus.ACCEPTED and got.type == SUBMISSION
     # the genuine code object travelled the loop as an attachment, split from the descriptor
     assert any(ENTRYPOINT in req.objects for req in domain.verifier.requests)
+
+
+def test_provision_writes_the_output_schema_to_spec(tmp_path: Path) -> None:
+    """The kernel orientation promises the output schema under /work/spec/; provision must put it
+    there, rendered accurately from the SchemaRegistry (the §3.4 spec role, no longer empty)."""
+    import json
+
+    from verity.sandbox.core import SPEC_SCHEMA_NAME
+
+    sandbox = _sandbox(tmp_path / "ws", object(), _note_schema())  # provision() ignores the driver
+    asyncio.run(sandbox.provision())
+
+    matches = list((tmp_path).rglob(SPEC_SCHEMA_NAME))
+    assert matches, f"no {SPEC_SCHEMA_NAME} provisioned"
+    spec_path = matches[0]
+    assert spec_path.parent.name == "spec"  # it lives in the spec/ role
+    doc = json.loads(spec_path.read_text(encoding="utf-8"))
+    # accurate to the registry: SOURCE(root)+NOTE types, author(Source->Note)
+    types = {t["name"]: t["is_root"] for t in doc["artifact_types"]}
+    assert types == {"Source": True, "Note": False}
+    ops = {o["name"]: o for o in doc["operations"]}
+    assert ops["author"]["inputs"] == ["Source"]
+    assert ops["author"]["output"] == "Note"

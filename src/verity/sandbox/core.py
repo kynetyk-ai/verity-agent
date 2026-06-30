@@ -52,9 +52,46 @@ from verity.sandbox.descriptor import (
 from verity.sandbox.driver import SandboxDriver
 from verity.sandbox.errors import SandboxError
 
-__all__ = ["AgentSandbox"]
+__all__ = ["AgentSandbox", "SPEC_SCHEMA_NAME", "render_output_schema_json"]
 
 log = get_logger("verity.sandbox.core")
+
+#: The file the agent finds under ``/work/spec/`` — the proposal/output contract the kernel
+#: orientation promises ("the required output schema for the proposal lives under spec/").
+SPEC_SCHEMA_NAME = "output-schema.json"
+
+
+def render_output_schema_json(schema: SchemaRegistry) -> bytes:
+    """Render the task's proposal/output contract as JSON, **from the kernel's type + operation
+    registry** — the same source the propose tools are built from — so ``spec/`` honestly carries
+    the schema the orientation promises. Accurate by construction (no hand-written field names):
+    every type/operation/payload-key is read straight from the registry.
+    """
+    doc = {
+        "$comment": (
+            "The proposal/output contract for this task. Propose by calling exactly one operation "
+            "tool with `parents` (ids of artifacts whose type appears in that operation's "
+            "`inputs`) and a `payload` JSON object. Every key in an operation's "
+            "`object_payload_keys` names a file that must be written to /work/outbox/ before the "
+            "call (the propose tool "
+            "rejects the call if a declared object file is missing). The control plane reads only "
+            "the meta-schema (names/signatures); it never interprets payload values."
+        ),
+        "artifact_types": [
+            {"name": t.name, "is_root": t.is_root} for t in schema.types()
+        ],
+        "operations": [
+            {
+                "name": op.name,
+                "inputs": list(op.inputs),
+                "output": op.output,
+                "required_payload_keys": list(op.required_payload_keys),
+                "object_payload_keys": list(op.object_payload_keys),
+            }
+            for op in schema.operations()
+        ],
+    }
+    return json.dumps(doc, indent=2).encode("utf-8")
 
 
 def _default_id() -> str:
@@ -114,13 +151,23 @@ class AgentSandbox:
             self.driver.bind_run_context(ctx)
 
     async def provision(self) -> None:
-        self._workspace = self.layout.provision(self.root, dict(self.static_contents))
+        self._workspace = self.layout.provision(self.root, self._provision_contents())
 
     async def regenerate(self) -> None:
         # Discard the writable workspace and re-provision empty — one ephemerality event (§3.5).
         if self.root.exists():
             shutil.rmtree(self.root)
-        self._workspace = self.layout.provision(self.root, dict(self.static_contents))
+        self._workspace = self.layout.provision(self.root, self._provision_contents())
+
+    def _provision_contents(self) -> dict[str, dict[str, bytes]]:
+        """The static contents to provision, with the generated output-schema added to ``spec/`` so
+        the orientation's "schema lives under spec/" is true (§3.4). A task that supplies its own
+        ``spec/`` schema file wins (``setdefault``); otherwise it gets the registry-rendered one."""
+        contents = {role: dict(named) for role, named in self.static_contents.items()}
+        spec = dict(contents.get("spec", {}))
+        spec.setdefault(SPEC_SCHEMA_NAME, render_output_schema_json(self.schema))
+        contents["spec"] = spec
+        return contents
 
     async def teardown(self) -> None:
         if self.root.exists():
