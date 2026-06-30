@@ -51,7 +51,7 @@ small sample is the deliberate decision: it verifies wiring as well as the full 
 the cost and keeps a capable model from over-fitting to a peek at the test schema. Identical across
 all conditions, so it never confounds a rung.
 
-**Shared models:** `sonnet`, `gpt-5.4-mini` *(exact id TBD)*, local `qwen`. **N = 10 runs per cell.**
+**Shared models:** `sonnet`, `gpt-5.4-mini` (`openai:gpt-5.4-mini`), local `qwen`. **N = 10 runs per cell.**
 → 5 conditions × 3 models × 10 = **150 ablation runs**.
 
 Each rung adds exactly **one** mechanism over the rung below it:
@@ -324,7 +324,7 @@ require it). This stays control-plane-generic: it reads a recorded score, not ve
 ## 8. Open placeholders (to fill before running)
 
 - Compute/length budgets (§5) — from prototyping.
-- Exact `gpt-5.4-mini` model id and the "large hosted model" for Exp 5.
+- The "large hosted model" for Exp 5 (the `gpt-5.4-mini` id is pinned: `openai:gpt-5.4-mini`).
 - Exp 5 tuned configuration — finalized from the Exp 1–4b findings.
 - Exp 6 full design — task scope, rubric text, sandbox tooling, output schema.
 - **Measured ε + chosen `selection_margin`** (§7, scoring-noise) — measure before the run and record.

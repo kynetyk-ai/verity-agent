@@ -375,7 +375,8 @@ Harden the loop and make it measurable before scaling models or splitting servic
   store (the audit record): per-cycle outcomes (accept / reject / revise / refine / sandbox-fail),
   supersessions, trial counts, object-store growth, and cycle / gate / sandbox latencies (**5.3a**),
   plus **agent-loop telemetry** (tokens / model-steps / tool-calls / model) carried back from the
-  sandbox through a reserved outbox file and summed per run (**5.3b**). All fields nullable — the
+  sandbox as structured stderr log events, reconstructed host-side, and summed per run (**5.3b**).
+  All fields nullable — the
   consumer parses, the control plane does not assume a numeric score. Live emission + a dashboard come
   later (7.3).
 - **5.4 Sandbox tools & extensibility ✅** — the `ToolBinding` seam (**#6**): a
@@ -725,7 +726,7 @@ degrade-don't-crash on every boundary (typed store-IO error, base-`TransportErro
 a `run_cycle` catch-all that records+regenerates, isolated child-harvest — S1–S3); verifier kernel
 guards (no hard-less/empty pipeline → no silent accept G1; single authoritative supersession G2;
 payload-key allowlist at intake so free-text can't ride to a gate R1); answer-key isolation backstop
-(content-hash guard + agent `test.csv` target-strip — I1/I2); always-on harvested **transcript**
+(content-hash guard + agent `test.csv` target-strip — I1/I2); always-on **transcript** (stderr-log-reconstructed host-side)
 instrumentation referenced from the RunReport (F); capped subprocess output (`verity.proc`, V3); and
 the selection-margin noise-floor lever wired through the sweep (`Budgets.selection_margin`, C/V2).
 
@@ -738,7 +739,7 @@ the selection-margin noise-floor lever wired through the sweep (`Budgets.selecti
   - **fe-kaggle production should-fixes:** offline run-phase (network only for `pip`, V1) and optional
     single-thread determinism — out of the ablation path; the public-leaderboard exfil risk is real
     there. Part of the code-runner hardening item below.
-  - **Nice-to-knows:** harvest a complete proposal on a hard wall-clock kill (F4); reap orphaned
+  - **Nice-to-knows:** transcript+telemetry are now salvaged on a hard wall-clock kill (F4 — shipped); reap orphaned
     code-runner containers if the verifier crashes mid-run (V5); a two-directional bundle-consistency
     assertion (G5); bound the kaggle `_run_cache` growth (G7).
 

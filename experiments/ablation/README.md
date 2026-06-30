@@ -37,11 +37,16 @@ models in exp1, an adjusted cycle budget for the loop).
 ## Running it
 
 1. Prepare the dataset once (outside Verity, ADR 0005) with `tools/prepare_fe_data.py`, producing a
-   data dir with `agent/{train,test}.csv` and `verifier/{train,holdout,holdout_labels}.csv`. The
-   agent's `test.csv` is a **small unlabelled sample** (`--agent-test-rows`, default **200**) — a
-   wiring/format check only; the agent estimates its score via stratified **CV on `train`**, while the
-   gate scores on the verifier's **full** reserved `holdout`. Keep `--agent-test-rows` identical
-   across phases so the agent's inputs never differ between conditions.
+   data dir with `agent/{train,test}.csv` and `verifier/{train,holdout,holdout_labels}.csv`. Size the
+   experiment dataset with **`--sample-n N --seed S`** — a uniform-random, reproducible sample that
+   **preserves the natural class distribution** (the faithful sizing). Do **not** use `--per-class`
+   for an experiment: it *balances* the classes and so distorts the real (imbalanced) task — it's a
+   smoke convenience only. The agent's `test.csv` is a **small unlabelled sample**
+   (`--agent-test-rows`, default **200**) — a wiring/format check only; the agent estimates its score
+   via stratified **CV on `train`**, while the gate scores on the verifier's **full** reserved
+   `holdout`. Keep `--agent-test-rows` (and the seed) identical across phases so the agent's inputs
+   never differ between conditions. The committed ablation dataset is `data/ablation-120k-seed42/`
+   (120K uniform-random @ seed 42 → 102K train / 18K holdout, natural ~65/20/14).
 2. Run each phase **with `run_sweep_container.sh`** (needs Docker + the worker images built, and the
    `verity-net` network — i.e. the daemon stack has been brought up at least once, see
    `infra/compose.daemon.yml`):

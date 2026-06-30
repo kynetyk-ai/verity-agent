@@ -1,6 +1,6 @@
 # ADR 0006 — Plugin loader: task & verifier types discovered via entry points
 
-- **Status:** Proposed — the written decision ROADMAP 9.3 requires before code (delivered alongside it).
+- **Status:** Accepted — shipped (ROADMAP 9.3; task & verifier types discovered from entry points at boot).
 - **Date:** 2026-06-20
 - **Affects spec:** §3.3–§3.4 (the deliberately-unintelligent control plane + its catalog), §3.6 (the
   opaque, user-selected verifier), §3.9 (deployment — adding a type without an image rebuild).

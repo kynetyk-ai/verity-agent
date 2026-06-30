@@ -1,6 +1,6 @@
 # ADR 0004 — The long-lived, configurable control-plane service (task catalog, control surface, file I/O)
 
-- **Status:** Proposed — architecture only (no implementation); drafted on `docs/adr-0004-configurable-control-plane`
+- **Status:** Accepted — implemented (Phase 8, the long-lived `verity serve` daemon, v1 complete); drafted on `docs/adr-0004-configurable-control-plane`
 - **Date:** 2026-06-10 (revised same day after review — resolved the CLI↔daemon transport, replaced the
   verifier compatibility matrix with registry self-description, deferred crash recovery to #57)
 - **Affects spec:** §3.3–§3.4 (the control-plane service + its API surface), §3.9 (deployment &

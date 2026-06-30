@@ -14,14 +14,32 @@ failure* in one high-risk area (harvest/teardown ordering, answer-key isolation,
 hidden instructions, gate logic, code-runner sandboxing/determinism). Every load-bearing finding
 below was re-confirmed by reading the cited source. No code was modified.
 
-> **Status update (post-audit):** several findings have since shipped, so the "current state"
-> descriptions and `file:line` citations below are a frozen snapshot that predates them. In
-> particular: the **step transcript (§5) is now always-on, harvested, and content-addressed**
-> (referenced as `transcript_ref`; telemetry also carries a `stop_reason` on a budget/recursion
-> limit-end), the **agent-facing prompt copy was restyled to imperative** (so quotes like "your
-> script" / "no leaderboard" no longer match), and the **step-budget safety net was recalibrated**
-> (fixed model-step budget + a clamped recursion backstop). Treat this report as the historical audit,
-> not the current spec; `tools/render_transcript.py` renders a harvested transcript.
+> **Status update (post-audit).** Most findings have since shipped, so the "current state"
+> descriptions and `file:line` citations below are a **frozen snapshot** that predates them — treat
+> this report as the historical audit, not the current spec. Remediation ledger:
+>
+> **Done (fe-holdout / shared kernel):**
+> - **§5 step transcript + telemetry** — now always-on and content-addressed (`transcript_ref`;
+>   telemetry carries `stop_reason` on a budget/recursion limit-end). *Note:* the mechanism changed
+>   again after the audit — the worker no longer writes a `__transcript__.json` file (it shares the
+>   agent's uid, so a file would be tamperable); it emits **structured stderr log events** that the
+>   host reconstructs (`src/verity/sandbox/log_transcript.py`). `tools/render_transcript.py` renders it.
+> - **F4** (hard wall-clock kill discarded the proposal/transcript) — salvaged on kill.
+> - **S1–S3** (degrade-don't-crash exception net), **V3** (capped subprocess output, `verity.proc`).
+> - **Code-runner PID-cap deadlock** (`n_jobs=-1` at 16 cores blew the 128-PID default) —
+>   `pids_limit` 128→4096 in both verifier services; sandbox CPUs 2→16 + pids 4096.
+> - **Data balancing** — `--per-class` (which balanced/distorted the task) replaced by a seeded
+>   uniform-random `random_sample` (`--sample-n/--seed`) that preserves the natural distribution.
+> - **I1** (answer-key isolation backstop, content-hash intersection), **I2** (agent `test.csv`
+>   target-strip), **G3** (incumbent score recomputed from the CP's durable record, not the in-memory
+>   ledger), **R1/G1/G2** (payload-key allowlist + verifier-pipeline guards), prompt restyle to
+>   imperative (the old "your script" / "no leaderboard" quotes no longer match), and the **step-budget
+>   recalibration** (fixed model-step budget + clamped recursion backstop).
+>
+> **Still open — fe-kaggle-specific, tracked on [issue #117](https://github.com/kynetyk-ai/verity/issues/117):**
+> **V1** (network on for the whole run → public-leaderboard exfil), the fe-kaggle proxy/real score
+> ledgers (G3's kaggle half), and **G7** (`_run_cache` unbounded growth). The PID-cap fix also needs
+> applying-and-recalibrating there (the #111 `code_timeout` was derived under `pids=128`).
 
 ---
 
