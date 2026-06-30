@@ -19,7 +19,7 @@ unchanged). It imports no ``deepagents`` code, so the host side stays light.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 __all__ = [
     "TURN_EVENT",
@@ -73,7 +73,7 @@ def render_message(index: int, message: Any) -> dict[str, Any]:
     if type(message).__name__ == "ToolMessage" and getattr(message, "name", None) is not None:
         entry["tool_name"] = message.name
     # Guarantee JSON-safety for the structured logger (and for the host's later re-serialization).
-    return json.loads(json.dumps(entry, default=str))
+    return cast("dict[str, Any]", json.loads(json.dumps(entry, default=str)))
 
 
 def reconstruct_from_logs(stderr: str) -> tuple[bytes | None, bytes | None]:
