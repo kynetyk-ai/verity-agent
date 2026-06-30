@@ -51,6 +51,9 @@ _DEFAULT_CODE_IMAGE = "python:3.12-slim"
 _DEFAULT_CODE_MEMORY = "4g"
 _DEFAULT_CODE_TMPFS = "2g"
 _DEFAULT_CODE_CPUS = "16"
+# Generous PID cap: the FE prompt mandates n_jobs=-1, which on 16 cores spawns far more than the
+# bare-default 128 threads/procs → pthread_create deadlock (REPORT §2a). Overridable.
+_DEFAULT_CODE_PIDS = "4096"
 
 
 def _require_object(objects: Mapping[str, bytes], key: str) -> bytes:
@@ -80,6 +83,7 @@ def build_holdout_verifier_from_setup(setup: VerifierSetup) -> VerifierPort:
         memory=os.environ.get("VERITY_CODE_MEMORY", _DEFAULT_CODE_MEMORY),
         tmpfs_size=os.environ.get("VERITY_CODE_TMPFS", _DEFAULT_CODE_TMPFS),
         cpus=os.environ.get("VERITY_CODE_CPUS", _DEFAULT_CODE_CPUS),
+        pids_limit=int(os.environ.get("VERITY_CODE_PIDS", _DEFAULT_CODE_PIDS)),
         config=HOLDOUT_CONFIG,
     )
 

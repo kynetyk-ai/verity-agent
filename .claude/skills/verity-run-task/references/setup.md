@@ -117,7 +117,7 @@ The `fe-kaggle` task type submits to a live competition, so its gate needs a Kag
   competition (auth can otherwise be fine — a 401 elsewhere means a bad token).
 - The cap is the competition's own daily submission limit (read from its Kaggle metadata, typically
   ~5/day per team); the gate reads remaining budget from the API and blocks until it frees. Full package + protocol: the task's own `PROTOCOL.md` (in the Verity repo, under
-  `prototyping_datasci_test/`).
+  `results/prototyping_datasci_test/`).
 
 ---
 

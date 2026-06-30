@@ -40,8 +40,8 @@ _CP_IMAGE = "verity-controlplane:latest"
 _SANDBOX_IMAGE = "verity-sandbox:latest"
 _COMPOSE = "infra/compose.daemon.yml"
 _CONTAINER = "verity-cp"
-_DATASET = Path("prototyping_datasci_test/train.csv")
-_TESTSET = Path("prototyping_datasci_test/test.csv")
+_DATASET = Path("results/prototyping_datasci_test/train.csv")
+_TESTSET = Path("results/prototyping_datasci_test/test.csv")
 _COMPETITION = os.environ.get("KAGGLE_COMPETITION", "playground-series-s6e6")
 
 

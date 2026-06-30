@@ -95,7 +95,7 @@ verity create --request-file task.json \
 ```
 
 The `TaskRequest` JSON shape (a `--request-file`; committed examples under
-`prototyping_datasci_test/task*.json`):
+`results/prototyping_datasci_test/task*.json`):
 
 ```jsonc
 {
@@ -114,7 +114,7 @@ The `TaskRequest` JSON shape (a `--request-file`; committed examples under
 
 `fe-holdout` (local hold-out, **no creds**) and `fe-kaggle` (real leaderboard) both use the role-file
 flow: prepare the bundles with `uv run python -m tools.prepare_fe_data …` (run as a MODULE; or let
-`prototyping_datasci_test/run.sh` do it). `fe-holdout`'s verifier role is a subset
+`results/prototyping_datasci_test/run.sh` do it). `fe-holdout`'s verifier role is a subset
 (`train.csv` + `holdout.csv` + `holdout_labels.csv`); `fe-kaggle` additionally needs
 `verifier.knobs.competition` (the slug) and `KAGGLE_USERNAME`/`KAGGLE_KEY` in the daemon env
 (setup.md → *Kaggle creds*). Read the live contract with `verity catalog --type <name>`.

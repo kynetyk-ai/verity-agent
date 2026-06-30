@@ -33,7 +33,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from verity.logging import get_logger
-from verity.proc import communicate_capped
+from verity.proc import DEFAULT_OUTPUT_CAP, drain_capped
 from verity.provisioning.backend import (
     CompletedWorker,
     Labels,
@@ -85,7 +85,9 @@ class DockerBackend:
             mounts, writable_hosts = self._materialize(spec, staging)
             argv = self.build_argv(spec, name=name, mounts=mounts)
             log.info("worker_launched", name=name, image=spec.image, **spec.labels.as_dict())
-            result = await self._run(argv, name=name, timeout_s=spec.timeout_s)
+            result = await self._run(
+                argv, name=name, timeout_s=spec.timeout_s, cap=spec.output_cap
+            )
             outputs = self._collect(spec, writable_hosts)
             log.info("worker_destroyed", name=name, exit_code=result.exit_code,
                      timed_out=result.timed_out, **spec.labels.as_dict())
@@ -286,7 +288,9 @@ class DockerBackend:
         role = labels.role or "worker"
         return f"verity-{role}-{uuid.uuid4().hex[:10]}"
 
-    async def _run(self, argv: Sequence[str], *, name: str, timeout_s: float) -> CompletedWorker:
+    async def _run(
+        self, argv: Sequence[str], *, name: str, timeout_s: float, cap: int = DEFAULT_OUTPUT_CAP
+    ) -> CompletedWorker:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -297,17 +301,30 @@ class DockerBackend:
             raise ProvisioningError(
                 f"could not launch worker via {self.docker_bin!r}: {exc}"
             ) from exc
+        # Own the drain tasks directly (not via communicate_capped) so a wall-clock kill RETAINS the
+        # bytes read before it — the sandbox worker's stderr carries the agent transcript, so a
+        # timed-out cycle must still surface what ran (F4). Wrapping communicate_capped in wait_for
+        # would cancel the drains and lose that partial output. (The V3 cap still bounds memory.)
+        out_task = asyncio.ensure_future(drain_capped(proc.stdout, cap))
+        err_task = asyncio.ensure_future(drain_capped(proc.stderr, cap))
+        timed_out = False
         try:
-            # Capped capture (V3): a runaway submission can't OOM the host via an unbounded pipe.
-            out, err = await asyncio.wait_for(communicate_capped(proc), timeout=timeout_s)
+            await asyncio.wait_for(proc.wait(), timeout=timeout_s)
         except TimeoutError:
-            await self._kill(name)
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(communicate_capped(proc), timeout=5.0)
-            return CompletedWorker(exit_code=-1, stdout="", stderr="", timed_out=True)
+            timed_out = True
+            await self._kill(name)  # closes the pipes → drains hit EOF, keeping what they read
+        out = err = b""
+        try:
+            (out, _ot), (err, _et) = await asyncio.wait_for(
+                asyncio.gather(out_task, err_task), timeout=10.0
+            )
+        except Exception:  # noqa: BLE001 - capture is best-effort; never mask the run outcome
+            out_task.cancel()
+            err_task.cancel()
         return CompletedWorker(
-            exit_code=proc.returncode if proc.returncode is not None else -1,
+            exit_code=-1 if timed_out else (proc.returncode if proc.returncode is not None else -1),
             stdout=out.decode(errors="replace"), stderr=err.decode(errors="replace"),
+            timed_out=timed_out,
         )
 
     async def _kill(self, name: str) -> None:

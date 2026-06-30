@@ -214,6 +214,7 @@ async def configure_fe_kaggle_task(
         driver=BackendSandboxDriver(
             backend=backend, model=model, spec=spec, image=provisioning.sandbox_image,
             config=FE_KAGGLE_TASK_ID, memory=provisioning.sandbox_memory,
+            cpus=provisioning.sandbox_cpus, pids_limit=provisioning.sandbox_pids,
             recursion_limit=provisioning.recursion_limit, timeout_s=provisioning.sandbox_timeout_s,
             step_budget=provisioning.step_budget, runtime=provisioning.runtime,
         ),

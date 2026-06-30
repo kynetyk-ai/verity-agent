@@ -1,0 +1,18 @@
+{
+  "task_type": "fe-holdout",
+  "goal": "Write a script that optimizes stellar-class prediction for balanced accuracy. Submit your best work.\n\nThe task: classify each astronomical observation as one of three stellar classes — GALAXY, STAR, or QSO (quasar). The target column is `class`.\n\nColumns:\n- id: row identifier (not a feature)\n- alpha: right ascension angle (sky coordinate, degrees)\n- delta: declination angle (sky coordinate, degrees)\n- u, g, r, i, z: photometric magnitudes in the SDSS ultraviolet / green / red / near-infrared / infrared filters\n- redshift: measured redshift\n- spectral_type: categorical spectral classification\n- galaxy_population: categorical (present in both train and test)\n- class: the target (GALAXY / STAR / QSO), present only in the training data",
+  "models": [
+    {"label": "sonnet", "model": "anthropic:claude-sonnet-4-6"},
+    {"label": "gpt-oss", "model": "gpt-oss:20b", "base_url": "http://host.docker.internal:11434/v1"}
+  ],
+  "seeds": 10,
+  "budgets": {
+    "max_cycles": 1,
+    "sandbox_timeout_s": 1500,
+    "code_timeout_s": 12960,
+    "recursion_limit": 300
+  },
+  "conditions": [
+    {"name": "exp1", "accept_policy": "always", "provisioning": "none", "max_cycles": 1}
+  ]
+}

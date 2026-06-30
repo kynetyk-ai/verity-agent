@@ -43,10 +43,10 @@ _DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 CODE_TASK_ID = "code"
 CODE_GOAL = "Write a submission script that runs cleanly."
 _CODE_INSTRUCTIONS = (
-    "Write submission.py to outbox/ that prints 'ok' (run it to check), then submit it as a "
+    "Write submission.py to /work/outbox/ that prints 'ok' (run it to check), then submit it as a "
     "Submission with entrypoint submission.py, using dataset id 'ds' as the parent."
 )
-_CODE_DOMAIN_INSTRUCTIONS = "a Submission names an entrypoint script written to outbox/"
+_CODE_DOMAIN_INSTRUCTIONS = "a Submission names an entrypoint script written to /work/outbox/"
 _CODE_VERIFIER_APPROACH = (
     "Two gates on the submitted script: a cheap 'parses' check (rung 2, real ast.parse) earns "
     "'tentative', then a hard 'runs-clean' gate executes the entrypoint in an isolated worker and "
@@ -82,6 +82,7 @@ async def configure_code_task(
         driver=BackendSandboxDriver(
             backend=backend, model=model, spec=spec, image=provisioning.sandbox_image,
             config=CODE_TASK_ID, memory=provisioning.sandbox_memory,
+            cpus=provisioning.sandbox_cpus, pids_limit=provisioning.sandbox_pids,
             recursion_limit=provisioning.recursion_limit, timeout_s=provisioning.sandbox_timeout_s,
             step_budget=provisioning.step_budget, runtime=provisioning.runtime,
         ),

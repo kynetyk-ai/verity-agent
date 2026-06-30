@@ -542,7 +542,7 @@ libraries that manage their own thread pools don't co-exist cleanly in one proce
 alongside LightGBM/XGBoost is a known stall) — so to use several, train each in its own
 process (`multiprocessing` / `ProcessPoolExecutor`) and combine predictions.
 
-Deliver to `outbox/` each cycle: `{ENTRYPOINT}` (the script) and `{REQUIREMENTS}` (its pinned
+Deliver to `/work/outbox/` each cycle: `{ENTRYPOINT}` (the script) and `{REQUIREMENTS}` (its pinned
 packages, e.g. `pandas==2.2.2`, one per line — the gate installs exactly these). The proposal
 payload (via the submit/revises tool): `entrypoint` = "{ENTRYPOINT}", `requirements` =
 "{REQUIREMENTS}". The submission is the unit — do not report individual features.

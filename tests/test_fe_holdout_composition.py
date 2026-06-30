@@ -147,3 +147,21 @@ def test_fe_tasks_default_to_the_ml_equipped_sandbox_image() -> None:
     assert with_fe_sandbox_image(ProvisioningConfig()).sandbox_image == FE_SANDBOX_IMAGE
     custom = ProvisioningConfig(sandbox_image="my-custom-sandbox:tag")
     assert with_fe_sandbox_image(custom).sandbox_image == "my-custom-sandbox:tag"
+
+
+def test_provisioning_gives_the_sandbox_gate_representative_compute(monkeypatch) -> None:
+    """The sandbox must mirror the gate's 16 cores with a generous PID cap, so the prompt-mandated
+    n_jobs=-1 doesn't deadlock (REPORT §2); overridable via VERITY_SANDBOX_CPUS / _PIDS."""
+    from verity.composition.fe import provisioning_config_from
+
+    monkeypatch.delenv("VERITY_SANDBOX_CPUS", raising=False)
+    monkeypatch.delenv("VERITY_SANDBOX_PIDS", raising=False)
+    p = provisioning_config_from(SandboxRequest())
+    assert p.sandbox_cpus == "16"
+    assert p.sandbox_pids == 4096
+
+    monkeypatch.setenv("VERITY_SANDBOX_CPUS", "8")
+    monkeypatch.setenv("VERITY_SANDBOX_PIDS", "2048")
+    p2 = provisioning_config_from(SandboxRequest())
+    assert p2.sandbox_cpus == "8"
+    assert p2.sandbox_pids == 2048

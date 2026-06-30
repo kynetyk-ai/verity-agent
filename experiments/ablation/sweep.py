@@ -286,11 +286,66 @@ async def run_sweep(
             (out_dir / f"{result.key()}.json").write_text(
                 result.report.to_json(), encoding="utf-8"
             )
+            await _harvest_cell(service, task_id, result, out_dir)
         log.info("sweep_cell_done", index=i, total=len(cells), key=result.key(),
                  status=result.status)
     if out_dir is not None:
         _write_manifest(out_dir, results)
     return results
+
+
+async def _harvest_cell(
+    service: ControlService, task_id: str, result: CellResult, out_dir: Path
+) -> None:
+    """Pull each cell's TRANSCRIPT(s) + accepted submission objects out of the durable store and
+    write them in human-readable form next to the report — transcripts captured automatically, no
+    manual extraction (the batch-1/2 loss lesson; needs the persisted ``--store-root``).
+
+    Per cycle: ``transcript_ref`` is a content hash into the store (present even on rejected /
+    no-proposal / timed-out cycles, F4); fetch the bytes, save the raw JSON, and render Markdown via
+    ``tools/render_transcript.py``. Accepted artifacts' objects (``submission.py`` etc.) go under
+    ``submissions/``. Best-effort and fully isolated: any failure here logs and is swallowed, so
+    harvesting can NEVER fail a cell or abort a sweep. (Rejected-cell submission code is not a
+    durable accepted artifact, but it is visible in that cell's transcript.)
+    """
+    report = result.report
+    if report is None:
+        return
+    multi = len(report.cycles) > 1
+    for cyc in report.cycles:
+        ref = cyc.transcript_ref
+        if not ref:
+            continue
+        try:
+            raw = service.get_object(task_id, ref)
+        except Exception as exc:  # noqa: BLE001 - best-effort observability, never fatal
+            log.warning("harvest_transcript_miss", key=result.key(), ref=ref, error=str(exc))
+            continue
+        stem = f"{result.key()}-cycle{cyc.index}" if multi else result.key()
+        tdir = out_dir / "transcripts"
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / f"{stem}.json").write_bytes(raw)
+        try:
+            from tools.render_transcript import render  # type: ignore[import-not-found]
+
+            entries = json.loads(raw)
+            (tdir / f"{stem}.md").write_text(render(entries, limit=None), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - rendering is a convenience; raw JSON is the source
+            log.warning("harvest_render_failed", key=result.key(), error=str(exc))
+
+    try:
+        accepted_ids = [a["id"] for a in report.summary.accepted]
+        by_id = {a.id: a for a in await service.accepted_artifacts(task_id)}
+        for art_id in accepted_ids:
+            art = by_id.get(art_id)
+            if art is None:
+                continue
+            for name, oref in art.objects:
+                dest = out_dir / "submissions" / result.key() / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(service.get_object(task_id, oref.content_hash))
+    except Exception as exc:  # noqa: BLE001 - best-effort; transcripts already carry the narrative
+        log.warning("harvest_submissions_failed", key=result.key(), error=str(exc))
 
 
 def _write_manifest(out_dir: Path, results: list[CellResult]) -> None:
@@ -316,6 +371,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     Wires a real `ControlService` (the discovered catalog over a `DockerBackend`, launching sibling
     worker containers — the same engine the daemon serves), so this needs Docker and the worker
     images. The heavy imports are local so importing this module for the tested core stays light.
+
+    PREFER ``experiments/ablation/run_sweep_container.sh`` over invoking this directly: this *is*
+    the control plane, so it must run inside a container on ``verity-net`` to reach the §9.1
+    verifier sibling (a host process can't resolve its Docker-network name → every cell aborts).
+    See the package README's "Running it" box.
     """
     import argparse
 
@@ -326,10 +386,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("spec", help="path to the JSON sweep spec (see spec.example.json)")
     parser.add_argument("--data", required=True, help="prepared data dir (agent/ + verifier/ CSVs)")
     parser.add_argument("--out", required=True, help="dir to write per-cell RunReport JSON into")
-    parser.add_argument("--store-root", default=None, help="durable store root (default ephemeral)")
+    parser.add_argument(
+        "--store-root", default=None,
+        help="durable store root. OMITTING THIS USES AN IN-MEMORY STORE that dies with the "
+        "process: the RunReport JSONs survive (scores/rationale/telemetry → analyze.py + all "
+        "figures), but the agent TRANSCRIPTS and submission objects (submission.py, "
+        "requirements.txt) are LOST (transcript_ref is only a hash into the dead store). Pass a "
+        "path to keep them.",
+    )
     args = parser.parse_args(argv)
 
     configure_logging(json_output=True)
+    if not args.store_root:
+        # Loud, not fatal — an intentional throwaway run is legitimate, but a forgotten
+        # --store-root on a multi-hour sweep silently discards every transcript + submission. Make
+        # that impossible to miss (the lesson from the batch-1/2 transcript loss).
+        log.warning(
+            "sweep_ephemeral_store_no_store_root",
+            impact="transcripts + submission objects WILL NOT be saved; only RunReports persist",
+            fix="pass --store-root <dir>, or use run_sweep_container.sh which sets it",
+        )
     spec = load_spec(args.spec)
     role_files = load_role_files(args.data)
     service = build_service(root=Path(args.store_root) if args.store_root else None)

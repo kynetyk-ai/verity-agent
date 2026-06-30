@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
-__all__ = ["communicate_capped", "DEFAULT_OUTPUT_CAP"]
+__all__ = ["communicate_capped", "drain_capped", "DEFAULT_OUTPUT_CAP"]
 
 # Per-stream retained-byte budget. Generous for legitimate pip/training chatter, but a hard ceiling
 # on what a runaway child can make the host hold in memory.
@@ -20,8 +20,14 @@ DEFAULT_OUTPUT_CAP = 1_000_000
 _READ_CHUNK = 65_536
 
 
-async def _drain_capped(stream: asyncio.StreamReader | None, cap: int) -> tuple[bytes, bool]:
-    """Read ``stream`` to EOF, retaining at most ``cap`` bytes; report whether any were dropped."""
+async def drain_capped(stream: asyncio.StreamReader | None, cap: int) -> tuple[bytes, bool]:
+    """Read ``stream`` to EOF, retaining at most ``cap`` bytes; report whether any were dropped.
+
+    Public so a caller that needs timeout-safe capture (e.g. the worker backend, which must retain
+    whatever was read *before* a wall-clock kill) can own the drain tasks itself rather than wrap
+    :func:`communicate_capped` — wrapping it in ``wait_for`` would cancel the drains and lose the
+    bytes already buffered, exactly the partial output a timed-out worker most needs.
+    """
     if stream is None:
         return b"", False
     buf = bytearray()
@@ -46,8 +52,8 @@ async def communicate_capped(
     cannot OOM the host or deadlock on a full pipe. A truncation marker is appended to a capped
     stream so the caller can tell it was clipped.
     """
-    out_task = asyncio.ensure_future(_drain_capped(proc.stdout, cap))
-    err_task = asyncio.ensure_future(_drain_capped(proc.stderr, cap))
+    out_task = asyncio.ensure_future(drain_capped(proc.stdout, cap))
+    err_task = asyncio.ensure_future(drain_capped(proc.stderr, cap))
     out, out_truncated = await out_task
     err, err_truncated = await err_task
     await proc.wait()

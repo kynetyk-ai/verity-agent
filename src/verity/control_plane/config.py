@@ -44,7 +44,16 @@ __all__ = [
     "compose_system_prompt",
     "orientation_digest",
     "KERNEL_ORIENTATION_TEMPLATE",
+    "WORKSPACE_ROOT",
 ]
+
+# The absolute path the agent's workspace roles live under, rendered into the prompt so every role
+# reference is an unambiguous absolute path (``/work/outbox/``), not a bare ``outbox/`` a model can
+# misread as the read-only root ``/outbox``. MUST match the container workspace root
+# (``verity.sandbox.container_io.CONTAINER_WORKSPACE``); kept as a local literal to avoid a
+# control_plane→sandbox import cycle. Real agents always run in the container at this path; the
+# in-process driver (a different temp root) is fake-model offline tests only.
+WORKSPACE_ROOT = "/work"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,30 +127,38 @@ Work independently and diligently to complete the task provided:
 - **Do not** ask clarifying questions, request user input, or wait for permission. Execute
   independently.
 
-The provided workspace has a fixed layout (read-only inputs; writable-ephemeral working areas):
+The working directory is {root}. The workspace has a fixed layout (read-only inputs;
+writable-ephemeral working areas) — reference roles by these absolute paths:
 {layout}
 
-- The required output schema for the proposal lives under spec/.
-- Prepare to submit a proposal by moving any object attachments (a script, a data file) to outbox/;
-  do not rely on any other path.
+- The required output schema for the proposal lives under {root}/spec/.
+- Prepare to submit a proposal by moving any object attachments (a script, a data file) to
+  {root}/outbox/; do not rely on any other path.
 - Self-verify the shape of the proposal and if possible, test the proposal prior to submission.
 - Submit the proposal using the tool provided and within the time allotted.
 - If given instructions to correct a previously submitted proposal, follow them precisely.
 """
 
 
-def render_workspace_layout(contract: WorkspaceContract) -> str:
-    """Render the workspace roles as the prompt's layout block (kept in sync with §3.4)."""
-    width = max(len(role.name) for role in contract.roles)
+def render_workspace_layout(contract: WorkspaceContract, root: str = WORKSPACE_ROOT) -> str:
+    """Render the workspace roles as the prompt's layout block (kept in sync with §3.4).
+
+    Each role is shown as its **absolute path** (``{root}/{name}/``) so a reference can't be
+    misread as the read-only filesystem root (the ``outbox/`` → ``/outbox`` mistake). ``root`` is
+    the agent's working directory (the container's ``/work``)."""
+    paths = [f"{root}/{role.name}/" for role in contract.roles]
+    width = max(len(p) for p in paths)
     return "\n".join(
-        f"  {role.name + '/':<{width + 1}}  ({role.access})  {role.purpose}"
-        for role in contract.roles
+        f"  {path:<{width}}  ({role.access})  {role.purpose}"
+        for path, role in zip(paths, contract.roles, strict=True)
     )
 
 
-def _render_orientation(contract: WorkspaceContract) -> str:
+def _render_orientation(contract: WorkspaceContract, root: str = WORKSPACE_ROOT) -> str:
     """The invariant kernel-orientation block (layer 1), rendered from the contract."""
-    return KERNEL_ORIENTATION_TEMPLATE.format(layout=render_workspace_layout(contract))
+    return KERNEL_ORIENTATION_TEMPLATE.format(
+        layout=render_workspace_layout(contract, root), root=root
+    )
 
 
 def compose_system_prompt(

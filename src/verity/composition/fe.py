@@ -10,6 +10,7 @@ task (`composition.code`) both import these. There is no standalone basic-`fe` t
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
@@ -92,6 +93,12 @@ class ProvisioningConfig:
     model_spec: ModelSpec | None = None
     runtime: str | None = None
     sandbox_memory: str = "4g"
+    # The agent develops + self-tests its script in the sandbox, so its box must mirror the gate's
+    # code-runner (16 cores) and be bounded the same way: the prompt mandates n_jobs=-1, which on 16
+    # cores needs a generous PID cap or it deadlocks (the bare default 128 was the code-runner
+    # deadlock — REPORT §2). Overridable via VERITY_SANDBOX_CPUS / VERITY_SANDBOX_PIDS.
+    sandbox_cpus: str = "16"
+    sandbox_pids: int = 4096
     code_memory: str = "2g"
     code_tmpfs_size: str = "1g"
     recursion_limit: int = 200  # a floor; the driver clamps it UP to step_budget*headroom (#103)
@@ -113,6 +120,9 @@ def provisioning_config_from(sandbox: SandboxRequest) -> ProvisioningConfig:
         model_spec=sandbox.to_model_spec(),
         runtime=sandbox.runtime,
         sandbox_memory=sandbox.sandbox_memory,
+        # Substrate-side env overrides (ADR 0003), mirroring the verifier's VERITY_CODE_* knobs.
+        sandbox_cpus=os.environ.get("VERITY_SANDBOX_CPUS", "16"),
+        sandbox_pids=int(os.environ.get("VERITY_SANDBOX_PIDS", "4096")),
         code_memory=sandbox.code_memory,
         code_tmpfs_size=sandbox.code_tmpfs_size,
         recursion_limit=sandbox.recursion_limit,
