@@ -274,3 +274,17 @@ def test_list_and_reap_select_running_workers_by_label() -> None:
         assert asyncio.run(backend.status(WorkerHandle(name, Labels(role="")))) is WorkerStatus.GONE
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+
+
+def test_run_retains_stderr_on_timeout() -> None:
+    # The transcript-via-logs design depends on this: a timed-out worker's stderr (which carries the
+    # agent transcript) must be RETAINED, not discarded. `_run` owns the drain tasks so a wall-clock
+    # kill keeps whatever was read before it. docker_bin="true" makes `_kill` a harmless no-op (no
+    # daemon), so the child just runs to its own exit while the drains keep its early stderr.
+    backend = DockerBackend(docker_bin="true")
+    argv = ["sh", "-c", "printf PARTIAL_STDERR >&2; sleep 1"]
+    result = asyncio.run(backend._run(argv, name="not-a-container", timeout_s=0.3))
+
+    assert result.timed_out is True
+    assert result.exit_code == -1
+    assert "PARTIAL_STDERR" in result.stderr  # retained despite the timeout (the F4 guarantee)

@@ -1,4 +1,4 @@
-"""The user-side fe-kaggle trajectory readout (``prototyping_datasci_test/trajectory.py``).
+"""The user-side fe-kaggle trajectory readout (``results/prototyping_datasci_test/trajectory.py``).
 
 It's a standalone script (not an installed module), so we load it by path and drive both its parsing
 helpers and its CLI entrypoint over a synthetic RunReport — the shape ``verity results`` emits.
@@ -13,7 +13,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "prototyping_datasci_test" / "trajectory.py"
+_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "results" / "prototyping_datasci_test" / "trajectory.py"
+)
 
 
 def _load():  # type: ignore[no-untyped-def]

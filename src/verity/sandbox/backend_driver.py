@@ -39,12 +39,19 @@ from verity.sandbox.container_io import (
     effective_recursion_limit,
     effective_step_budget,
 )
+from verity.sandbox.descriptor import RESERVED_TELEMETRY_NAME, RESERVED_TRANSCRIPT_NAME
 from verity.sandbox.errors import SandboxError
+from verity.sandbox.log_transcript import reconstruct_from_logs
 from verity.sandbox.model_spec import ModelSpec
 
 __all__ = ["BackendSandboxDriver"]
 
 log = get_logger("verity.sandbox.backend_driver")
+
+# The sandbox worker's captured stderr carries the FULL agent transcript (logged, not file-written),
+# so its output budget must clear a long run's turns — far above the 1 MB runaway-child default that
+# bounds the verifier/code-runner. Generous; still a hard ceiling on host memory per cycle.
+_SANDBOX_OUTPUT_CAP = 32_000_000
 
 _READ_ONLY_ROLES = ("data", "context", "tools", "spec")
 # Writable roles whose control-plane-provisioned content must also reach the worker. Before the
@@ -174,12 +181,22 @@ class BackendSandboxDriver:
             workdir=CONTAINER_WORKSPACE,
             runtime=self.runtime,
             timeout_s=self.timeout_s,
+            output_cap=_SANDBOX_OUTPUT_CAP,
         )
 
     @staticmethod
     def _bridge_outbox(result: CompletedWorker, workspace: ProvisionedWorkspace) -> None:
-        """Write the worker's outbox bytes into the host workspace outbox, so `AgentSandbox`'s
-        harvest finds them (the agent wrote inside the worker, not the host workspace)."""
+        """Bridge the worker's outputs into the host workspace outbox, so `AgentSandbox`'s harvest
+        finds them (the agent wrote inside the now-gone worker).
+
+        Two sources: (1) the agent's outbox *files* (the proposal descriptor + submission objects),
+        returned as bytes; and (2) the **transcript + telemetry**, which the worker did NOT write as
+        files (the agent shares its uid and could tamper) but **logged** to stderr — reconstructed
+        here, host-side, after the container has exited, and written under the reserved names so the
+        agent never had access to them. Reconstruction runs on every outcome (success, no-proposal,
+        and a timed-out worker — its retained stderr still yields the turns streamed before the
+        kill).
+        """
         outbox = workspace.outbox()
         outbox.mkdir(parents=True, exist_ok=True)
         prefix = f"{CONTAINER_OUTBOX}/"
@@ -188,3 +205,9 @@ class BackendSandboxDriver:
             dest = outbox / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
+
+        transcript_bytes, telemetry_bytes = reconstruct_from_logs(result.stderr)
+        if transcript_bytes is not None:
+            (outbox / RESERVED_TRANSCRIPT_NAME).write_bytes(transcript_bytes)
+        if telemetry_bytes is not None:
+            (outbox / RESERVED_TELEMETRY_NAME).write_bytes(telemetry_bytes)

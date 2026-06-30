@@ -388,7 +388,7 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
         pytest.skip("no ANTHROPIC_API_KEY")
     if not docker_available():
         pytest.skip("no Docker for the verifier's code runner")
-    dataset = Path("prototyping_datasci_test/train.csv")
+    dataset = Path("results/prototyping_datasci_test/train.csv")
     if not dataset.exists():
         pytest.skip("the stellar dataset is not present")
     from tools.harness.dataset import stratified_split

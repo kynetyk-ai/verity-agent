@@ -86,12 +86,11 @@ packages = ["src/verity"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests", "tools", "experiments"]
-# Recorded agent submissions (verbatim model output kept as run artifacts, not maintained source)
-# and the exploratory run-data analysis notebook (a throwaway analysis artifact, not library code).
+# `results/` is the run-artifacts tree: recorded agent submissions (verbatim model output kept as
+# artifacts, not maintained source), calibration scripts, reports, and a throwaway analysis notebook.
+# Library source lives under src/tests/tools/experiments (the `src` list above); none of it is here.
 extend-exclude = [
-    "prototyping_datasci_test/prototyping-runs",
-    "prototyping_datasci_test/code-runner-calibration",
-    "prototyping_datasci_test/run_data_explorer.ipynb",
+    "results",
 ]
 
 [tool.ruff.lint]

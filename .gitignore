@@ -27,11 +27,23 @@ npm-debug.log*
 
 # The feature-engineering / fe-kaggle task package lives here and IS committed (PROTOCOL.md,
 # task.json, run.sh, overview.md); only the large datasets + generated output stay out of git.
+# The package now lives under results/ (archived); keep both locations covered.
 /prototyping_datasci_test/*.csv
 /prototyping_datasci_test/out/
-# Role-keyed bundles produced by the user-side prep (tools/prepare_fe_data.py) — derived data.
 /prototyping_datasci_test/agent/
 /prototyping_datasci_test/verifier/
+/results/prototyping_datasci_test/*.csv
+/results/prototyping_datasci_test/out/
+/results/prototyping_datasci_test/agent/
+/results/prototyping_datasci_test/verifier/
+
+# Ablation experiment OUTPUT — generated per-run (cell RunReports, sweep logs, durable stores).
+# The hand-authored docs (REPORT.md, METHODOLOGY.md, composed-system-prompt.txt) + the small
+# code-runner-calibration evidence ARE committed; the per-run output is not.
+/results/**/store/
+/results/**/sweep.log
+/results/ablation-ladder-calibration/exp1-*/
+/results/ablation-ladder-calibration/_smoke-plumbing-test/
 
 # OS / editor
 .DS_Store

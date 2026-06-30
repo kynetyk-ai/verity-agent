@@ -53,6 +53,9 @@ _DEFAULT_CODE_TMPFS = "2g"
 # full-data training to a single core (a heavy ensemble then blows the time budget). Default to a
 # generous share and let the host keep headroom; overridable via VERITY_CODE_CPUS.
 _DEFAULT_CODE_CPUS = "16"
+# Generous PID cap: the FE prompt mandates n_jobs=-1, which on 16 cores spawns far more than the
+# bare-default 128 threads/procs → pthread_create deadlock (issue #117). Overridable.
+_DEFAULT_CODE_PIDS = "4096"
 
 
 def _require_object(objects: Mapping[str, bytes], key: str) -> bytes:
@@ -90,6 +93,7 @@ def build_fe_kaggle_verifier_from_setup(setup: VerifierSetup) -> VerifierPort:
         memory=os.environ.get("VERITY_CODE_MEMORY", _DEFAULT_CODE_MEMORY),
         tmpfs_size=os.environ.get("VERITY_CODE_TMPFS", _DEFAULT_CODE_TMPFS),
         cpus=os.environ.get("VERITY_CODE_CPUS", _DEFAULT_CODE_CPUS),
+        pids_limit=int(os.environ.get("VERITY_CODE_PIDS", _DEFAULT_CODE_PIDS)),
         config=FE_KAGGLE_CONFIG,
     )
 

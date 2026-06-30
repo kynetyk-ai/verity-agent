@@ -28,9 +28,10 @@ Usage (competitive defaults — full train, ~15% stratified hold-out). Run as a 
 ``tools.harness``), not by path — ``python tools/prepare_fe_data.py`` fails with "No module named
 'tools'":
     uv run python -m tools.prepare_fe_data \
-        --train prototyping_datasci_test/train.csv \
-        --test  prototyping_datasci_test/test.csv \
-        --out   prototyping_datasci_test
+        --train <raw>/train.csv \
+        --test  <raw>/test.csv \
+        --out   data/<task>      # prepared agent/ + verifier/ bundles land here
+    # e.g. --out data/ablation-mid-17k. <raw> = the raw labelled train + unlabelled test CSVs.
     # add --per-class N for a quick smaller smoke; --reserved-fraction F to resize the hold-out
 """
 
@@ -41,7 +42,7 @@ import csv
 import io
 from pathlib import Path
 
-from tools.harness.dataset import stratified_split, subsample
+from tools.harness.dataset import random_sample, stratified_split, subsample
 
 
 def _labels_csv(reserved_labels: dict[str, str], *, id_column: str, target: str) -> bytes:
@@ -95,18 +96,27 @@ def prepare(
     target: str = "class",
     id_column: str = "id",
     per_class: int | None = None,
+    sample_n: int | None = None,
+    seed: int = 42,
     reserved_fraction: float = 0.15,
     agent_test_rows: int | None = 200,
 ) -> dict[str, dict[str, Path]]:
     """Write the agent + verifier role bundles under ``out``; return {role: {name: path}}.
 
-    Competitive sizing by default: ``per_class=None`` trains on the **full** labelled train (the
-    data is the bottleneck for a top-N% score) and ``reserved_fraction=0.15`` reserves a stratified
-    hold-out — big enough that its balanced accuracy is a tight, well-calibrated estimate of the
-    public score (the competitive gate compares against it). Pass a ``per_class`` cap for a quick
-    manual smoke; the gate logic is identical, just noisier.
+    Sizing modes (mutually exclusive; both then take a stratified ``reserved_fraction`` hold-out):
+
+    * ``sample_n`` — a **uniform-random** sample of that many rows, reproducible via ``seed``. This
+      PRESERVES the natural class distribution (the faithful way to size the experiment dataset).
+      Prefer this for the ablation; balanced accuracy on the proportional hold-out then measures the
+      real, imbalanced task.
+    * ``per_class`` — caps rows per class, which *balances* the data (distorts the real
+      distribution). A smoke convenience only; not for an experiment reporting on the natural task.
+    * neither — the **full** labelled train.
     """
-    sub = subsample(train, per_class=per_class, target=target)
+    if sample_n is not None:
+        sub = random_sample(train, n=sample_n, seed=seed)
+    else:
+        sub = subsample(train, per_class=per_class, target=target)
     split = stratified_split(
         sub, target=target, id_column=id_column, reserved_fraction=reserved_fraction
     )
@@ -151,8 +161,15 @@ def main() -> None:
     p.add_argument("--target", default="class")
     p.add_argument("--id-column", default="id")
     p.add_argument(
+        "--sample-n", type=int, default=None,
+        help="uniform-RANDOM sample of N rows (seeded), PRESERVING the natural class distribution; "
+             "the faithful way to size the experiment dataset. Prefer this over --per-class.",
+    )
+    p.add_argument("--seed", type=int, default=42, help="RNG seed for --sample-n (reproducibility)")
+    p.add_argument(
         "--per-class", type=int, default=None,
-        help="rows/class to keep (omit = full competitive train; set for a quick smoke)",
+        help="rows/class to keep — BALANCES the data (distorts the real distribution). Smoke only; "
+             "ignored if --sample-n is set. Omit both for the full train.",
     )
     p.add_argument("--reserved-fraction", type=float, default=0.15)
     p.add_argument(
@@ -169,6 +186,8 @@ def main() -> None:
         target=args.target,
         id_column=args.id_column,
         per_class=args.per_class,
+        sample_n=args.sample_n,
+        seed=args.seed,
         reserved_fraction=args.reserved_fraction,
         agent_test_rows=args.agent_test_rows or None,
     )

@@ -133,3 +133,42 @@ def test_worker_timeout_degrades_to_a_sandbox_error(tmp_path: Path) -> None:
     asyncio.run(sandbox.serve_context(ServedContext(system_prompt="SYS", tail="go")))
     with pytest.raises(SandboxError, match="timed out"):
         asyncio.run(sandbox.collect_proposal())
+
+
+def test_transcript_and_telemetry_reconstructed_from_worker_stderr(tmp_path: Path) -> None:
+    # The worker writes NO transcript/telemetry FILE (the agent shares its uid and could tamper) —
+    # only the proposal descriptor. The host reconstructs both from the worker's captured stderr log
+    # stream and bridges them into the outbox, so the minted envelope carries them as usual.
+    import json
+
+    from verity.sandbox.log_transcript import TELEMETRY_EVENT, TURN_EVENT
+
+    def _line(event: str, **f: object) -> str:
+        return json.dumps({"event": event, "level": "info", "timestamp": "t", **f})
+
+    stderr = "\n".join(
+        [
+            _line(TURN_EVENT, index=0, type="HumanMessage", content="author a note"),
+            _line(TURN_EVENT, index=1, type="AIMessage", content="done"),
+            _line(TELEMETRY_EVENT, input_tokens=5, model_steps=1, stop_reason="clean"),
+        ]
+    )
+    backend = FakeBackend(
+        script=lambda _s: CompletedWorker(
+            exit_code=0, stdout="", stderr=stderr,
+            outputs={"/work/outbox/__proposal__.json": _proposal()},  # NO diagnostics files
+        )
+    )
+    sandbox = AgentSandbox(
+        root=tmp_path / "ws", driver=BackendSandboxDriver(backend=backend),
+        schema=_SCHEMA, proposer_identity="p",
+    )
+    asyncio.run(sandbox.provision())
+    asyncio.run(sandbox.serve_context(ServedContext(system_prompt="SYS", tail="go")))
+    envelope = asyncio.run(sandbox.collect_proposal())
+
+    assert envelope.agent_telemetry is not None
+    assert envelope.agent_telemetry["model_steps"] == 1
+    assert envelope.transcript is not None
+    transcript = json.loads(envelope.transcript)
+    assert [e["content"] for e in transcript] == ["author a note", "done"]

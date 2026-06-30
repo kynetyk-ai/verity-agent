@@ -177,7 +177,7 @@ survives contact with reality, and doubles as the venue for the 6.2 study.
 ## 7. Evidence already in hand
 
 - **Cross-model / cross-provider runs on an identical harness**: gpt-5.4, sonnet, sonnet+nudge,
-  fugu (Sakana, over the OpenAI-compatible seam) under `prototyping_datasci_test/prototyping-runs/`.
+  fugu (Sakana, over the OpenAI-compatible seam) under `results/prototyping_datasci_test/prototyping-runs/`.
 - **Live instances of the agent fooling itself, caught by the independent gate** — the adversarial
   thesis demonstrated in the wild:
   - fugu run README: the script *self-reported ~0.967* while the held-out gate measured **0.9665**

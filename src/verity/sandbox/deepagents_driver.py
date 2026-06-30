@@ -44,6 +44,7 @@ from verity.sandbox.descriptor import (
     ProposalDescriptor,
 )
 from verity.sandbox.errors import SandboxError
+from verity.sandbox.log_transcript import TELEMETRY_EVENT, TURN_EVENT, render_message
 from verity.sandbox.model_spec import coerce_model
 from verity.sandbox.tools import resolve_tools
 
@@ -71,18 +72,20 @@ _DEADLINE_REMIND_FRACTION = 0.5  # start the recurring time-remaining awareness 
 # DeadlineMiddleware/StepBudget nudges only fire under time/step PRESSURE; this catches the agent
 # that converges early and never submits.
 _FINALIZE_RETRIES = 2
+# ``{outbox}`` is filled with the real absolute outbox path at use (so the nudge names the exact
+# directory — never a bare ``outbox/`` a model can misread as the read-only root ``/outbox``).
 _FINALIZE_NUDGE = (
     "NO proposal submitted yet — nothing is recorded and this cycle is wasted without one. The one "
     "deliverable this cycle is a proposal. Do it NOW: write every declared object file to "
-    "outbox/ and CALL THE PROPOSE/SUBMIT TOOL. Do not stop until that tool returns success."
+    "{outbox}/ and CALL THE PROPOSE/SUBMIT TOOL. Do not stop until that tool returns success."
 )
-# The rendered message transcript is written to the outbox EVERY cycle (not only on a no-proposal
-# failure) under the reserved name, harvested like the telemetry, and content-addressed into the
-# store — the step-level record the experiments read back. See ``RESERVED_TRANSCRIPT_NAME``.
-_TRANSCRIPT_NAME = RESERVED_TRANSCRIPT_NAME
-# Per-field byte cap in the transcript (message content / tool args / tool result) — a runaway tool
-# dump (a CSV echo, a stack trace) is truncated so it can't bloat the content-addressed store.
-_TRANSCRIPT_FIELD_CAP = 8192
+# The transcript + telemetry are emitted as STRUCTURED LOG EVENTS (one per turn, plus a final
+# telemetry line) to stderr — NOT written as files in the agent's outbox. The worker runs the agent
+# loop and its shell tool as the same uid in the same container, so any outbox file the driver wrote
+# the agent could read/edit/delete; logging streams the record out of the container where the agent
+# can't reach it. The host (backend_driver) reconstructs both from the captured stderr. The
+# in-process driver (trusted, no agent shell) instead writes the returned data to its local outbox.
+# See ``verity.sandbox.log_transcript`` for the shared producer/consumer contract.
 
 
 class DeadlineMiddleware(AgentMiddleware):
@@ -270,59 +273,61 @@ def run_agent(
     *,
     recursion_limit: int = _DEFAULT_RECURSION_LIMIT,
     outbox: Path | None = None,
-) -> None:
-    """Run the agent loop to completion (synchronous), with the end-of-loop finalize guard.
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run the agent loop to completion (synchronous); return ``(transcript, telemetry)``.
 
-    When ``outbox`` is given, the loop's telemetry (tokens / steps / tool-calls / model) is written
-    to the reserved ``__telemetry__.json`` there, harvested back to the host like the proposal
-    descriptor (ROADMAP 5.3b). Best-effort: a model without ``usage_metadata`` yields zeros / nulls.
+    Each turn is rendered and **logged** as a structured ``agent_turn`` event AS IT STREAMS, and a
+    final ``agent_telemetry`` event (tokens / steps / tool-calls / model, plus ``stop_reason`` on a
+    budget end) is logged at the end. The host reconstructs both from the worker's captured stderr —
+    the agent never sees a transcript/telemetry file (it shares the worker's uid, so a file would be
+    tamperable). Per-turn logging also means a HARD wall-clock kill still leaves every turn already
+    streamed out on the host (subsumes F4). The same data is returned for the trusted in-process
+    driver, which writes it to its local outbox.
 
-    The run is **streamed**, not ``invoke``-d, so the accumulated message state is recoverable even
-    when the run hits a recursion / step-budget limit: ``GraphRecursionError`` does not return the
-    messages, so an ``invoke`` that raises would lose the whole trace — the case we most want
-    to inspect. We keep the last streamed state and persist diagnostics from it before re-raising.
+    The run is **streamed**, not ``invoke``-d, so the message state survives a recursion / step
+    limit (``GraphRecursionError`` does not return messages). A budget/recursion exhaustion is a
+    graceful, EXPECTED stop (#103): we record ``stop_reason`` and return normally (no re-raise), so
+    the host records a no-proposal cycle and feeds it back — never a fatal loss. A genuine crash
+    (model/tool error) still propagates.
 
-    The **finalize guard**: a ReAct agent ends as soon as the model returns a message with no tool
-    call, with no structural requirement that it proposed first. If the loop ends with no proposal
-    in the outbox, re-invoke with a salient "submit now" nudge up to ``_FINALIZE_RETRIES`` times
-    (the accumulated history carried forward), so an agent that simply converged without delivering
-    gets a clear, bounded chance to. A guard re-invoke is best-effort — if it raises (e.g. a step or
-    recursion limit), we stop and let the no-proposal outcome stand. The telemetry + rendered
-    transcript are persisted EVERY cycle (success, normal no-proposal, AND a recursion/budget
-    limit-end), harvested + content-addressed by the host like the proposal descriptor (5.3b).
+    The **finalize guard** (clean completion only): a ReAct agent ends as soon as the model returns
+    a message with no tool call, with no structural requirement that it proposed first. If the loop
+    ended with no proposal in the outbox, re-invoke with a salient "submit now" nudge up to
+    ``_FINALIZE_RETRIES`` times (history carried forward); best-effort (a raise lets the no-proposal
+    outcome stand).
     """
     inputs = {"messages": [{"role": "user", "content": user_message}]}
     config = {"recursion_limit": recursion_limit}
     result: Any = {"messages": []}
+    transcript: list[dict[str, Any]] = []
+
+    def emit_new(res: Any) -> None:
+        """Render + log every message appended since the last emit (append-only `values` stream)."""
+        messages = res.get("messages", []) if isinstance(res, dict) else []
+        for index in range(len(transcript), len(messages)):
+            entry = render_message(index, messages[index])
+            transcript.append(entry)
+            log.info(TURN_EVENT, **entry)
+
+    stop_reason: str | None = None
     try:
         for state in agent.stream(inputs, config, stream_mode="values"):
             result = state  # keep the latest full state (messages survive an exhaustion below)
-            # Persist after every step so the trace survives even a HARD wall-clock timeout that
-            # SIGKILLs the worker mid-run (#103 / F4): the workspace is bind-mounted, so the last
-            # write lands on the host and the control plane salvages it. Cheap + best-effort.
-            if outbox is not None:
-                _write_diagnostics(result, outbox)
-    except (GraphRecursionError, StepBudgetExceeded):
-        # Budget/recursion exhausted — a graceful, EXPECTED stop (#103). We still have the streamed
-        # state, so persist diagnostics from it BEFORE re-raising, so a no-proposal limit-end cycle
-        # is still debuggable. container_entry catches the re-raise, annotates the stop reason, and
-        # exits 0; the host then harvests this transcript like any other.
+            emit_new(result)
+    except (GraphRecursionError, StepBudgetExceeded) as exc:
+        emit_new(result)
+        # Graceful limit-end (#103): record the reason, return normally (no re-raise).
+        stop_reason = f"{type(exc).__name__}: {exc}"
+    else:
         if outbox is not None:
-            _write_diagnostics(result, outbox)
-        raise
-    if outbox is not None:
-        result = _finalize_guard(agent, result, outbox, recursion_limit=recursion_limit)
-        _write_diagnostics(result, outbox)
+            result = _finalize_guard(agent, result, outbox, recursion_limit=recursion_limit)
+            emit_new(result)
 
-
-def _write_diagnostics(result: Any, outbox: Path) -> None:
-    """Persist the loop's telemetry + step transcript to the outbox (best-effort; never fatal)."""
-    try:
-        telemetry = _extract_telemetry(result)
-        (outbox / RESERVED_TELEMETRY_NAME).write_bytes(json.dumps(telemetry).encode("utf-8"))
-    except OSError as exc:  # diagnostics are best-effort — never let them fail/mask the cycle
-        log.warning("telemetry_persist_failed", error=str(exc))
-    _persist_transcript(result, outbox)  # already OSError-guarded
+    telemetry = _extract_telemetry(result)
+    if stop_reason is not None:
+        telemetry["stop_reason"] = stop_reason
+    log.info(TELEMETRY_EVENT, **telemetry)
+    return transcript, telemetry
 
 
 def _finalize_guard(
@@ -336,7 +341,7 @@ def _finalize_guard(
         prior = result.get("messages", []) if isinstance(result, dict) else []
         try:
             result = agent.invoke(
-                {"messages": [*prior, HumanMessage(content=_FINALIZE_NUDGE)]},
+                {"messages": [*prior, HumanMessage(content=_FINALIZE_NUDGE.format(outbox=outbox))]},
                 {"recursion_limit": recursion_limit},
             )
         except Exception as exc:  # noqa: BLE001 — a guard re-invoke is best-effort; let the
@@ -346,46 +351,19 @@ def _finalize_guard(
     return result
 
 
-def _persist_transcript(result: Any, outbox: Path) -> None:
-    """Write the rendered step transcript to the outbox — the per-cycle instrumentation record.
-
-    Captures, per message: an ``index``, the message ``type`` and ``content``, the tool calls
-    (name **+ arguments**), and any tool ``result`` — enough to reconstruct the agent's trajectory
-    (what it did, in what order, with what inputs/outputs). Large ``content``/args/results are
-    truncated to ``_TRANSCRIPT_FIELD_CAP`` bytes (a runaway tool dump can't bloat the store); the
-    write is best-effort (a transcript must never fail a cycle). The host harvests it like the
-    telemetry and content-addresses it into the object store.
-    """
-    messages = result.get("messages", []) if isinstance(result, dict) else []
-    rendered: list[dict[str, Any]] = []
-    for index, m in enumerate(messages):
-        tool_calls = [
-            {"name": tc.get("name"), "args": _cap(tc.get("args"))}
-            for tc in (getattr(m, "tool_calls", None) or [])
-        ]
-        entry: dict[str, Any] = {
-            "index": index,
-            "type": type(m).__name__,
-            "content": _cap(getattr(m, "content", None)),
-        }
-        if tool_calls:
-            entry["tool_calls"] = tool_calls
-        # A ToolMessage carries the tool's *result*; record it (capped) so the loop is legible.
-        if type(m).__name__ == "ToolMessage" and getattr(m, "name", None) is not None:
-            entry["tool_name"] = m.name
-        rendered.append(entry)
+def _write_diagnostics_files(
+    transcript: list[dict[str, Any]], telemetry: dict[str, Any], outbox: Path
+) -> None:
+    """In-process (trusted) path only: persist the returned transcript + telemetry to the local
+    outbox under the reserved names, so ``AgentSandbox`` harvests them like any other cycle. Never
+    used by the container path (the agent could edit a file there — diagnostics go out as logs)."""
     try:
-        (outbox / _TRANSCRIPT_NAME).write_bytes(json.dumps(rendered, default=str).encode("utf-8"))
-    except OSError as exc:  # instrumentation is best-effort — never let it fail the cycle
-        log.warning("transcript_persist_failed", error=str(exc))
-
-
-def _cap(value: Any, limit: int = _TRANSCRIPT_FIELD_CAP) -> Any:
-    """Truncate an overlong rendered field so a runaway tool dump can't bloat the transcript."""
-    text = value if isinstance(value, str) else json.dumps(value, default=str)
-    if len(text) <= limit:
-        return value
-    return text[:limit] + f"…[truncated {len(text) - limit} chars]"
+        (outbox / RESERVED_TELEMETRY_NAME).write_bytes(json.dumps(telemetry).encode("utf-8"))
+        (outbox / RESERVED_TRANSCRIPT_NAME).write_bytes(
+            json.dumps(transcript, default=str).encode("utf-8")
+        )
+    except OSError as exc:  # diagnostics are best-effort — never let them fail/mask the cycle
+        log.warning("diagnostics_write_failed", error=str(exc))
 
 
 def _extract_telemetry(result: Any) -> dict[str, Any]:
@@ -458,17 +436,22 @@ class DeepAgentsInProcessDriver:
         )
         log.info("deepagents_run", ops=[s.name for s in operations], root=str(workspace.root))
         try:
-            await asyncio.to_thread(
+            transcript, telemetry = await asyncio.to_thread(
                 run_agent, agent, user_message,
                 recursion_limit=effective_recursion_limit(self._recursion_limit, self._step_budget),
                 outbox=workspace.outbox(),
             )
         except Exception as exc:
-            # A runaway loop (GraphRecursionError) or any in-loop failure becomes a cycle-level
-            # SandboxError, so the control plane can skip the cycle rather than abort the run (#21).
+            # A genuine in-loop failure (model/tool crash) becomes a cycle-level SandboxError, so
+            # the control plane can skip the cycle rather than abort the run (#21). A budget /
+            # recursion limit-end is no longer raised — run_agent records stop_reason and returns.
             raise SandboxError(
                 f"in-process agent loop failed: {type(exc).__name__}: {exc}"
             ) from exc
+        # In-process is trusted (no untrusted agent shell), so write the returned diagnostics to the
+        # local outbox for AgentSandbox.harvest. The container path never does this — there the
+        # agent shares the worker uid, so diagnostics leave as logs (host-reconstructed), not files.
+        _write_diagnostics_files(transcript, telemetry, workspace.outbox())
 
 
 def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[..., str]:
@@ -503,9 +486,9 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
                 if p.is_file() and p.name != RESERVED_PROPOSAL_NAME
             ) if outbox.is_dir() else []
             return (
-                f"rejected: declared {', '.join(missing)} but no such file is in outbox/. "
-                f"Write the file(s) to outbox/ then call again. "
-                f"outbox/ now has: {present or 'nothing'}."
+                f"rejected: declared {', '.join(missing)} but no such file is in {outbox}/. "
+                f"Write the file(s) to {outbox}/ then call again. "
+                f"{outbox}/ now has: {present or 'nothing'}."
             )
         descriptor = ProposalDescriptor(
             op_name=op_name, parents=tuple(parents), payload=payload, metadata=rationale
@@ -527,8 +510,8 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
     propose.__doc__ = (
         f"Propose a {out_type} via {op_name} (inputs: {in_types}). Call once, last.\n\n"
         f"Before calling this:\n"
-        f"  1. Write every declared object file to outbox/ (this tool rejects the call if a file\n"
-        f"     the payload names is not there).\n"
+        f"  1. Write every declared object file to {outbox}/ (this tool rejects the call if a\n"
+        f"     file the payload names is not there).\n"
         f"  2. Actually RUN the script end-to-end with the execute tool and confirm its output\n"
         f"     — a crash, timeout, or missing output is an outright reject, no partial credit.\n\n"
         f"Args:\n"

@@ -114,7 +114,7 @@ proposals, scored in a container, improving on the provisioned incumbent across 
 cp .env.example .env            # then set ANTHROPIC_API_KEY
 
 # b. place the dataset (a CSV with an `id`, a `class` target, and feature columns)
-#    at prototyping_datasci_test/{train.csv,test.csv}  (gitignored)
+#    at <data-dir>/{train.csv,test.csv}  (gitignored)
 
 # c. build the sandbox image the agent runs in (once)
 docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
@@ -173,7 +173,7 @@ bundles outside Verity (`tools/prepare_fe_data.py`), then create with role-keyed
 — the control plane routes opaque blobs and interprets no dataset semantics. The committed, runnable
 package — `task.json` (local-agent default), `run.sh` (which runs the prep for you), and the full
 setup protocol (token, accepting the competition rules) — lives in
-[`prototyping_datasci_test/PROTOCOL.md`](prototyping_datasci_test/PROTOCOL.md). Validated live on
+[`results/prototyping_datasci_test/PROTOCOL.md`](results/prototyping_datasci_test/PROTOCOL.md). Validated live on
 `playground-series-s6e6` with a local model at **0.92253 balanced accuracy**.
 
 ## Acceptance modes

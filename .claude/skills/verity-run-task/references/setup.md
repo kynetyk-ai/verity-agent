@@ -76,6 +76,14 @@ Set on the host before `up` (the compose file reads them; defaults in parenthese
 | `VERITY_LOCAL_BASE_URL` (`http://host.docker.internal:11434/v1`) | Local OpenAI-compatible endpoint the workers reach. |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Forwarded to the agent worker when you select a hosted model. Empty for a local model. |
 
+**Worker resource limits** (all have sane defaults; override only to tune):
+
+| Var | Purpose |
+|---|---|
+| `VERITY_CODE_CPUS` (`16`) / `VERITY_CODE_MEMORY` (`16g`) / `VERITY_CODE_PIDS` (`4096`) | The gate's code-runner (runs the submitted script). The PID cap must clear the prompt-mandated `n_jobs=-1` on 16 cores or training deadlocks (`pthread_create … Resource temporarily unavailable`). |
+| `VERITY_SANDBOX_CPUS` (`16`) / `VERITY_SANDBOX_PIDS` (`4096`) | The agent's sandbox — kept representative of the gate so the agent develops/self-tests with the same parallelism. |
+| `VERITY_VERIFIER_MEMORY` (`4g`) / `VERITY_VERIFIER_TIMEOUT` | The verifier sibling (buffers the whole verifier-role dataset; one HTTP call held open for the gate run). |
+
 Note: `VERITY_MODEL`/`VERITY_LOCAL_BASE_URL` in compose are conveniences; **the model a run actually
 uses is the one you pass to `verity create`** (`--model` / `--base-url`).
 
@@ -117,7 +125,7 @@ The `fe-kaggle` task type submits to a live competition, so its gate needs a Kag
   competition (auth can otherwise be fine — a 401 elsewhere means a bad token).
 - The cap is the competition's own daily submission limit (read from its Kaggle metadata, typically
   ~5/day per team); the gate reads remaining budget from the API and blocks until it frees. Full package + protocol: the task's own `PROTOCOL.md` (in the Verity repo, under
-  `prototyping_datasci_test/`).
+  `results/prototyping_datasci_test/`).
 
 ---
 

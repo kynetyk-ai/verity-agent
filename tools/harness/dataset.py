@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import csv
 import io
+import random
 from dataclasses import dataclass
 
-__all__ = ["DatasetSplit", "stratified_split", "subsample"]
+__all__ = ["DatasetSplit", "stratified_split", "subsample", "random_sample"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,23 @@ def subsample(data: bytes, *, per_class: int | None, target: str = "class") -> b
             seen[label] = seen.get(label, 0) + 1
             kept.append(row)
     return _write_csv(header, kept)
+
+
+def random_sample(data: bytes, *, n: int, seed: int) -> bytes:
+    """A uniform-random sample of up to ``n`` rows, reproducible via ``seed``.
+
+    Unlike :func:`subsample` (which caps per class and so *balances* the data), this preserves the
+    population's **natural class distribution** — the faithful way to scale the experiment dataset
+    to a target size. Original row order is kept among the sampled rows, so a downstream
+    :func:`stratified_split` interleave stays stable. ``n >= len(rows)`` keeps everything.
+    """
+    reader = csv.DictReader(io.StringIO(data.decode("utf-8")))
+    header = tuple(reader.fieldnames or ())
+    rows = list(reader)
+    if n < len(rows):
+        keep = sorted(random.Random(seed).sample(range(len(rows)), n))
+        rows = [rows[i] for i in keep]
+    return _write_csv(header, rows)
 
 
 def _write_csv(header: tuple[str, ...], rows: list[dict[str, str]]) -> bytes:

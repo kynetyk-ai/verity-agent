@@ -1,6 +1,6 @@
 # ADR 0005 — Data prep out of the control plane: the user prepares role-keyed inputs; the CP routes opaque blobs
 
-- **Status:** Proposed — the written decision ROADMAP 9.2 requires *before* code.
+- **Status:** Accepted — shipped (ROADMAP 9.2 / #74; the CP routes opaque role→blob maps, prep lives in `tools/`).
 - **Date:** 2026-06-19
 - **Affects spec:** §3.3 (the deliberately-unintelligent control plane), §3.4 (the control-plane
   service + its data plane), §3.5/§3.6 (role isolation — the answer key never reaches the agent),
@@ -104,12 +104,12 @@ from "the split withheld it" to "routing never placed it there."
 
 ## The worked example (this change ships it)
 
-`prototyping_datasci_test/` now carries the prepared, role-keyed inputs (generated once from the
+`results/prototyping_datasci_test/` now carries the prepared, role-keyed inputs (generated once from the
 stellar `train.csv`/`test.csv` with the *same* `subsample(per_class=300)` → `stratified_split(
 reserved_fraction=0.5)` the CP did, run user-side):
 
 ```
-prototyping_datasci_test/
+results/prototyping_datasci_test/
   agent/
     train.csv            # labeled, hold-out rows removed — what the agent trains on
     test.csv             # the real Kaggle test set, unlabeled

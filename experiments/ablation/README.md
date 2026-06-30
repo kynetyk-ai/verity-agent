@@ -37,24 +37,61 @@ models in exp1, an adjusted cycle budget for the loop).
 ## Running it
 
 1. Prepare the dataset once (outside Verity, ADR 0005) with `tools/prepare_fe_data.py`, producing a
-   data dir with `agent/{train,test}.csv` and `verifier/{train,holdout,holdout_labels}.csv`. The
-   agent's `test.csv` is a **small unlabelled sample** (`--agent-test-rows`, default **200**) — a
-   wiring/format check only; the agent estimates its score via stratified **CV on `train`**, while the
-   gate scores on the verifier's **full** reserved `holdout`. Keep `--agent-test-rows` identical
-   across phases so the agent's inputs never differ between conditions.
-2. Run each phase (needs Docker + the worker images — it launches real sibling containers):
+   data dir with `agent/{train,test}.csv` and `verifier/{train,holdout,holdout_labels}.csv`. Size the
+   experiment dataset with **`--sample-n N --seed S`** — a uniform-random, reproducible sample that
+   **preserves the natural class distribution** (the faithful sizing). Do **not** use `--per-class`
+   for an experiment: it *balances* the classes and so distorts the real (imbalanced) task — it's a
+   smoke convenience only. The agent's `test.csv` is a **small unlabelled sample**
+   (`--agent-test-rows`, default **200**) — a wiring/format check only; the agent estimates its score
+   via stratified **CV on `train`**, while the gate scores on the verifier's **full** reserved
+   `holdout`. Keep `--agent-test-rows` (and the seed) identical across phases so the agent's inputs
+   never differ between conditions. The committed ablation dataset is `data/ablation-120k-seed42/`
+   (120K uniform-random @ seed 42 → 102K train / 18K holdout, natural ~65/20/14).
+2. Run each phase **with `run_sweep_container.sh`** (needs Docker + the worker images built, and the
+   `verity-net` network — i.e. the daemon stack has been brought up at least once, see
+   `infra/compose.daemon.yml`):
 
    ```
-   python -m experiments.ablation.sweep spec.exp1.json --data <data-dir> --out results/exp1/
+   experiments/ablation/run_sweep_container.sh spec.exp1.json <data-dir> results/exp1/
    # inspect F1 / per-model headroom, adjust spec.loop.json if needed, then:
-   python -m experiments.ablation.sweep spec.loop.json --data <data-dir> --out results/loop/
+   experiments/ablation/run_sweep_container.sh spec.loop.json <data-dir> results/loop/
    ```
 
-Each cell's store-derived `RunReport` JSON lands in `results/<phase>/<condition>-<model>-seedN.json`,
-plus a `manifest.json` (cell coordinates → report filename) the analysis layer reads.
+   Each cell's store-derived `RunReport` JSON lands in
+   `results/<phase>/<condition>-<model>-seedN.json`, plus a `manifest.json` (cell coordinates →
+   report filename) the analysis layer reads, plus the **durable store** at `results/<phase>/store/`
+   (see the box below). The sweep also **auto-harvests** each cell from that store (no manual step):
+   - `results/<phase>/transcripts/<cell>.json` + `<cell>.md` — the agent transcript (raw + rendered
+     via `tools/render_transcript.py`), one per cycle (`-cycleN` suffix when a cell runs >1 cycle),
+     present even for rejected / no-proposal / timed-out cells (F4);
+   - `results/<phase>/submissions/<cell>/{submission.py,requirements.txt}` — the accepted submission
+     objects (rejected cells have no *accepted* artifact, but their code is in the transcript).
+
+> [!IMPORTANT]
+> **Do NOT run `python -m experiments.ablation.sweep` directly on the host, and never without a
+> `--store-root`.** Two traps, both of which silently waste a multi-hour run:
+>
+> 1. **Verifier reachability.** `build_service` reaches the §9.1 verifier sibling by its Docker-network
+>    container name. A host process can't resolve that → *every cell aborts instantly* with
+>    `verifier unreachable ... nodename nor servname provided`. The sweep must run **inside a container
+>    on `verity-net`**, which is exactly what `run_sweep_container.sh` does (it mirrors
+>    `infra/compose.daemon.yml`: docker socket + identical-path `/tmp/verity-staging` mount +
+>    `VERITY_VERIFIER_NETWORK=verity-net` + model creds from `./.env`).
+>
+> 2. **Store persistence.** Without `--store-root`, `build_service(root=None)` opens an **in-memory
+>    `SqliteStore`** that dies with the `--rm` container. The `RunReport` JSONs still land in `--out`
+>    and carry inline scores / rationale / `agent_telemetry` (enough for `analyze.py` and *all*
+>    figures) — **but the agent transcripts and the submission objects (`submission.py`,
+>    `requirements.txt`) are LOST**: a report's `transcript_ref` is only a content hash, and the bytes
+>    it points at lived in that dead store. `run_sweep_container.sh` passes
+>    `--store-root "$OUT/store"` so the store persists at `results/<phase>/store/`
+>    (`store.db` + `objects/`), root-owned on the host (`chown` if a non-root user needs it). Retrieve
+>    objects via `service.read_object(task, hash)` or straight from `objects/`; render a transcript
+>    with `python tools/render_transcript.py <bytes>`.
 
 The orchestrator drives a `ControlService` directly (the same engine the daemon serves over HTTP),
-serially, so deltas reflect mechanism rather than contention.
+serially, so deltas reflect mechanism rather than contention. The reason it must still run *inside* a
+container is trap #1 above — it is the CP, so it needs the CP's network + mounts.
 
 ## Analyzing results
 

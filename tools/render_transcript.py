@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Render a harvested agent transcript (JSON) into readable Markdown.
 
-Standalone helper — not wired into the harness. The transcript is the reserved
-``__transcript__.json`` that the sandbox writes each cycle and the control plane content-addresses
-into the per-task object store. Each entry is one agent message:
+Standalone helper — not wired into the harness. The transcript is emitted by the worker as
+structured stderr **log events** each cycle (the agent never writes it — it shares the worker uid,
+so a file would be tamperable), reconstructed host-side, and content-addressed into the per-task
+object store under the reserved ``__transcript__.json`` name. Each entry is one agent message:
 ``{index, type, content, tool_calls?, tool_name?}``.
 ``content`` is a string (Human/Tool messages) or a list of content blocks (AIMessage), and each
 ``tool_calls`` item is ``{name, args}``.

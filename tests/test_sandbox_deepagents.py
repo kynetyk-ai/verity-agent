@@ -539,51 +539,41 @@ def test_finalize_guard_nudges_until_the_agent_submits(tmp_path: Path) -> None:
 
     outbox = tmp_path
     agent = _FakeAgent(outbox, submit_on=2)  # submits on the first nudge
-    run_agent(agent, "go", outbox=outbox)
+    transcript, _telemetry = run_agent(agent, "go", outbox=outbox)
     assert agent.calls == 2  # initial invoke + one finalize nudge
-    assert (outbox / RESERVED_PROPOSAL_NAME).is_file()
-    # The transcript is now written EVERY cycle (instrumentation, F) — including a successful one —
-    # so a successful cycle leaves a step-level record too (it used to be a no-proposal-only diag).
-    assert (outbox / "__transcript__.json").is_file()
+    assert (outbox / RESERVED_PROPOSAL_NAME).is_file()  # the propose tool still writes it
+    # The transcript is RETURNED (and logged), not written as an outbox file the agent could edit.
+    assert transcript and transcript[-1]["type"] == "AIMessage"
 
 
-def test_finalize_guard_exhausts_and_persists_transcript(tmp_path: Path) -> None:
-    import json
-
+def test_finalize_guard_exhausts_and_returns_transcript(tmp_path: Path) -> None:
     from verity.sandbox.deepagents_driver import _FINALIZE_RETRIES, run_agent
 
     outbox = tmp_path
     agent = _FakeAgent(outbox, submit_on=None)  # never submits
-    run_agent(agent, "go", outbox=outbox)
+    transcript, _telemetry = run_agent(agent, "go", outbox=outbox)
     assert agent.calls == 1 + _FINALIZE_RETRIES  # initial + bounded nudges, then give up
     assert not (outbox / RESERVED_PROPOSAL_NAME).is_file()
-    transcript = json.loads((outbox / "__transcript__.json").read_text())
     assert transcript and transcript[-1]["type"] == "AIMessage"  # the rendered trace is captured
 
 
-def test_transcript_captures_step_index_tool_args_and_caps_large_fields(tmp_path: Path) -> None:
-    # F: the transcript is rich enough to reconstruct the trajectory — per message an index, the
-    # type/content, and tool calls with their ARGUMENTS — and overlong fields are truncated so a
-    # runaway tool dump can't bloat the content-addressed store.
-    import json
-
-    from verity.sandbox.deepagents_driver import _TRANSCRIPT_FIELD_CAP, _persist_transcript
+def test_render_message_captures_index_tool_args_and_caps_large_fields() -> None:
+    # The rendered transcript entry is rich enough to reconstruct the trajectory — per message an
+    # index, the type/content, and tool calls with their ARGUMENTS — and overlong fields are
+    # truncated so a runaway tool dump can't bloat the stored record (now in log_transcript).
+    from verity.sandbox.log_transcript import TRANSCRIPT_FIELD_CAP, render_message
 
     class _AIMessage:
         def __init__(self, content: str, tool_calls: list[dict] | None = None) -> None:
             self.content = content
             self.tool_calls = tool_calls or []
 
-    big = "x" * (_TRANSCRIPT_FIELD_CAP + 500)
-    result = {
-        "messages": [
-            _AIMessage("plan", tool_calls=[{"name": "execute", "args": {"cmd": "python x.py"}}]),
-            _AIMessage(big),  # an overlong content field must be truncated
-        ]
-    }
-    _persist_transcript(result, tmp_path)
-    entries = json.loads((tmp_path / "__transcript__.json").read_text())
-
+    big = "x" * (TRANSCRIPT_FIELD_CAP + 500)
+    entries = [
+        render_message(0, _AIMessage("plan", tool_calls=[{"name": "execute",
+                                                          "args": {"cmd": "python x.py"}}])),
+        render_message(1, _AIMessage(big)),  # an overlong content field must be truncated
+    ]
     assert [e["index"] for e in entries] == [0, 1]  # ordered, indexed
     assert entries[0]["tool_calls"][0] == {"name": "execute", "args": {"cmd": "python x.py"}}
     assert "truncated" in entries[1]["content"] and len(entries[1]["content"]) < len(big)
@@ -591,7 +581,7 @@ def test_transcript_captures_step_index_tool_args_and_caps_large_fields(tmp_path
 
 def test_finalize_guard_survives_a_raising_reinvoke(tmp_path: Path) -> None:
     # A guard re-invoke that raises (a step/recursion limit) is best-effort: no proposal stands,
-    # the transcript from the last good result is still persisted, and run_agent does not raise.
+    # the transcript from the last good result is still returned, and run_agent does not raise.
     from verity.sandbox.deepagents_driver import run_agent
 
     class _RaisingAgent(_FakeAgent):
@@ -601,17 +591,15 @@ def test_finalize_guard_survives_a_raising_reinvoke(tmp_path: Path) -> None:
             return super().invoke(state, config)
 
     outbox = tmp_path
-    run_agent(_RaisingAgent(outbox, submit_on=None), "go", outbox=outbox)
+    transcript, _telemetry = run_agent(_RaisingAgent(outbox, submit_on=None), "go", outbox=outbox)
     assert not (outbox / RESERVED_PROPOSAL_NAME).is_file()
-    assert (outbox / "__transcript__.json").exists()
+    assert transcript  # the last good streamed state is still captured
 
 
-def test_recursion_limit_end_still_persists_the_transcript(tmp_path: Path) -> None:
-    # The case that bit us live: the agent exhausts its recursion budget mid-run. Because run_agent
-    # STREAMS, the messages so far are kept, and the transcript is persisted before the error
-    # re-raises — so a no-proposal limit-end stays debuggable (container_entry catches it).
-    import json
-
+def test_recursion_limit_end_returns_transcript_and_stop_reason(tmp_path: Path) -> None:
+    # The case that bit us live: the agent exhausts its recursion budget mid-run. run_agent STREAMS,
+    # so the messages so far are kept; the limit-end is now handled GRACEFULLY — run_agent records
+    # stop_reason in the telemetry and returns (no re-raise), so the host logs a no-proposal cycle.
     from langgraph.errors import GraphRecursionError
 
     from verity.sandbox.deepagents_driver import run_agent
@@ -625,9 +613,8 @@ def test_recursion_limit_end_still_persists_the_transcript(tmp_path: Path) -> No
         def invoke(self, state: dict, config: dict) -> dict:  # noqa: ARG002
             raise AssertionError("finalize guard must not run on a recursion-limit end")
 
-    with pytest.raises(GraphRecursionError):
-        run_agent(_ExhaustingAgent(), "go", outbox=tmp_path)
+    transcript, telemetry = run_agent(_ExhaustingAgent(), "go", outbox=tmp_path)
 
-    transcript = json.loads((tmp_path / "__transcript__.json").read_text())
     assert len(transcript) == 2 and transcript[-1]["type"] == "AIMessage"  # last stream state kept
+    assert telemetry["stop_reason"].startswith("GraphRecursionError")
     assert not (tmp_path / RESERVED_PROPOSAL_NAME).is_file()

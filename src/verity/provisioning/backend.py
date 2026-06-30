@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from verity.proc import DEFAULT_OUTPUT_CAP
+
 __all__ = [
     "WorkerBackend",
     "WorkerSpec",
@@ -121,6 +123,10 @@ class WorkerSpec:
     workdir: str = "/work"
     runtime: str | None = None  # OCI runtime, e.g. "runsc" (gVisor); None = daemon default (ADR i)
     timeout_s: float = 600.0
+    # Per-stream captured-output budget (bytes). The default bounds a runaway untrusted child (V3);
+    # the sandbox worker raises it because its stderr now carries the FULL agent transcript (logged,
+    # not file-written — see sandbox/log_transcript), which must clear the 1 MB default.
+    output_cap: int = DEFAULT_OUTPUT_CAP
 
     # -- trusted-service workers (§9.1): a long-lived sibling reached over the wire (the verifier)
     # Read ONLY by ``DockerBackend.build_service_argv`` (the ``launch`` path). The hostile
