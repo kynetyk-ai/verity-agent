@@ -1,0 +1,27 @@
+{
+  "task_type": "fe-holdout",
+  "goal": "Write a script that optimizes stellar-class prediction for balanced accuracy. Submit your best work.\n\nThe task: classify each astronomical observation as one of three stellar classes \u2014 GALAXY, STAR, or QSO (quasar). The target column is `class`.\n\nColumns:\n- id: row identifier (not a feature)\n- alpha: right ascension angle (sky coordinate, degrees)\n- delta: declination angle (sky coordinate, degrees)\n- u, g, r, i, z: photometric magnitudes in the SDSS ultraviolet / green / red / near-infrared / infrared filters\n- redshift: measured redshift\n- spectral_type: categorical spectral classification\n- galaxy_population: categorical (present in both train and test)\n- class: the target (GALAXY / STAR / QSO), present only in the training data",
+  "models": [
+    {
+      "label": "fugu",
+      "model": "fugu",
+      "base_url": "https://api.sakana.ai/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  ],
+  "seeds": 10,
+  "budgets": {
+    "max_cycles": 1,
+    "sandbox_timeout_s": 2400,
+    "code_timeout_s": 2400,
+    "recursion_limit": 300
+  },
+  "conditions": [
+    {
+      "name": "exp1",
+      "accept_policy": "always",
+      "provisioning": "none",
+      "max_cycles": 1
+    }
+  ]
+}
