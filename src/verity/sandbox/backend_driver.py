@@ -15,8 +15,10 @@ against the control plane's own gold copy, so a corrupted input only makes a bad
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from typing import Any
 
 from verity.contracts.run_context import RunContext
 from verity.control_plane.registries import OperationSignature
@@ -41,7 +43,7 @@ from verity.sandbox.container_io import (
 )
 from verity.sandbox.descriptor import RESERVED_TELEMETRY_NAME, RESERVED_TRANSCRIPT_NAME
 from verity.sandbox.errors import SandboxError
-from verity.sandbox.log_transcript import reconstruct_from_logs
+from verity.sandbox.log_transcript import parse_log_events, telemetry_from_turns
 from verity.sandbox.model_spec import ModelSpec
 
 __all__ = ["BackendSandboxDriver"]
@@ -132,14 +134,41 @@ class BackendSandboxDriver:
         try:
             result = await self.backend.run_to_completion(worker_spec)
         except ProvisioningError as exc:
-            # the worker could not be launched — infrastructure, not a verdict: a recoverable cycle.
-            raise SandboxError(f"could not launch the sandbox worker: {exc}") from exc
-        self._bridge_outbox(result, workspace)
-        if result.timed_out:
-            raise SandboxError(f"sandbox worker timed out after {self.timeout_s}s")
-        if result.exit_code != 0:
+            # the worker could not be launched — infrastructure, not a verdict: a recoverable
+            # cycle. No worker ever ran, so the host synthesizes the entire record (#125).
             raise SandboxError(
-                f"sandbox worker exited {result.exit_code}: {result.stderr[-2000:]}"
+                f"could not launch the sandbox worker: {exc}",
+                telemetry=_telemetry_bytes(
+                    {"stop_reason": "launch_failure", "error": str(exc), "source": "host"}
+                ),
+            ) from exc
+        transcript_bytes, telemetry_bytes, turns = self._bridge_outbox(result, workspace)
+        if result.timed_out:
+            # SIGKILLed mid-run: the worker never emitted its end-of-run telemetry event, so
+            # nothing was there to salvage (#125). Rebuild the aggregate from the streamed turns
+            # (real token/step sums where per-turn usage exists) and stamp WHY it stopped — the
+            # host is the only party that knows. `source` says where the numbers came from.
+            if telemetry_bytes is None:
+                synthesized: dict[str, Any] = telemetry_from_turns(turns) or {"source": "host"}
+                synthesized["stop_reason"] = "sandbox_timeout"
+                synthesized["timeout_s"] = self.timeout_s
+                telemetry_bytes = _telemetry_bytes(synthesized)
+            raise SandboxError(
+                f"sandbox worker timed out after {self.timeout_s}s",
+                transcript=transcript_bytes, telemetry=telemetry_bytes,
+            )
+        if result.exit_code != 0:
+            # A crash that reached run_agent's crash path already logged real telemetry (with a
+            # `crash: …` stop_reason) — keep it. An abrupt death (OOM-kill, entrypoint failure)
+            # left none: synthesize, as for the timeout.
+            if telemetry_bytes is None:
+                crash_synth: dict[str, Any] = telemetry_from_turns(turns) or {"source": "host"}
+                crash_synth["stop_reason"] = "worker_crash"
+                crash_synth["exit_code"] = result.exit_code
+                telemetry_bytes = _telemetry_bytes(crash_synth)
+            raise SandboxError(
+                f"sandbox worker exited {result.exit_code}: {result.stderr[-2000:]}",
+                transcript=transcript_bytes, telemetry=telemetry_bytes,
             )
 
     def _worker_spec(self, cycle: CycleInput, workspace: ProvisionedWorkspace) -> WorkerSpec:
@@ -185,7 +214,9 @@ class BackendSandboxDriver:
         )
 
     @staticmethod
-    def _bridge_outbox(result: CompletedWorker, workspace: ProvisionedWorkspace) -> None:
+    def _bridge_outbox(
+        result: CompletedWorker, workspace: ProvisionedWorkspace
+    ) -> tuple[bytes | None, bytes | None, list[dict[str, object]]]:
         """Bridge the worker's outputs into the host workspace outbox, so `AgentSandbox`'s harvest
         finds them (the agent wrote inside the now-gone worker).
 
@@ -195,7 +226,8 @@ class BackendSandboxDriver:
         here, host-side, after the container has exited, and written under the reserved names so the
         agent never had access to them. Reconstruction runs on every outcome (success, no-proposal,
         and a timed-out worker — its retained stderr still yields the turns streamed before the
-        kill).
+        kill). Returns ``(transcript_bytes, worker_telemetry_bytes, turns)`` so the caller can
+        synthesize telemetry for an abnormal outcome the worker never got to record (#125).
         """
         outbox = workspace.outbox()
         outbox.mkdir(parents=True, exist_ok=True)
@@ -206,8 +238,18 @@ class BackendSandboxDriver:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
 
-        transcript_bytes, telemetry_bytes = reconstruct_from_logs(result.stderr)
+        turns, telemetry = parse_log_events(result.stderr)
+        transcript_bytes = json.dumps(turns, default=str).encode("utf-8") if turns else None
+        telemetry_bytes = (
+            json.dumps(telemetry, default=str).encode("utf-8") if telemetry is not None else None
+        )
         if transcript_bytes is not None:
             (outbox / RESERVED_TRANSCRIPT_NAME).write_bytes(transcript_bytes)
         if telemetry_bytes is not None:
             (outbox / RESERVED_TELEMETRY_NAME).write_bytes(telemetry_bytes)
+        return transcript_bytes, telemetry_bytes, turns
+
+
+def _telemetry_bytes(record: dict[str, Any]) -> bytes:
+    """Serialize a host-side telemetry record to the ``__telemetry__.json`` byte shape."""
+    return json.dumps(record, default=str).encode("utf-8")

@@ -37,6 +37,7 @@ from verity.control_plane.registries import (
 from verity.control_plane.store import SqliteStore
 from verity.domains.fake import NOTE, SOURCE, build_fake_domain, build_fake_verifier
 from verity.sandbox import AgentSandbox
+from verity.sandbox.errors import SandboxError
 
 pytest.importorskip("deepagents")
 
@@ -52,6 +53,7 @@ from verity.sandbox.deepagents_driver import (  # noqa: E402
     _extract_telemetry,
     _make_propose_tool,
     build_deepagents_agent,
+    run_agent,
 )
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME  # noqa: E402
 
@@ -618,3 +620,61 @@ def test_recursion_limit_end_returns_transcript_and_stop_reason(tmp_path: Path) 
     assert len(transcript) == 2 and transcript[-1]["type"] == "AIMessage"  # last stream state kept
     assert telemetry["stop_reason"].startswith("GraphRecursionError")
     assert not (tmp_path / RESERVED_PROPOSAL_NAME).is_file()
+
+
+# --------------------------------------------- crash-path diagnostics are never lost (#125)
+
+
+def _exploding_messages():
+    yield AIMessage(
+        content="", tool_calls=[{"name": "ls", "args": {}, "id": "c1"}]
+    )
+    raise ValueError("model exploded")
+
+
+def test_run_agent_crash_logs_telemetry_and_carries_diagnostics(tmp_path: Path) -> None:
+    # A genuine in-loop crash must still yield telemetry: run_agent logs the partial aggregate
+    # (with the crash as stop_reason) and re-raises with the diagnostics attached, so neither the
+    # container's stderr reconstruction nor the in-process carry has nothing to work with.
+    import json as _json
+
+    from verity.sandbox.deepagents_driver import AgentLoopError
+
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    agent = build_deepagents_agent(
+        model=ToolCallingFakeModel(messages=_exploding_messages()),
+        operations=_note_schema().operations(),
+        outbox=outbox,
+        system_prompt="s",
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+    )
+    with pytest.raises(AgentLoopError) as excinfo:
+        run_agent(agent, "go", outbox=outbox)
+
+    error = excinfo.value
+    telemetry = _json.loads(error.telemetry)
+    assert telemetry["stop_reason"].startswith("crash: ValueError: model exploded")
+    transcript = _json.loads(error.transcript)
+    assert transcript, "the turns streamed before the crash ride along"
+
+
+def test_in_process_driver_crash_carries_transcript_and_telemetry(tmp_path: Path) -> None:
+    import json as _json
+
+    driver = DeepAgentsInProcessDriver(model=ToolCallingFakeModel(messages=_exploding_messages()))
+    sandbox = AgentSandbox(
+        root=tmp_path / "ws", driver=driver, schema=_note_schema(), proposer_identity="p",
+    )
+
+    async def go() -> None:
+        await sandbox.provision()
+        await sandbox.serve_context(ServedContext(system_prompt="SYS", tail="go"))
+        await sandbox.collect_proposal()
+
+    with pytest.raises(SandboxError) as excinfo:
+        asyncio.run(go())
+    error = excinfo.value
+    assert "ValueError: model exploded" in str(error)
+    assert error.transcript is not None and error.telemetry is not None
+    assert "crash:" in _json.loads(error.telemetry)["stop_reason"]

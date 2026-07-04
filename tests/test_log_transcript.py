@@ -89,3 +89,48 @@ def test_render_message_caps_overlong_fields_and_is_json_safe() -> None:
     assert entry["index"] == 3
     assert "truncated" in entry["content"] and len(entry["content"]) < len(big)
     json.dumps(entry)  # must not raise — the entry is guaranteed JSON-safe for the logger
+
+
+# ------------------------------------------------- telemetry reconstruction from turns (#125)
+
+
+class AIMessage:  # noqa: N801 — duck-typed: render_message keys usage capture on the class NAME
+    """A duck-typed AI message carrying per-turn usage (no langchain import needed)."""
+
+    def __init__(self, content: str, *, tool_calls: list[dict] | None = None,
+                 usage: dict | None = None, model: str | None = None) -> None:
+        self.content = content
+        self.tool_calls = tool_calls or []
+        self.usage_metadata = usage
+        self.response_metadata = {"model_name": model} if model else {}
+
+
+def test_render_message_captures_per_turn_usage_on_ai_messages() -> None:
+    entry = render_message(1, AIMessage(
+        "plan", tool_calls=[{"name": "execute", "args": {}}],
+        usage={"input_tokens": 120, "output_tokens": 30}, model="claude-sonnet-4-6",
+    ))
+    assert entry["usage"] == {"input_tokens": 120, "output_tokens": 30}
+    assert entry["model"] == "claude-sonnet-4-6"
+    # non-AI messages carry no usage key at all
+    assert "usage" not in render_message(2, _Msg("tool result", name="execute"))
+
+
+def test_telemetry_from_turns_mirrors_the_worker_aggregate() -> None:
+    from verity.sandbox.log_transcript import telemetry_from_turns
+
+    turns = [
+        render_message(0, _Msg("go")),
+        render_message(1, AIMessage("a", tool_calls=[{"name": "execute", "args": {}}],
+                                    usage={"input_tokens": 100, "output_tokens": 20},
+                                    model="m1")),
+        render_message(2, _Msg("ok", name="execute")),
+        render_message(3, AIMessage("b", usage={"input_tokens": 200, "output_tokens": 40})),
+    ]
+    telemetry = telemetry_from_turns(turns)
+    assert telemetry == {
+        "input_tokens": 300, "output_tokens": 60, "total_tokens": 360,
+        "model_steps": 2, "tool_calls": 1, "model": "m1",
+        "source": "reconstructed_from_turns",
+    }
+    assert telemetry_from_turns([]) is None

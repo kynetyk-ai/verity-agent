@@ -53,6 +53,7 @@ __all__ = [
     "DeadlineMiddleware",
     "StepBudgetMiddleware",
     "StepBudgetExceeded",
+    "AgentLoopError",
     "build_deepagents_agent",
     "effective_recursion_limit",
     "effective_step_budget",
@@ -267,6 +268,21 @@ def build_deepagents_agent(
     return agent
 
 
+class AgentLoopError(RuntimeError):
+    """A genuine in-loop crash, carrying the diagnostics streamed before it (#125).
+
+    ``transcript``/``telemetry`` are the rendered-turn and (partial, crash-stop-reason) telemetry
+    JSON bytes at the moment of the crash. The container path doesn't need them (they were already
+    logged to stderr and are host-reconstructed); the trusted in-process driver converts this into
+    a ``SandboxError(transcript=…, telemetry=…)`` so a crash there stays debuggable too.
+    """
+
+    def __init__(self, *, transcript: bytes, telemetry: bytes) -> None:
+        super().__init__("agent loop crashed (see __cause__)")
+        self.transcript = transcript
+        self.telemetry = telemetry
+
+
 def run_agent(
     agent: Any,
     user_message: str,
@@ -288,7 +304,9 @@ def run_agent(
     limit (``GraphRecursionError`` does not return messages). A budget/recursion exhaustion is a
     graceful, EXPECTED stop (#103): we record ``stop_reason`` and return normally (no re-raise), so
     the host records a no-proposal cycle and feeds it back — never a fatal loss. A genuine crash
-    (model/tool error) still propagates.
+    (model/tool error) still propagates — but only after the telemetry event (with a
+    ``crash: …`` stop_reason) is logged and the diagnostics are attached to the raised
+    :class:`AgentLoopError`, so a crashed cycle's telemetry is never lost (#125).
 
     The **finalize guard** (clean completion only): a ReAct agent ends as soon as the model returns
     a message with no tool call, with no structural requirement that it proposed first. If the loop
@@ -318,6 +336,20 @@ def run_agent(
         emit_new(result)
         # Graceful limit-end (#103): record the reason, return normally (no re-raise).
         stop_reason = f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        # A genuine in-loop crash (fatal model error, tool crash). The turns streamed so far are
+        # already out; ALSO log the telemetry aggregate — partial but real — with the crash as
+        # its stop_reason, so a dead worker's stderr still yields telemetry (#125/#126). Then
+        # re-raise wrapped with the diagnostics attached, so the trusted in-process path (which
+        # has no stderr capture to reconstruct from) can carry them on its SandboxError.
+        emit_new(result)
+        telemetry = _extract_telemetry(result)
+        telemetry["stop_reason"] = f"crash: {type(exc).__name__}: {exc}"
+        log.info(TELEMETRY_EVENT, **telemetry)
+        raise AgentLoopError(
+            transcript=json.dumps(transcript, default=str).encode("utf-8"),
+            telemetry=json.dumps(telemetry, default=str).encode("utf-8"),
+        ) from exc
     else:
         if outbox is not None:
             result = _finalize_guard(agent, result, outbox, recursion_limit=recursion_limit)
@@ -441,10 +473,19 @@ class DeepAgentsInProcessDriver:
                 recursion_limit=effective_recursion_limit(self._recursion_limit, self._step_budget),
                 outbox=workspace.outbox(),
             )
-        except Exception as exc:
+        except AgentLoopError as exc:
             # A genuine in-loop failure (model/tool crash) becomes a cycle-level SandboxError, so
-            # the control plane can skip the cycle rather than abort the run (#21). A budget /
-            # recursion limit-end is no longer raised — run_agent records stop_reason and returns.
+            # the control plane can skip the cycle rather than abort the run (#21). The diagnostics
+            # ride along (#125): in-process has no stderr capture to reconstruct from, so the
+            # transcript + crash telemetry carried on the AgentLoopError are the only copy.
+            cause = exc.__cause__
+            raise SandboxError(
+                f"in-process agent loop failed: {type(cause).__name__}: {cause}",
+                transcript=exc.transcript,
+                telemetry=exc.telemetry,
+            ) from exc
+        except Exception as exc:
+            # A failure OUTSIDE the loop (agent build, thread bridge) — nothing streamed to carry.
             raise SandboxError(
                 f"in-process agent loop failed: {type(exc).__name__}: {exc}"
             ) from exc
