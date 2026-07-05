@@ -393,7 +393,8 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
         pytest.skip("the stellar dataset is not present")
     from tools.harness.dataset import stratified_split
 
-    from verity.sandbox.container_driver import DeepAgentsContainerDriver
+    from verity.provisioning import DockerBackend
+    from verity.sandbox.backend_driver import BackendSandboxDriver
     from verity.sandbox.registration import build_sandbox
 
     raw = _subsample(dataset.read_bytes(), per_class=400)  # small slice → fast per-cycle training
@@ -410,13 +411,13 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     # *run and test* its script before proposing (the in-process backend cannot execute code, so a
     # code-writing agent loops to the recursion cap). The data rides the workspace mount via
     # static_contents (the gold-data role is re-mounted read-only on top — physical isolation).
-    driver = DeepAgentsContainerDriver(
-        model="anthropic:claude-sonnet-4-6", image="verity-sandbox:latest",
-        recursion_limit=200, timeout_s=1500.0, memory="4g",
+    driver = BackendSandboxDriver(
+        backend=DockerBackend(), model="anthropic:claude-sonnet-4-6",
+        image="verity-sandbox:latest", recursion_limit=200, timeout_s=1500.0, memory="4g",
     )
     sandbox = build_sandbox(
         schema=domain.schema, root=tmp_path / "ws", driver=driver,
-        proposer_identity="deepagents-container:claude",
+        proposer_identity="deepagents-worker:claude",
         static_contents={"data": {"train.csv": split.agent_train_csv,
                                   "test.csv": split.reserved_test_csv}},
     )
