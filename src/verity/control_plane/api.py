@@ -675,7 +675,25 @@ class ControlPlane:
 
         ``context`` is the (served-context chars, provisioned-object bytes) pair for the cycle (F4),
         or ``None`` when the cycle never reached context assembly.
+
+        A FAILED cycle (sandbox / gate / shape — anything that minted no gated artifact) is also
+        recorded durably in the store (#32): the artifact tables deliberately carry nothing for it
+        (§7.0), so the `cycle_failures` row is its only restart-surviving trace — what the
+        served-context digest reads so the agent's failure history includes timeouts, not just
+        rejects. Best-effort, like the transcript store: a failed insert never masks the cycle.
         """
+        failure_kind, failure_detail = _failure_of(result)
+        if failure_kind is not None and failure_detail is not None:
+            try:
+                self._store.record_cycle_failure(
+                    kind=failure_kind, detail=failure_detail,
+                    transcript_ref=(
+                        result.transcript_ref.content_hash
+                        if result.transcript_ref is not None else None
+                    ),
+                )
+            except StoreError as exc:
+                log.warning("cycle_failure_record_failed", error=str(exc))
         served_chars, provisioned_bytes = context if context is not None else (None, None)
         task.history.append(CycleInput(
             goal=goal,
@@ -849,6 +867,21 @@ def _failed_cycle_telemetry(raw: bytes | None) -> dict[str, object] | None:
         log.warning("failed_cycle_telemetry_unparseable", error=str(exc))
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _failure_of(result: IntakeResult) -> tuple[str | None, str | None]:
+    """Classify a cycle result as a durable failure ``(kind, detail)``, or ``(None, None)``.
+
+    Kinds mirror the feedback channel's classification; the detail is the same text the
+    next-cycle correction carries, so the digest and the correction never tell different stories.
+    """
+    if result.sandbox_error is not None:
+        return "sandbox-error", result.sandbox_error
+    if result.gate_error is not None:
+        return "gate-error", result.gate_error
+    if result.shape_error is not None:
+        return "shape-error", result.shape_error.message
+    return None, None
 
 
 def _feedback_from(result: IntakeResult) -> str:

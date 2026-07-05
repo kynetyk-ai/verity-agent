@@ -187,33 +187,48 @@ class ContextAssembler:
 
 
     def _rejection_digest(self, store: Store) -> str:
-        """The prior-attempts digest (#132): the last ``digest_limit`` REJECTED artifacts, each
-        with the rejecting gate's rationale (+ recorded score where present), one capped line per
-        attempt.
+        """The prior-attempts digest (#132/#32): the last ``digest_limit`` failed attempts — both
+        REJECTED artifacts (with the rejecting gate's rationale + recorded score) and FAILED
+        cycles that minted no artifact at all (a timed-out/crashed sandbox, a malformed proposal
+        — read from the durable ``cycle_failures`` rows), interleaved by recency, one capped line
+        per attempt.
 
         Store-derived every turn (never accumulated loop state — restart-safe), and bounded by
         construction (``digest_limit`` × ``digest_chars``), so the bounded-context guarantee
         holds. §10 permits feeding gate reasons TO the proposer; the digest never carries the
-        proposer's own rationale. The single ``# Correction`` feedback line stays the salient
-        latest-failure channel; this is the trail of everything before it, so the agent stops
-        re-walking dead ends even when the failed artifacts' bytes are not provisioned.
+        proposer's own rationale. Gate-unavailable failures are recorded durably but NOT surfaced
+        here — their correction explicitly says "this was not a rejection; submit again", and
+        teaching the agent to route around transient infrastructure is the wrong lesson. The
+        single ``# Correction`` feedback line stays the salient latest-failure channel; this is
+        the trail of everything before it, so the agent stops re-walking dead ends even when the
+        failed attempts left no artifact bytes to provision.
         """
         if self.digest_limit <= 0:
             return ""
-        rejected = [
-            a for a in store.query_artifacts() if a.status is ArtifactStatus.REJECTED
-        ]
-        rejected.sort(key=lambda a: a.created_at, reverse=True)  # most recent failures first
-        lines: list[str] = []
-        for artifact in rejected[: self.digest_limit]:
+        # (created_at, line) pairs from both sources, merged by recency.
+        attempts: list[tuple[str, str]] = []
+        for artifact in store.query_artifacts():
+            if artifact.status is not ArtifactStatus.REJECTED:
+                continue
             gate, rationale, score = _rejecting_decision(store, artifact.id)
-            capped = (
-                rationale if len(rationale) <= self.digest_chars
-                else rationale[: self.digest_chars - 1] + "…"
-            )
             score_part = f" score={score:.4f}" if score is not None else ""
-            lines.append(f"  - {artifact.type}/{artifact.id} [{gate}]{score_part} — {capped}")
-        return "\n".join(lines)
+            attempts.append((
+                artifact.created_at,
+                f"  - {artifact.type}/{artifact.id} [{gate}]{score_part} — "
+                f"{self._cap(rationale)}",
+            ))
+        for failure in store.cycle_failures():
+            if failure.kind == "gate-error":
+                continue  # transient infra, not an attempt to learn from (see docstring)
+            attempts.append((
+                failure.created_at,
+                f"  - (no proposal) [{failure.kind}] — {self._cap(failure.detail)}",
+            ))
+        attempts.sort(key=lambda pair: pair[0], reverse=True)  # most recent attempts first
+        return "\n".join(line for _, line in attempts[: self.digest_limit])
+
+    def _cap(self, text: str) -> str:
+        return text if len(text) <= self.digest_chars else text[: self.digest_chars - 1] + "…"
 
 
 def _rejecting_decision(store: Store, artifact_id: str) -> tuple[str, str, float | None]:

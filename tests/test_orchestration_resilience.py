@@ -363,3 +363,82 @@ def test_served_context_accumulates_a_rejection_digest_while_feedback_stays_late
     assert third.feedback == "rejected: second failure: no source"  # latest-only, unchanged
     # and the digest lines never leak the proposer's own rationale channel
     assert "i reasoned thus" not in third.tail
+
+
+def test_failed_cycles_are_durably_recorded_with_their_transcript(tmp_path: Path) -> None:
+    # #32: a timed-out cycle mints no artifact (§7.0), so the cycle_failures row is its only
+    # durable trace — kind + the same detail text the correction carried + the salvaged transcript.
+    transcript = b'[{"index": 0, "type": "AIMessage", "content": "was browsing"}]'
+    cp, _sandbox, store = _build(
+        tmp_path,
+        items=[
+            SandboxError("sandbox worker timed out after 5.0s", transcript=transcript),
+            _note("n1"),
+        ],
+        policy=OrchestrationPolicy(max_cycles=2),
+    )
+    asyncio.run(cp.run("t1", goal="make a note"))
+
+    (failure,) = store.cycle_failures()
+    assert failure.kind == "sandbox-error"
+    assert "timed out after 5.0s" in failure.detail
+    assert failure.transcript_ref is not None
+    assert store.get_object(failure.transcript_ref) == transcript  # auditable end to end
+
+
+def test_digest_interleaves_timeouts_with_rejects_but_not_gate_errors(tmp_path: Path) -> None:
+    # The user-facing payoff: a timeout two cycles back is still visible to the agent, merged with
+    # rejected-artifact lines by recency — while a transient gate-unavailable is recorded for the
+    # operator but never taught to the agent as an "attempt".
+    from verity.control_plane.context import ContextAssembler
+
+    cp, _sandbox, store = _build(
+        tmp_path,
+        items=[SandboxError("sandbox worker timed out after 5.0s")],
+        policy=OrchestrationPolicy(max_cycles=1),
+    )
+    asyncio.run(cp.run("t1", goal="make a note"))
+    store.record_cycle_failure(kind="gate-error", detail="verifier 503, submit again")
+
+    tail = ContextAssembler().assemble(
+        store, system_prompt="SYS", goal="again"
+    ).volatile_tail
+    assert "# Prior attempts (rejected)" in tail
+    assert "(no proposal) [sandbox-error] — sandbox worker timed out after 5.0s" in tail
+    assert "verifier 503" not in tail  # gate-errors recorded, never surfaced
+
+
+def test_digest_orders_a_timeout_and_a_later_reject_by_recency(tmp_path: Path) -> None:
+    from tests.helpers import bundle, decision, returns
+    from verity.contracts import VerdictKind as _VK
+    from verity.control_plane.commit import run_commit
+    from verity.control_plane.context import ContextAssembler
+    from verity.domains.fake import build_fake_domain
+
+    # cycle 1: a timeout (recorded durably); afterwards a proposal is committed and REJECTED
+    cp, _sandbox, store = _build(
+        tmp_path,
+        items=[SandboxError("sandbox worker timed out after 5.0s")],
+        policy=OrchestrationPolicy(max_cycles=1),
+    )
+    asyncio.run(cp.run("t1", goal="make a note"))
+    # propose with an EMPTY created_at so the store stamps its real clock — genuinely later than
+    # the timeout's stamp (a fixed fake timestamp would win the recency sort by accident)
+    envelope = _note("n1")
+    from dataclasses import replace as _replace
+
+    store.propose(_replace(envelope.artifact, created_at=""), envelope.operation)
+    run_commit(
+        "n1", store=store, sink=store,
+        resolve_coverage=build_fake_domain().gated_types.resolve,
+        dispatch=returns(bundle(
+            ArtifactStatus.REJECTED, decision("check", _VK.REJECT, "too vague"),
+        )),
+        verifier_identity="scripted-verifier",
+    )
+
+    tail = ContextAssembler().assemble(store, system_prompt="SYS", goal="g").volatile_tail
+    digest = [ln for ln in tail.splitlines() if "[check]" in ln or "[sandbox-error]" in ln]
+    assert len(digest) == 2
+    assert "[check]" in digest[0] and "too vague" in digest[0]  # the reject is more recent
+    assert "[sandbox-error]" in digest[1] and "timed out" in digest[1]
