@@ -329,22 +329,27 @@ def provisioning_policy(
     type_filter: str | None = None,
     target_role: str = "scratch",
     name_prefix: str = "provided/",
-    max_objects: int = 16,
+    max_artifacts: int | None = None,
+    max_bytes: int | None = None,
 ) -> ObjectProvisioningPolicy:
     """Resolve a provisioning **spec** to an :class:`ObjectProvisioningPolicy`.
 
     ``spec`` is either a preset **name** (``str`` / :class:`ObjectProvisionMode`) or an **explicit**
-    mapping ``{"statuses": [...], "select": "all|last|best"}``. The explicit form can express any
-    ``(status set × select)`` cell — including ones no preset names. An unknown preset name degrades
-    to ``none`` with a warning; a status set that includes a footgun status is allowed but warned.
-    The selection is independent of the acceptance lifecycle (provisioning is not gated by whether a
-    gate superseded an artifact).
+    mapping ``{"statuses": [...], "select": "all|last|best", "max_artifacts": N, "max_bytes": N}``
+    (the limit keys optional — absent/None = unlimited, #133; the mapping form rides
+    ``PolicyRequest.provisioning`` unchanged, so they are per-task wire knobs). The explicit form
+    can express any ``(status set × select)`` cell — including ones no preset names. An unknown
+    preset name degrades to ``none`` with a warning; a status set that includes a footgun status is
+    allowed but warned. The selection is independent of the acceptance lifecycle (provisioning is
+    not gated by whether a gate superseded an artifact).
     """
     if spec is None:
         statuses, select = _PRESETS["none"]
     elif isinstance(spec, Mapping):
         statuses = _parse_statuses(spec.get("statuses"))
         select = ProvisionSelect(str(spec.get("select", "all")).strip().lower())
+        max_artifacts = _parse_limit(spec.get("max_artifacts", max_artifacts), "max_artifacts")
+        max_bytes = _parse_limit(spec.get("max_bytes", max_bytes), "max_bytes")
     elif isinstance(spec, str):  # a preset name (StrEnum is a str)
         key = spec.strip().lower()
         if key not in _PRESETS:
@@ -358,8 +363,23 @@ def provisioning_policy(
                     statuses=sorted(s.value for s in statuses))
     return ObjectProvisioningPolicy(
         statuses=statuses, select=select, type_filter=type_filter,
-        target_role=target_role, name_prefix=name_prefix, max_objects=max_objects,
+        target_role=target_role, name_prefix=name_prefix,
+        max_artifacts=max_artifacts, max_bytes=max_bytes,
     )
+
+
+def _parse_limit(raw: object, name: str) -> int | None:
+    """A non-negative int limit from wire data, or ``None`` (unlimited). Misuse fails loud."""
+    if raw is None:
+        return None
+    try:
+        value = int(raw)  # type: ignore[call-overload]
+    except (TypeError, ValueError) as exc:
+        raise RegistryError(f"provisioning {name} must be an integer, got {raw!r}") from exc
+    assert isinstance(value, int)  # narrows the Any from the dynamic int() call
+    if value < 0:
+        raise RegistryError(f"provisioning {name} must be >= 0, got {value}")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,9 +392,13 @@ class ObjectProvisioningPolicy:
     semantics; never the acceptance decision) and reads the selected artifacts' object sidecars via
     ``Store.get_object``. The result is materialized into ``target_role`` (a writable role) under
     ``name_prefix`` and **re-materialized every cycle**, so agent edits never persist.
-    ``type_filter`` restricts selection to one type; ``max_objects`` bounds total objects so a store
-    cannot blow up the workspace. Build one from a preset or an explicit spec via
-    :func:`provisioning_policy`.
+    ``type_filter`` restricts selection to one type.
+
+    Limits (#133) are **opt-in and artifact-granular**: ``max_artifacts`` bounds how many selected
+    artifacts are provisioned, ``max_bytes`` bounds the total provisioned payload; ``None`` (the
+    default) means unlimited. An artifact is provisioned WHOLE or skipped entirely — never a torn
+    subset of its files — and anything omitted is noted in ``INDEX.md``, never silently dropped.
+    Build one from a preset or an explicit spec via :func:`provisioning_policy`.
     """
 
     statuses: frozenset[ArtifactStatus] | None = frozenset()
@@ -382,7 +406,8 @@ class ObjectProvisioningPolicy:
     type_filter: str | None = None
     target_role: str = "scratch"
     name_prefix: str = "provided/"
-    max_objects: int = 16
+    max_artifacts: int | None = None
+    max_bytes: int | None = None
 
     def _select(self, store: Store) -> list[Artifact]:
         if self.statuses is not None and not self.statuses:  # empty set — provision nothing
@@ -417,26 +442,43 @@ class ObjectProvisioningPolicy:
         each file to its ``INDEX.md`` row. A ``<prefix>INDEX.md`` manifest accompanies the bytes,
         listing each provisioned artifact (rank, id, status, recency, type, score). Harvested object
         *names* stay domain-fixed; disambiguation is the subdir scheme + manifest.
+
+        Limits are enforced at ARTIFACT granularity (#133): an artifact's full object set + byte
+        size is resolved before admitting it, and an artifact that would breach ``max_artifacts``
+        or ``max_bytes`` is skipped whole — never provisioned as a torn subset (e.g. a script
+        without its requirements). Omissions are stated in ``INDEX.md``.
         """
         selected = self._select(store)
         single = len(selected) <= 1
         role: dict[str, bytes] = {}
         entries: list[_ManifestEntry] = []
+        admitted = 0
+        provisioned_bytes = 0
+        omitted = 0
         for rank, artifact in enumerate(selected, start=1):
+            if self.max_artifacts is not None and admitted >= self.max_artifacts:
+                omitted += 1
+                continue
+            # Resolve the WHOLE object set first, so admission is all-or-nothing.
             subdir = "" if single else f"{rank:02d}-{artifact.id}/"
-            files: list[str] = []
-            for name, ref in artifact.objects:
-                if len(role) >= self.max_objects:
-                    break
-                key = f"{self.name_prefix}{subdir}{name}"
-                role[key] = store.get_object(ref.content_hash)
-                files.append(key)
-            if files:
-                score = _artifact_score(store, artifact)
-                entries.append(_ManifestEntry(rank, artifact, score, files))
+            blobs = {
+                f"{self.name_prefix}{subdir}{name}": store.get_object(ref.content_hash)
+                for name, ref in artifact.objects
+            }
+            if not blobs:
+                continue
+            artifact_bytes = sum(len(b) for b in blobs.values())
+            if self.max_bytes is not None and provisioned_bytes + artifact_bytes > self.max_bytes:
+                omitted += 1
+                continue
+            role.update(blobs)
+            admitted += 1
+            provisioned_bytes += artifact_bytes
+            score = _artifact_score(store, artifact)
+            entries.append(_ManifestEntry(rank, artifact, score, sorted(blobs)))
         if not role:
             return {}
-        role[f"{self.name_prefix}INDEX.md"] = _render_manifest(entries)
+        role[f"{self.name_prefix}INDEX.md"] = _render_manifest(entries, omitted=omitted)
         return {self.target_role: role}
 
 
@@ -458,11 +500,12 @@ def _artifact_score(store: Store, artifact: Artifact) -> float | None:
     return max(scores) if scores else None
 
 
-def _render_manifest(entries: list[_ManifestEntry]) -> bytes:
+def _render_manifest(entries: list[_ManifestEntry], *, omitted: int = 0) -> bytes:
     """A dumb Markdown index of the provisioned durable objects: a title + a metadata table only.
 
     Carries **no instructions** — what to do with these objects is the task's configurable concern
     (its composed instructions), never hardwired into this generic control-plane renderer.
+    ``omitted`` > 0 appends an explicit note so a limit never truncates silently (#133).
     """
     lines = [
         "# Provisioned durable objects",
@@ -477,4 +520,6 @@ def _render_manifest(entries: list[_ManifestEntry]) -> bytes:
             f"| {entry.rank:02d} | {art.id} | {art.type} | {art.status.value} | "
             f"{art.created_at} | {score} | {', '.join(entry.files)} |"
         )
+    if omitted:
+        lines += ["", f"({omitted} artifact(s) omitted by the provisioning limits)"]
     return ("\n".join(lines) + "\n").encode("utf-8")

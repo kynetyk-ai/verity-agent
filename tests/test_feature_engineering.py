@@ -202,14 +202,15 @@ def test_policy_all_accepted_ranks_by_recency_with_a_manifest() -> None:
     assert "| 01 | s2 |" in manifest and "| 02 | s1 |" in manifest  # ordered, meaningful
 
 
-def test_policy_all_includes_terminal_and_respects_cap() -> None:
+def test_policy_all_includes_terminal_and_respects_artifact_limit() -> None:
+    # #133: limits are opt-in (default unlimited) and ARTIFACT-granular; omissions are stated.
     policy = provisioning_policy(
-        ObjectProvisionMode.ALL, type_filter=SUBMISSION, max_objects=2
+        ObjectProvisionMode.ALL, type_filter=SUBMISSION, max_artifacts=2
     )
     out = policy.materialize(_store_with_three())["scratch"]
-    # the cap bounds object files (2), but the manifest always rides along (metadata, not payload).
     object_files = [k for k in out if not k.endswith("INDEX.md")]
     assert len(object_files) == 2 and "provided/INDEX.md" in out
+    assert "(1 artifact(s) omitted by the provisioning limits)" in out["provided/INDEX.md"].decode()
 
 
 def test_policy_last_revised_or_accepted_picks_the_in_flight_revised() -> None:
@@ -504,3 +505,78 @@ def test_two_cycles_commit_and_provision_prior_script(tmp_path: Path) -> None:
     r2 = asyncio.run(cp.run_cycle("fe", goal="improve the submission"))
     assert r2.commit is not None and r2.commit.outcome is CommitOutcome.ACCEPTED
     assert driver.seen_provided.get(ENTRYPOINT) == b"# script v1"
+
+
+# ------------------------------------------- provisioning limits: bytes/count, whole artifacts
+
+
+def _seed_pair(store: SqliteStore, *, art_id: str, script: bytes, reqs: bytes, ts: str) -> None:
+    """An artifact with TWO objects (script + requirements) — the torn-pair fixture (#133)."""
+    refs = (
+        (ENTRYPOINT, store.put_object(script)),
+        (REQUIREMENTS, store.put_object(reqs)),
+    )
+    store.propose(
+        Artifact(art_id, SUBMISSION, {"k": 1}, ArtifactStatus.PROPOSED, "agent", ts, objects=refs),
+        Operation(f"op-{art_id}", "load", (), art_id, OperationStatus.SUCCESS, ts),
+    )
+    store.set_status(art_id, ArtifactStatus.ACCEPTED)
+
+
+def test_provisioning_default_is_unlimited() -> None:
+    store = SqliteStore()
+    for i in range(40):  # far beyond the old 16-object cap
+        _seed_with_object(store, art_id=f"s{i:02d}", status=ArtifactStatus.ACCEPTED,
+                          name=ENTRYPOINT, data=b"v", ts=f"t{i:02d}")
+    policy = provisioning_policy(ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION)
+    out = policy.materialize(store)["scratch"]
+    object_files = [k for k in out if not k.endswith("INDEX.md")]
+    assert len(object_files) == 40  # nothing silently dropped by a buried constant
+    assert "omitted" not in out["provided/INDEX.md"].decode()
+
+
+def test_byte_budget_skips_whole_artifacts_never_tears_them() -> None:
+    # #133: the artifact straddling the byte budget is skipped INTACT — a provisioned script must
+    # never arrive without its requirements (the old file-granular cap produced torn pairs).
+    store = SqliteStore()
+    _seed_pair(store, art_id="big", script=b"x" * 900, reqs=b"y" * 900, ts="t2")
+    _seed_pair(store, art_id="small", script=b"a" * 100, reqs=b"b" * 100, ts="t1")
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION, max_bytes=1000
+    )
+    out = policy.materialize(store)["scratch"]
+    object_files = sorted(k for k in out if not k.endswith("INDEX.md"))
+    # 'big' (most recent, 1800 bytes) exceeds the budget alone -> skipped whole; 'small' fits whole
+    assert all("small" in k for k in object_files)
+    assert {k.rsplit("/", 1)[-1] for k in object_files} == {ENTRYPOINT, REQUIREMENTS}
+    index = out["provided/INDEX.md"].decode()
+    assert "(1 artifact(s) omitted by the provisioning limits)" in index
+    assert "| big |" not in index  # the index never implies a torn artifact was provisioned
+
+
+def test_both_limits_compose_and_wire_spec_round_trips() -> None:
+    store = SqliteStore()
+    for i in range(5):
+        _seed_pair(store, art_id=f"s{i}", script=b"s" * 50, reqs=b"r" * 50, ts=f"t{i}")
+    # the explicit mapping form is exactly what PolicyRequest.provisioning carries over the wire
+    policy = provisioning_policy(
+        {"statuses": ["accepted"], "select": "all", "max_artifacts": 3, "max_bytes": 250},
+        type_filter=SUBMISSION,
+    )
+    assert policy.max_artifacts == 3 and policy.max_bytes == 250
+    out = policy.materialize(store)["scratch"]
+    object_files = [k for k in out if not k.endswith("INDEX.md")]
+    # byte budget binds first here: 2 artifacts x 100 bytes fit, a third would exceed 250
+    assert len(object_files) == 4
+    assert "(3 artifact(s) omitted by the provisioning limits)" in out["provided/INDEX.md"].decode()
+
+
+def test_bad_limit_specs_fail_loud() -> None:
+    import pytest
+
+    from verity.control_plane.registries import RegistryError
+
+    with pytest.raises(RegistryError, match="max_bytes must be an integer"):
+        provisioning_policy({"statuses": ["accepted"], "max_bytes": "lots"})
+    with pytest.raises(RegistryError, match="max_artifacts must be >= 0"):
+        provisioning_policy({"statuses": ["accepted"], "max_artifacts": -1})
