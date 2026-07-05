@@ -292,3 +292,153 @@ def test_sandbox_error_feedback_takes_precedence_and_a_clean_accept_has_none() -
 def test_stub_sandbox_double_satisfies_the_port() -> None:
     assert isinstance(_ScriptedSandbox(items=[]), SandboxPort)
     assert isinstance(StubVerifier(), VerifierPort)
+
+
+def test_served_context_accumulates_a_rejection_digest_while_feedback_stays_latest_only() -> None:
+    # #132, loop-level: after two rejected cycles, the THIRD cycle's served context carries BOTH
+    # failures in the "# Prior attempts (rejected)" digest (gate + rationale, store-derived), while
+    # the single "# Correction" feedback channel deliberately carries only the latest one.
+    from dataclasses import dataclass as _dc
+
+    from tests.helpers import bundle, decision
+
+    served: list[ServedContext] = []
+
+    class _RecordingSandbox(_ScriptedSandbox):
+        async def serve_context(self, context: ServedContext) -> None:
+            served.append(context)
+
+    @_dc
+    class _ScriptedVerifier:
+        bundles: list[object]
+        identity: str = "scripted-verifier"
+        cursor: int = 0
+
+        async def dispatch(self, request):  # type: ignore[no-untyped-def]
+            item = self.bundles[min(self.cursor, len(self.bundles) - 1)]
+            self.cursor += 1
+            return item
+
+        async def provision(self) -> None: ...
+        async def teardown(self) -> None: ...
+        async def health(self) -> bool:
+            return True
+
+    store = SqliteStore()
+    store.propose(
+        Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
+        Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
+    )
+    domain = build_fake_domain()
+    sandbox = _RecordingSandbox(items=[_note("n1"), _note("n2"), _note("n3")])
+    from verity.contracts import VerdictKind as _VK
+
+    verifier = _ScriptedVerifier(bundles=[
+        bundle(ArtifactStatus.REJECTED,
+               decision("check", _VK.REJECT, "first failure: too vague")),
+        bundle(ArtifactStatus.REJECTED,
+               decision("check", _VK.REJECT, "second failure: no source")),
+        bundle(ArtifactStatus.ACCEPTED, decision("check", _VK.ACCEPT, "fine")),
+    ])
+    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
+    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
+    sp.register("scripted", lambda: sandbox)
+    vp.register("scripted", lambda: verifier)
+    cp = ControlPlane(
+        store, policy=OrchestrationPolicy(max_cycles=3), sandbox_providers=sp,
+        verifier_providers=vp,
+    )
+    asyncio.run(cp.configure(TaskConfig(
+        task_id="t1", instructions="make notes", domain_instructions="a Note has text",
+        schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
+        shape_validator=domain.shape_validator, object_namer=lambda _a: frozenset(),
+        sandbox_key="scripted", verifier_key="scripted",
+    )))
+    asyncio.run(cp.run("t1", goal="make a good note"))
+
+    third = served[2]
+    assert "first failure: too vague" in third.tail  # both past rejects, with reasons
+    assert "second failure: no source" in third.tail
+    assert "# Prior attempts (rejected)" not in third.feedback
+    assert third.feedback == "rejected: second failure: no source"  # latest-only, unchanged
+    # and the digest lines never leak the proposer's own rationale channel
+    assert "i reasoned thus" not in third.tail
+
+
+def test_failed_cycles_are_durably_recorded_with_their_transcript(tmp_path: Path) -> None:
+    # #32: a timed-out cycle mints no artifact (§7.0), so the cycle_failures row is its only
+    # durable trace — kind + the same detail text the correction carried + the salvaged transcript.
+    transcript = b'[{"index": 0, "type": "AIMessage", "content": "was browsing"}]'
+    cp, _sandbox, store = _build(
+        tmp_path,
+        items=[
+            SandboxError("sandbox worker timed out after 5.0s", transcript=transcript),
+            _note("n1"),
+        ],
+        policy=OrchestrationPolicy(max_cycles=2),
+    )
+    asyncio.run(cp.run("t1", goal="make a note"))
+
+    (failure,) = store.cycle_failures()
+    assert failure.kind == "sandbox-error"
+    assert "timed out after 5.0s" in failure.detail
+    assert failure.transcript_ref is not None
+    assert store.get_object(failure.transcript_ref) == transcript  # auditable end to end
+
+
+def test_digest_interleaves_timeouts_with_rejects_but_not_gate_errors(tmp_path: Path) -> None:
+    # The user-facing payoff: a timeout two cycles back is still visible to the agent, merged with
+    # rejected-artifact lines by recency — while a transient gate-unavailable is recorded for the
+    # operator but never taught to the agent as an "attempt".
+    from verity.control_plane.context import ContextAssembler
+
+    cp, _sandbox, store = _build(
+        tmp_path,
+        items=[SandboxError("sandbox worker timed out after 5.0s")],
+        policy=OrchestrationPolicy(max_cycles=1),
+    )
+    asyncio.run(cp.run("t1", goal="make a note"))
+    store.record_cycle_failure(kind="gate-error", detail="verifier 503, submit again")
+
+    tail = ContextAssembler().assemble(
+        store, system_prompt="SYS", goal="again"
+    ).volatile_tail
+    assert "# Prior attempts (rejected)" in tail
+    assert "(no proposal) [sandbox-error] — sandbox worker timed out after 5.0s" in tail
+    assert "verifier 503" not in tail  # gate-errors recorded, never surfaced
+
+
+def test_digest_orders_a_timeout_and_a_later_reject_by_recency(tmp_path: Path) -> None:
+    from tests.helpers import bundle, decision, returns
+    from verity.contracts import VerdictKind as _VK
+    from verity.control_plane.commit import run_commit
+    from verity.control_plane.context import ContextAssembler
+    from verity.domains.fake import build_fake_domain
+
+    # cycle 1: a timeout (recorded durably); afterwards a proposal is committed and REJECTED
+    cp, _sandbox, store = _build(
+        tmp_path,
+        items=[SandboxError("sandbox worker timed out after 5.0s")],
+        policy=OrchestrationPolicy(max_cycles=1),
+    )
+    asyncio.run(cp.run("t1", goal="make a note"))
+    # propose with an EMPTY created_at so the store stamps its real clock — genuinely later than
+    # the timeout's stamp (a fixed fake timestamp would win the recency sort by accident)
+    envelope = _note("n1")
+    from dataclasses import replace as _replace
+
+    store.propose(_replace(envelope.artifact, created_at=""), envelope.operation)
+    run_commit(
+        "n1", store=store, sink=store,
+        resolve_coverage=build_fake_domain().gated_types.resolve,
+        dispatch=returns(bundle(
+            ArtifactStatus.REJECTED, decision("check", _VK.REJECT, "too vague"),
+        )),
+        verifier_identity="scripted-verifier",
+    )
+
+    tail = ContextAssembler().assemble(store, system_prompt="SYS", goal="g").volatile_tail
+    digest = [ln for ln in tail.splitlines() if "[check]" in ln or "[sandbox-error]" in ln]
+    assert len(digest) == 2
+    assert "[check]" in digest[0] and "too vague" in digest[0]  # the reject is more recent
+    assert "[sandbox-error]" in digest[1] and "timed out" in digest[1]

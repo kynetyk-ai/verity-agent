@@ -39,6 +39,7 @@ from verity.control_plane.store import (
     ObjectRef,
     Payload,
     Store,
+    VerdictKind,
 )
 from verity.logging import get_logger
 
@@ -119,6 +120,11 @@ class ContextAssembler:
     tail_limit: int = 12
     summary_chars: int = 120
     tail_payload_chars: int = 800
+    # The prior-attempts digest (#132): the last N REJECTED artifacts with the rejecting gate's
+    # rationale, so the agent sees WHY past attempts failed — all of them, not just the latest
+    # correction — without their bytes being provisioned. 0 disables the section.
+    digest_limit: int = 10
+    digest_chars: int = 200
 
     def manifest(self, store: Store) -> Manifest:
         artifacts = store.query_artifacts()
@@ -162,6 +168,9 @@ class ContextAssembler:
             "# Retrieved artifacts",
             _render_artifacts(retrieved, self.tail_payload_chars),
         ]
+        digest = self._rejection_digest(store)
+        if digest:
+            tail_sections += ["# Prior attempts (rejected)", digest]
         if scratch.strip():
             tail_sections += ["# Scratch", scratch.strip()]
         volatile_tail = "\n\n".join(tail_sections)
@@ -175,6 +184,63 @@ class ContextAssembler:
             size=context.size(),
         )
         return context
+
+
+    def _rejection_digest(self, store: Store) -> str:
+        """The prior-attempts digest (#132/#32): the last ``digest_limit`` failed attempts — both
+        REJECTED artifacts (with the rejecting gate's rationale + recorded score) and FAILED
+        cycles that minted no artifact at all (a timed-out/crashed sandbox, a malformed proposal
+        — read from the durable ``cycle_failures`` rows), interleaved by recency, one capped line
+        per attempt.
+
+        Store-derived every turn (never accumulated loop state — restart-safe), and bounded by
+        construction (``digest_limit`` × ``digest_chars``), so the bounded-context guarantee
+        holds. §10 permits feeding gate reasons TO the proposer; the digest never carries the
+        proposer's own rationale. Gate-unavailable failures are recorded durably but NOT surfaced
+        here — their correction explicitly says "this was not a rejection; submit again", and
+        teaching the agent to route around transient infrastructure is the wrong lesson. The
+        single ``# Correction`` feedback line stays the salient latest-failure channel; this is
+        the trail of everything before it, so the agent stops re-walking dead ends even when the
+        failed attempts left no artifact bytes to provision.
+        """
+        if self.digest_limit <= 0:
+            return ""
+        # (created_at, line) pairs from both sources, merged by recency.
+        attempts: list[tuple[str, str]] = []
+        for artifact in store.query_artifacts():
+            if artifact.status is not ArtifactStatus.REJECTED:
+                continue
+            gate, rationale, score = _rejecting_decision(store, artifact.id)
+            score_part = f" score={score:.4f}" if score is not None else ""
+            attempts.append((
+                artifact.created_at,
+                f"  - {artifact.type}/{artifact.id} [{gate}]{score_part} — "
+                f"{self._cap(rationale)}",
+            ))
+        for failure in store.cycle_failures():
+            if failure.kind == "gate-error":
+                continue  # transient infra, not an attempt to learn from (see docstring)
+            attempts.append((
+                failure.created_at,
+                f"  - (no proposal) [{failure.kind}] — {self._cap(failure.detail)}",
+            ))
+        attempts.sort(key=lambda pair: pair[0], reverse=True)  # most recent attempts first
+        return "\n".join(line for _, line in attempts[: self.digest_limit])
+
+    def _cap(self, text: str) -> str:
+        return text if len(text) <= self.digest_chars else text[: self.digest_chars - 1] + "…"
+
+
+def _rejecting_decision(store: Store, artifact_id: str) -> tuple[str, str, float | None]:
+    """The (gate, rationale, score) of the decision that rejected ``artifact_id``.
+
+    Reads the durable ``Decision`` rows; falls back to a generic line when none carries a reject
+    verdict (e.g. a shape-level termination) so the digest never crashes context assembly.
+    """
+    for decision in store.decisions_for(artifact_id):
+        if decision.verdict is VerdictKind.REJECT:
+            return decision.gate, decision.rationale, decision.score
+    return "gate", "rejected (no recorded rationale)", None
 
 
 def _render_artifacts(artifacts: list[Artifact], payload_chars: int) -> str:

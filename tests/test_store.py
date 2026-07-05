@@ -228,3 +228,27 @@ def test_same_contract_version_with_a_changed_orientation_is_refused() -> None:
     store.register_contract_version(ContractVersion(1, "abc", "t1"))
     with pytest.raises(StoreError, match="different orientation digest"):
         store.register_contract_version(ContractVersion(1, "xyz", "t2"))
+
+
+# -------------------------------------------------- durable failure provenance (#32)
+
+
+def test_cycle_failures_round_trip_and_survive_reopen(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # The point of persisting: a failed cycle's trace must survive a daemon restart — the
+    # in-memory history dies with the process; this row is the durable record.
+    from verity.control_plane.store import SqliteStore
+
+    path = str(tmp_path / "store.db")
+    store = SqliteStore(path=path, clock=lambda: "t1")
+    recorded = store.record_cycle_failure(
+        kind="sandbox-error",
+        detail="sandbox worker timed out after 1500.0s",
+        transcript_ref="abc123",
+    )
+    assert recorded.created_at == "t1"
+
+    reopened = SqliteStore(path=path)  # a fresh process over the same file
+    (failure,) = reopened.cycle_failures()
+    assert failure.kind == "sandbox-error"
+    assert failure.detail == "sandbox worker timed out after 1500.0s"
+    assert failure.transcript_ref == "abc123"

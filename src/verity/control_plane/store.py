@@ -51,6 +51,7 @@ __all__ = [
     "Artifact",
     "Operation",
     "Decision",
+    "CycleFailure",
     "SchemaVersion",
     "Provenance",
     "JSONValue",
@@ -89,6 +90,25 @@ class Decision:
     defects: tuple[str, ...] | None = None
     score: float | None = None
     created_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CycleFailure:
+    """A durably-recorded FAILED cycle (#32 — failure provenance in the store, not just memory).
+
+    A cycle that produced no gated artifact (a timed-out/crashed sandbox, an unavailable gate, a
+    malformed proposal) deliberately mints nothing in the artifact tables (§7.0) — this row is its
+    provenance instead, so failure history survives a daemon restart and the served-context
+    digest can tell the agent about failures that never became artifacts. ``kind`` mirrors the
+    feedback channel's classification (``sandbox-error`` / ``gate-error`` / ``shape-error``);
+    ``detail`` is the same text the next-cycle correction carried; ``transcript_ref`` links the
+    salvaged step transcript in the object store when one was recovered.
+    """
+
+    kind: str
+    detail: str
+    created_at: str
+    transcript_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +211,7 @@ class Store(Protocol):
     def get_provenance(self, artifact_id: str) -> Provenance: ...
     def rejected_log(self, *, type: str | None = None) -> list[Artifact]: ...
     def superseded_log(self, *, type: str | None = None) -> list[Artifact]: ...
+    def cycle_failures(self) -> list[CycleFailure]: ...
 
 
 @runtime_checkable
@@ -245,6 +266,12 @@ CREATE TABLE IF NOT EXISTS decisions (
     defects     TEXT,
     score       REAL,
     created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cycle_failures (
+    kind           TEXT NOT NULL,
+    detail         TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    transcript_ref TEXT
 );
 CREATE TABLE IF NOT EXISTS schema_versions (
     version       INTEGER PRIMARY KEY,
@@ -658,6 +685,39 @@ class SqliteStore:
 
     def superseded_log(self, *, type: str | None = None) -> list[Artifact]:
         return self.query_artifacts(type=type, status=ArtifactStatus.SUPERSEDED)
+
+    def record_cycle_failure(
+        self, *, kind: str, detail: str, transcript_ref: str | None = None
+    ) -> CycleFailure:
+        """Durably record a failed cycle (#32) — the control plane's failure-provenance write.
+
+        Written by the sole mutator on the cycle-record path (not the commit path, so it is not a
+        :class:`CommitSink` method): a failed cycle mints no artifact, and this row is the only
+        durable trace it leaves.
+        """
+        failure = CycleFailure(
+            kind=kind, detail=detail, created_at=self.clock(), transcript_ref=transcript_ref
+        )
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO cycle_failures (kind, detail, created_at, transcript_ref) "
+                "VALUES (?, ?, ?, ?)",
+                (failure.kind, failure.detail, failure.created_at, failure.transcript_ref),
+            )
+        log.info("cycle_failure_recorded", kind=failure.kind)
+        return failure
+
+    def cycle_failures(self) -> list[CycleFailure]:
+        rows = self._conn.execute(
+            "SELECT * FROM cycle_failures ORDER BY created_at"
+        ).fetchall()
+        return [
+            CycleFailure(
+                kind=r["kind"], detail=r["detail"], created_at=r["created_at"],
+                transcript_ref=r["transcript_ref"],
+            )
+            for r in rows
+        ]
 
     # -- low-level helpers --------------------------------------------------------
 

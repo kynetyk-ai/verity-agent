@@ -328,7 +328,8 @@ class _SubmissionGates:
         if result.exit_code != 0:
             return GateVerdict(
                 VerdictKind.REJECT,
-                f"submission exited {result.exit_code}: {_stderr_tail(result.stderr)}",
+                f"submission exited {result.exit_code}: {_stderr_tail(result.stderr)}"
+                f"{_dependency_hint(result.stderr)}",
             )
         preds = _parse_predictions(result.output)
         if preds is None:
@@ -413,6 +414,39 @@ class _SubmissionGates:
         if not scored:
             return None, 0.0
         return max(scored, key=lambda pair: pair[1])
+
+
+# Stderr markers of a dependency-shaped failure: missing imports and pip's resolution errors.
+# Case-insensitive; deliberately narrow — a hint on a non-dependency failure is worse than none.
+_DEPENDENCY_MARKERS = (
+    "modulenotfounderror",
+    "importerror",
+    "no matching distribution found",
+    "resolutionimpossible",
+    "could not find a version",
+    "error: pip",
+)
+
+_DEPENDENCY_HINT = (
+    " Likely a sandbox↔gate environment mismatch: the gate installs EXACTLY what "
+    f"{REQUIREMENTS!r} lists into a fresh container — nothing else. Pin the exact versions the "
+    "script was actually tested with (`pip freeze` in the sandbox) for every import, and list "
+    "every package the script needs."
+)
+
+
+def _dependency_hint(stderr: str) -> str:
+    """The pin-your-deps remedy for a dependency-shaped failure, else ``""`` (#134).
+
+    The reactive-hint principle: the domain instructions already say "pin recent versions", but
+    the remedy at the MOMENT of failure is what breaks the silent retry loop — a script that ran
+    in the agent's sandbox and died in the gate's clean container is a version/deps mismatch far
+    more often than a code bug.
+    """
+    lowered = stderr.lower()
+    if any(marker in lowered for marker in _DEPENDENCY_MARKERS):
+        return _DEPENDENCY_HINT
+    return ""
 
 
 def _stderr_tail(stderr: str) -> str:
