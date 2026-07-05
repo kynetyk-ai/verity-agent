@@ -1,8 +1,9 @@
 """The backend-backed sandbox driver (ROADMAP 7.4.c / ADR 0003).
 
-A `SandboxDriver` that runs one cycle as an ephemeral worker via a `WorkerBackend`, replacing the
-``docker run``-baked `DeepAgentsContainerDriver`. It is the **substrate-agnostic** driver: it speaks
-only the `WorkerBackend` seam, so the same driver runs on local Docker now and Kubernetes later.
+A `SandboxDriver` that runs one cycle as an ephemeral worker via a `WorkerBackend` (it replaced
+the legacy ``docker run``-baked per-cycle driver, removed in #129). It is the **substrate-agnostic**
+driver: it speaks only the `WorkerBackend` seam, so the same driver runs on local Docker now and
+Kubernetes later.
 
 It does the bytes file-transfer (`provisioning.backend`): the cycle input + the workspace's
 read-only roles become ``readonly_inputs``, ``/work`` is a fresh writable area, and the agent's

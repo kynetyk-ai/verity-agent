@@ -519,8 +519,10 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     `verity.composition` root: a `ProvisioningConfig` (backend + per-role substrate shape) + an
     FE composition builder `build_fe_control_plane` that replaces `_build_fe_task`. `TaskConfig` and
     `ControlPlane` unchanged; provisioning stays off `TaskConfig`. (The old
-    `DeepAgentsContainerDriver`/`ContainerCodeRunner` classes remain for the `code` benchmark domain;
-    full retirement is deferred to a cleanup pass.)
+    `DeepAgentsContainerDriver`/`ContainerCodeRunner` classes remained for a while; the deferred
+    `DeepAgentsContainerDriver` cleanup landed via **#129** — driver + `build_container_sandbox`
+    removed, its live model-breadth smokes ported onto `BackendSandboxDriver` in
+    `tests/test_sandbox_live_models.py`.)
   - **g. FE-via-config acceptance ✅** (the done-line) — `tests/test_fe_via_config_acceptance.py`: FE
     built purely from declarative config + a backend selection; asserts an accepted `Submission`, the
     no-cross-cycle-bleed property (§3.5), untrusted code in a `{role:code-runner}`-labelled worker, and

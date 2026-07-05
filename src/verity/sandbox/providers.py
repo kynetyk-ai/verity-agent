@@ -3,13 +3,16 @@
 Thin, framework-neutral convenience builders for the model targets Phase 6 cares about. They hold no
 logic the seam doesn't already have — they just name the conventions (the default local ``base_url``
 and the ``openai-compatible`` provider tag) so a task registration reads as one line. A sandbox is
-registered by handing one of these to ``build_container_sandbox(..., model_spec=...)``::
+registered by handing one of these to the production driver via ``build_sandbox``::
 
+    from verity.provisioning import DockerBackend
+    from verity.sandbox.backend_driver import BackendSandboxDriver
     from verity.sandbox.providers import local_spec
-    from verity.sandbox.registration import build_container_sandbox, register_sandbox
+    from verity.sandbox.registration import build_sandbox, register_sandbox
 
-    register_sandbox(sandbox_providers, "deepagents-local", lambda: build_container_sandbox(
-        schema=schema, root=root, model="unused", model_spec=local_spec("qwen2.5-coder"),
+    register_sandbox(sandbox_providers, "deepagents-local", lambda: build_sandbox(
+        schema=schema, root=root, proposer_identity="deepagents-worker:local",
+        driver=BackendSandboxDriver(backend=DockerBackend(), spec=local_spec("qwen2.5-coder")),
     ))
 
 The system depends on the **OpenAI-compatible contract**, not on any one server — vLLM, Ollama, and
