@@ -513,3 +513,50 @@ def test_real_script_installs_pandas_runs_and_is_accepted() -> None:
     # the rule separates the classes perfectly -> balanced accuracy 1.0 -> accepted
     assert bundle.status is ArtifactStatus.ACCEPTED
     assert bundle.decisions[-1].score == pytest.approx(1.0)
+
+
+# ----------------------------------------------------- the dependency remedy hint (#134)
+
+
+def test_dependency_shaped_crash_carries_the_pin_your_deps_hint() -> None:
+    # The reactive-hint principle: a script that ran in the sandbox but dies in the gate's clean
+    # container on an import error gets the remedy AT the failure, not just in the instructions.
+    runner = FakeCodeRunner(script=lambda _r: RunResult(
+        1, "", "Traceback (most recent call last):\nModuleNotFoundError: No module named 'xgboost'"
+    ))
+    bundle = _dispatch(_verifier(runner), _request(b"missing-dep"))
+    rationale = bundle.decisions[-1].rationale
+    assert "ModuleNotFoundError" in rationale  # the distilled error is still first
+    assert "pip freeze" in rationale and "Pin the exact versions" in rationale
+
+
+def test_non_dependency_crash_gets_no_hint() -> None:
+    runner = FakeCodeRunner(script=lambda _r: RunResult(
+        1, "", "Traceback (most recent call last):\nValueError: bad shape"
+    ))
+    bundle = _dispatch(_verifier(runner), _request(b"code-bug"))
+    rationale = bundle.decisions[-1].rationale
+    assert "ValueError: bad shape" in rationale
+    assert "pip freeze" not in rationale  # a hint on a code bug would be worse than none
+
+
+def test_dependency_hint_reaches_next_cycle_feedback() -> None:
+    # The whole point: the hint must survive into the '# Correction' channel the agent reads.
+    from verity.control_plane.api import IntakeResult, _feedback_from
+    from verity.control_plane.commit import CommitOutcome, CommitResult
+    from verity.control_plane.store import Decision
+
+    runner = FakeCodeRunner(script=lambda _r: RunResult(
+        1, "", "ERROR: No matching distribution found for scikit-learn==9.9.9"
+    ))
+    bundle = _dispatch(_verifier(runner), _request(b"unpinnable"))
+    commit = CommitResult(
+        outcome=CommitOutcome.REJECTED, artifact_id="s", status=ArtifactStatus.REJECTED,
+        decisions=tuple(
+            Decision(artifact_id="s", gate=d.gate, verdict=d.kind, rationale=d.rationale)
+            for d in bundle.decisions
+        ),
+    )
+    feedback = _feedback_from(IntakeResult(entered_protocol=True, commit=commit))
+    assert feedback.startswith("rejected: submission exited 1")
+    assert "pip freeze" in feedback
