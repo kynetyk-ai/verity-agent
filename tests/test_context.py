@@ -102,3 +102,90 @@ def test_committed_artifact_appears_in_regenerated_manifest() -> None:
     note_entries = [e for e in manifest.entries if e.artifact_id == "n1"]
     assert len(note_entries) == 1
     assert note_entries[0].status is ArtifactStatus.ACCEPTED
+
+
+# ------------------------------------------------------- the prior-attempts digest (#132)
+
+
+def _reject(
+    store: SqliteStore, artifact_id: str, *, gate: str = "selection",
+    rationale: str = "does not improve", score: float | None = None,
+) -> None:
+    from verity.control_plane.store import VerdictKind
+
+    propose(store, artifact_id=artifact_id, artifact_type=NOTE, parents=["src"],
+            payload={"text": artifact_id})
+    run_commit(
+        artifact_id,
+        store=store,
+        sink=store,
+        resolve_coverage=build_fake_domain().gated_types.resolve,
+        dispatch=returns(bundle(
+            ArtifactStatus.REJECTED,
+            decision(gate, VerdictKind.REJECT, rationale, score=score),
+        )),
+        verifier_identity=FAKE_VERIFIER_IDENTITY,
+    )
+
+
+def _tail(store: SqliteStore, assembler: ContextAssembler | None = None) -> str:
+    return (assembler or ContextAssembler()).assemble(
+        store, system_prompt="SYS", goal="improve"
+    ).volatile_tail
+
+
+def test_digest_lists_every_rejects_gate_rationale_and_score() -> None:
+    # The agent sees WHY past attempts failed — all of them — even though rejected artifacts are
+    # excluded from the retrieved tail and their bytes may never be provisioned (#132).
+    store = make_store()
+    propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
+    _reject(store, "n1", gate="runs-clean",
+            rationale="submission exited 1: ModuleNotFoundError: No module named 'xgboost'")
+    _reject(store, "n2", gate="selection",
+            rationale="does not improve: balanced-accuracy 0.9481 vs bar 0.9532", score=0.9481)
+
+    tail = _tail(store)
+    assert "# Prior attempts (rejected)" in tail
+    assert "Note/n1 [runs-clean] — submission exited 1: ModuleNotFoundError" in tail
+    assert "Note/n2 [selection] score=0.9481 — does not improve" in tail
+    # most recent failure first
+    assert tail.index("Note/n2") < tail.index("Note/n1")
+
+
+def test_digest_is_bounded_and_truncates_rationales() -> None:
+    store = make_store()
+    propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
+    for i in range(30):
+        _reject(store, f"n{i:03d}", rationale="x" * 5_000)
+
+    assembler = ContextAssembler(digest_limit=5, digest_chars=100)
+    tail = _tail(store, assembler)
+    digest_lines = [ln for ln in tail.splitlines() if ln.strip().startswith("- Note/")]
+    assert len(digest_lines) == 5  # capped at digest_limit, not the 30 rejects in the store
+    assert all(len(ln) < 160 for ln in digest_lines)  # per-line rationale truncation
+    assert "…" in digest_lines[0]
+
+
+def test_digest_disabled_and_absent_when_no_rejects() -> None:
+    store = make_store()
+    propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
+    assert "# Prior attempts" not in _tail(store)  # nothing rejected yet
+
+    _reject(store, "n1")
+    assert "# Prior attempts" in _tail(store)
+    assert "# Prior attempts" not in _tail(store, ContextAssembler(digest_limit=0))  # opt-out
+
+
+def test_bounded_context_holds_with_many_rejects() -> None:
+    # The §9 guarantee extends to the digest: 10 vs 500 rejects assemble to the same order of size.
+    def _sized(n: int) -> int:
+        store = make_store()
+        propose(store, artifact_id="src", artifact_type=SOURCE, is_root=True)
+        for i in range(n):
+            _reject(store, f"n{i:05d}", rationale="does not improve " * 20)
+        return ContextAssembler().assemble(store, system_prompt="SYS", goal="g").size()
+
+    # both points sit past every cap (manifest 50, tail 12, digest 10), like the existing §13.5
+    # guarantee test — below the caps the context legitimately grows toward them
+    small, large = _sized(100), _sized(1000)
+    assert large <= small * 1.1  # no growth with store size beyond fixed-width jitter

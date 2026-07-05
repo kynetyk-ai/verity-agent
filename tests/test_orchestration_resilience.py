@@ -292,3 +292,74 @@ def test_sandbox_error_feedback_takes_precedence_and_a_clean_accept_has_none() -
 def test_stub_sandbox_double_satisfies_the_port() -> None:
     assert isinstance(_ScriptedSandbox(items=[]), SandboxPort)
     assert isinstance(StubVerifier(), VerifierPort)
+
+
+def test_served_context_accumulates_a_rejection_digest_while_feedback_stays_latest_only() -> None:
+    # #132, loop-level: after two rejected cycles, the THIRD cycle's served context carries BOTH
+    # failures in the "# Prior attempts (rejected)" digest (gate + rationale, store-derived), while
+    # the single "# Correction" feedback channel deliberately carries only the latest one.
+    from dataclasses import dataclass as _dc
+
+    from tests.helpers import bundle, decision
+
+    served: list[ServedContext] = []
+
+    class _RecordingSandbox(_ScriptedSandbox):
+        async def serve_context(self, context: ServedContext) -> None:
+            served.append(context)
+
+    @_dc
+    class _ScriptedVerifier:
+        bundles: list[object]
+        identity: str = "scripted-verifier"
+        cursor: int = 0
+
+        async def dispatch(self, request):  # type: ignore[no-untyped-def]
+            item = self.bundles[min(self.cursor, len(self.bundles) - 1)]
+            self.cursor += 1
+            return item
+
+        async def provision(self) -> None: ...
+        async def teardown(self) -> None: ...
+        async def health(self) -> bool:
+            return True
+
+    store = SqliteStore()
+    store.propose(
+        Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
+        Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
+    )
+    domain = build_fake_domain()
+    sandbox = _RecordingSandbox(items=[_note("n1"), _note("n2"), _note("n3")])
+    from verity.contracts import VerdictKind as _VK
+
+    verifier = _ScriptedVerifier(bundles=[
+        bundle(ArtifactStatus.REJECTED,
+               decision("check", _VK.REJECT, "first failure: too vague")),
+        bundle(ArtifactStatus.REJECTED,
+               decision("check", _VK.REJECT, "second failure: no source")),
+        bundle(ArtifactStatus.ACCEPTED, decision("check", _VK.ACCEPT, "fine")),
+    ])
+    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
+    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
+    sp.register("scripted", lambda: sandbox)
+    vp.register("scripted", lambda: verifier)
+    cp = ControlPlane(
+        store, policy=OrchestrationPolicy(max_cycles=3), sandbox_providers=sp,
+        verifier_providers=vp,
+    )
+    asyncio.run(cp.configure(TaskConfig(
+        task_id="t1", instructions="make notes", domain_instructions="a Note has text",
+        schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
+        shape_validator=domain.shape_validator, object_namer=lambda _a: frozenset(),
+        sandbox_key="scripted", verifier_key="scripted",
+    )))
+    asyncio.run(cp.run("t1", goal="make a good note"))
+
+    third = served[2]
+    assert "first failure: too vague" in third.tail  # both past rejects, with reasons
+    assert "second failure: no source" in third.tail
+    assert "# Prior attempts (rejected)" not in third.feedback
+    assert third.feedback == "rejected: second failure: no source"  # latest-only, unchanged
+    # and the digest lines never leak the proposer's own rationale channel
+    assert "i reasoned thus" not in third.tail
