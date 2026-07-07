@@ -333,6 +333,9 @@ require it). This stays control-plane-generic: it reads a recorded score, not ve
 - The "large hosted model" for Exp 5 (the `gpt-5.4-mini` id is pinned: `openai:gpt-5.4-mini`).
 - Exp 5 tuned configuration — finalized from the Exp 1–4b findings.
 - Exp 6 full design — task scope, rubric text, sandbox tooling, output schema.
-- **Measured ε + chosen `selection_margin`** (§7) — the 18K hold-out fixed the sampling floor at
-  ≈0.002; the training-nondeterminism ε (5× rerun) + the loop-rung `selection_margin` are still to be
-  measured/pinned before exp2–4b (exp1 is `always`-accept, so unaffected).
+- ~~**Measured ε + chosen `selection_margin`** (§7)~~ — **measured 2026-07-05**
+  (`results/epsilon-calibration/`): 5× reruns of a fixed submission through the real code runner,
+  on both an sklearn (HistGB+LogReg) and a LightGBM+XGBoost stack, were **bit-identical** →
+  training-nondeterminism ε = 0.0 on the study host (fixed seeds + the 16-cpu cap). Loop-rung
+  **`selection_margin` pinned at 0.0**, justified by measurement; the knob stays wired should a
+  future host measure ε > 0.

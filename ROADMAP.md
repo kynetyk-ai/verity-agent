@@ -736,8 +736,10 @@ the selection-margin noise-floor lever wired through the sweep (`Budgets.selecti
   - **pip-freeze / resolved-env recording (V6).** Record the installed dependency set per run
     (auditable drift) rather than pinning a closed wheelhouse (which would reject legitimate
     submissions). Belongs with the code-runner config work below.
-  - **ε measurement + the `selection_margin` value (C).** Operator pre-flight: measure the scorer's
-    run-to-run balanced-accuracy spread and set the margin (see `docs/experimental-design.md` §7/§8).
+  - ~~**ε measurement + the `selection_margin` value (C).**~~ **Done 2026-07-05**
+    (`results/epsilon-calibration/`): 5× reruns on both an sklearn and a lgbm+xgb submission were
+    bit-identical → ε = 0.0 on the study host; loop-rung `selection_margin` pinned at 0.0
+    (`spec.loop.gpt5mini.*.json`).
   - **fe-kaggle production should-fixes:** offline run-phase (network only for `pip`, V1) and optional
     single-thread determinism — out of the ablation path; the public-leaderboard exfil risk is real
     there. Part of the code-runner hardening item below.
