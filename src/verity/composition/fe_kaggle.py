@@ -200,7 +200,7 @@ async def configure_fe_kaggle_task(
     model = spec.provider_string() if spec is not None else _DEFAULT_MODEL
     # Defense-in-depth: refuse to wire the task if the answer key leaked into the agent role (I1).
     assert_answer_key_isolated(agent_files, verifier_files)
-    domain = build_feature_engineering_domain()
+    domain = build_feature_engineering_domain(code_timeout_s=provisioning.code_timeout_s)
 
     cp.store.propose(
         Artifact("ds", DATASET_VERSION, {"source": "kaggle"}, ArtifactStatus.PROPOSED,

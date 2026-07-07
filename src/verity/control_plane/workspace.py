@@ -64,16 +64,27 @@ class WorkspaceRole:
 
 # The invariant contract — a **versioned kernel artifact** (§3.4). Bump the version on any change
 # to "how the agent is oriented," so it is deliberate and recorded rather than ambient.
-WORKSPACE_CONTRACT_VERSION = 1
+# v2 (#138): the scratch gloss names where provisioned prior artifacts arrive (scratch/provided/
+# + INDEX.md — the calibration transcripts show agents rationally searching outbox/context and
+# missing the incumbent), and the outbox gloss makes its direction unambiguous (deliverables are
+# placed there; nothing arrives there).
+WORKSPACE_CONTRACT_VERSION = 2
 
 _ROLES: tuple[WorkspaceRole, ...] = (
     WorkspaceRole("data", Access.READ_ONLY, "the task's data sources (read-only, §3.4)"),
     WorkspaceRole("context", Access.READ_ONLY, "skills, SOPs, gold-standard examples"),
     WorkspaceRole("tools", Access.READ_ONLY, "the task's registered tools (§8.2)"),
     WorkspaceRole("spec", Access.READ_ONLY, "the proposal-shape spec / output schema (§3.4)"),
-    WorkspaceRole("scratch", Access.WRITABLE_EPHEMERAL, "the agent's working space"),
     WorkspaceRole(
-        "outbox", Access.WRITABLE_EPHEMERAL, "proposal + object attachments; harvest source"
+        "scratch",
+        Access.WRITABLE_EPHEMERAL,
+        "working space; provisioned prior artifacts arrive under scratch/provided/ "
+        "(see its INDEX.md for their statuses and recorded scores)",
+    ),
+    WorkspaceRole(
+        "outbox",
+        Access.WRITABLE_EPHEMERAL,
+        "place the proposal's object attachments here for harvest; starts empty each cycle",
     ),
 )
 

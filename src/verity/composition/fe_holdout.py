@@ -143,7 +143,7 @@ async def configure_fe_holdout_task(
     provisioning = provisioning or ProvisioningConfig()
     spec = provisioning.model_spec
     model = spec.provider_string() if spec is not None else _DEFAULT_MODEL
-    domain = build_feature_engineering_domain()
+    domain = build_feature_engineering_domain(code_timeout_s=provisioning.code_timeout_s)
 
     cp.store.propose(
         Artifact("ds", DATASET_VERSION, {"source": "holdout"}, ArtifactStatus.PROPOSED,
