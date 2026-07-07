@@ -740,6 +740,14 @@ the selection-margin noise-floor lever wired through the sweep (`Budgets.selecti
     (`results/epsilon-calibration/`): 5× reruns on both an sklearn and a lgbm+xgb submission were
     bit-identical → ε = 0.0 on the study host; loop-rung `selection_margin` pinned at 0.0
     (`spec.loop.gpt5mini.*.json`).
+  - **Post-audit addendum (2026-07-07):** the audit missed the *image* boundary — the sandbox image
+    baked the repo (incl. the answer key) into `/app` (**#137**, fixed: dockerignore + purity
+    guards; transcript audit found zero exploitation, but the 07-05..07 gpt-5.4-mini batches are
+    re-designated smoke/calibration). The calibration transcripts also drove the
+    **commodious-workspace affordance package** (**#136** pip seeded into the sandbox venv; **#138**
+    workspace map names `scratch/provided/`+INDEX.md, outbox gloss directional, testing-regime
+    split + runner budget stated per task; workspace contract v2, pins in
+    `tests/test_prompt_freeze.py`). See experimental-design §7 for the validity record.
   - **fe-kaggle production should-fixes:** offline run-phase (network only for `pip`, V1) and optional
     single-thread determinism — out of the ablation path; the public-leaderboard exfil risk is real
     there. Part of the code-runner hardening item below.
