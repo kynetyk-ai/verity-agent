@@ -737,7 +737,7 @@ the selection-margin noise-floor lever wired through the sweep (`Budgets.selecti
     (auditable drift) rather than pinning a closed wheelhouse (which would reject legitimate
     submissions). Belongs with the code-runner config work below.
   - ~~**ε measurement + the `selection_margin` value (C).**~~ **Done 2026-07-05**
-    (`results/epsilon-calibration/`): 5× reruns on both an sklearn and a lgbm+xgb submission were
+    (`verity-analysis/data/ablation-gpt5mini/epsilon-calibration/`): 5× reruns on both an sklearn and a lgbm+xgb submission were
     bit-identical → ε = 0.0 on the study host; loop-rung `selection_margin` pinned at 0.0
     (`spec.loop.gpt5mini.*.json`).
   - **Post-audit addendum (2026-07-07):** the audit missed the *image* boundary — the sandbox image
