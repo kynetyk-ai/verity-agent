@@ -1,9 +1,11 @@
 # Verity — experimental design
 
-> Detailed experimental plan for the practical paper. Companion to
-> [paper-outline.md](paper-outline.md) (expands its §6 evaluation sketch into a runnable design) and
-> [related-work.md](related-work.md) (positioning). Status: **design locked for Exp 1–5; Exp 6 and
-> all compute/length budgets are placeholders** pending prototyping experience.
+> Detailed experimental plan for the practical paper. This is the runnable spec the sweeps
+> implement, so it stays with the harness. The paper-level writing — `paper-outline.md`
+> (expands its §6 evaluation sketch) and `related-work.md` (positioning) — moved to the sibling
+> **`verity-analysis`** repo under `docs/`, alongside the experiment data and analysis. Status:
+> **design locked for Exp 1–5; Exp 6 and all compute/length budgets are placeholders** pending
+> prototyping experience.
 
 ## 0. What we are testing (and what we are not)
 
@@ -330,10 +332,11 @@ require it). This stays control-plane-generic: it reads a recorded score, not ve
   risk (the code-runner image carries no repo), but a sandbox agent *could* have read the key.
   **Audit of every recorded batch (~340 cycles): zero answer-key access; one benign features-only
   read of `holdout.csv`; one directory listing.** Consequence: the 2026-07-05..07 gpt-5.4-mini
-  batches (`results/exp1-gpt5mini-120k-v2/`, `results/loop-gpt5mini-120k-exp2/`,
-  `results/loop-gpt5mini-120k-exp4b/`) are **re-designated smoke/calibration** — believed sound but
-  not publishable ladder data. Fixed by construction at the image boundary
-  (`Dockerfile.sandbox.dockerignore` + `tests/test_sandbox_image_purity.py`).
+  batches (the gpt-5.4-mini calibration round — now in the sibling `verity-analysis` repo under
+  `data/exp1-model-breadth/exp1-gpt5mini-120k-v2/` and `data/ablation-gpt5mini/loop-gpt5mini-120k-*/`)
+  are **re-designated smoke/calibration** — believed sound but not publishable ladder data. Fixed by
+  construction at the image boundary (`Dockerfile.sandbox.dockerignore` +
+  `tests/test_sandbox_image_purity.py`).
 - **Pre-registered environment change between calibration and the real ladder (#136/#138).** The
   calibration transcripts motivated an affordance package applied 2026-07-07 — pip seeded into the
   sandbox venv, the workspace map naming `scratch/provided/` + INDEX.md, an unambiguous outbox
@@ -350,7 +353,7 @@ require it). This stays control-plane-generic: it reads a recorded score, not ve
 - Exp 5 tuned configuration — finalized from the Exp 1–4b findings.
 - Exp 6 full design — task scope, rubric text, sandbox tooling, output schema.
 - ~~**Measured ε + chosen `selection_margin`** (§7)~~ — **measured 2026-07-05**
-  (`results/epsilon-calibration/`): 5× reruns of a fixed submission through the real code runner,
+  (`verity-analysis/data/ablation-gpt5mini/epsilon-calibration/`): 5× reruns of a fixed submission through the real code runner,
   on both an sklearn (HistGB+LogReg) and a LightGBM+XGBoost stack, were **bit-identical** →
   training-nondeterminism ε = 0.0 on the study host (fixed seeds + the 16-cpu cap). Loop-rung
   **`selection_margin` pinned at 0.0**, justified by measurement; the knob stays wired should a

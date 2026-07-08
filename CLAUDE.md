@@ -56,6 +56,20 @@ and a stub verifier in `tools/harness/`); **Phases 2–3** swap in the real veri
 criteria pass. This follows the spec's §17 build order (kernel contracts → extension interfaces →
 context assembly → service scaffolding → domain → acceptance).
 
+## Experiments: data & analysis live in a sibling repo
+
+The **runnable experiment machinery stays here**: the sweep orchestration + specs
+(`experiments/ablation/` — `sweep.py`, `analyze.py`, `figures.py`, `run_sweep_container.sh`, the
+`spec.*.json` plans, `README.md`) and the runnable spec (`docs/experimental-design.md`). Sweeps write
+to `results/` **as local scratch** — it is gitignored (except the `prototyping_datasci_test` task
+package). The durable `store/` object-blobs never leave scratch.
+
+The **experiment data, the R/renv analysis, and the paper writing** live in the sibling
+**`../verity-analysis`** repo (`data/<group>/`, notebooks + `scripts/`, `docs/paper-outline.md` +
+`docs/related-work.md`). A finished batch is pulled over there with
+`verity-analysis/scripts/import_results.sh <results-subdir> <group>` (RunReports / transcripts /
+submissions / figures only — no stores). Don't commit result batches or `figures/` here.
+
 ## Coding habits
 
 Non-negotiable working norms for this repo:
