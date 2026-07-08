@@ -136,7 +136,7 @@ class FeatureEngineeringDomain:
     domain_instructions: str
 
 
-def build_feature_engineering_domain() -> FeatureEngineeringDomain:
+def build_feature_engineering_domain(code_timeout_s: float = 2400.0) -> FeatureEngineeringDomain:
     schema = SchemaRegistry()
     schema.register_type(ArtifactTypeDef(DATASET_VERSION, is_root=True))
     schema.register_type(ArtifactTypeDef(SUBMISSION))
@@ -166,7 +166,7 @@ def build_feature_engineering_domain() -> FeatureEngineeringDomain:
         schema=schema,
         gated_types=gated_types,
         shape_validator=_validate_shape,
-        domain_instructions=FEATURE_ENGINEERING_INSTRUCTIONS,
+        domain_instructions=feature_engineering_instructions(code_timeout_s),
     )
 
 
@@ -512,7 +512,15 @@ def balanced_accuracy(truth: Mapping[str, str], preds: Mapping[str, str]) -> flo
     return sum(correct.get(c, 0) / totals[c] for c in totals) / len(totals)
 
 
-FEATURE_ENGINEERING_INSTRUCTIONS = f"""\
+def feature_engineering_instructions(code_timeout_s: float = 2400.0) -> str:
+    """Render the FE domain instructions with the task's real gate budget (#138).
+
+    The runner's wall-clock cap is per-task config (``ProvisioningConfig.code_timeout_s``), so the
+    prompt states the true number instead of leaving the agent to discover it by timeout — a venue
+    fact (map), never a method (manual).
+    """
+    runner_minutes = max(1, round(code_timeout_s / 60))
+    return f"""\
 Produce a single self-contained Python script that reads the data, builds a predictive pipeline, and
 predicts every test row. Any technique that fits in a single script and improves the held-out score
 is fair game — features, model choice, an ensemble, calibration, imbalance handling. No method is
@@ -536,18 +544,28 @@ script runs end to end and writes a well-formed `{PREDICTIONS_OUTPUT}` over the 
 spend the time budget predicting the sample repeatedly — get the pipeline right and submit.
 
 ### Dependencies
-No packages are pre-installed — install them with `pip` during the session and test the script
-end-to-end before submitting. Deliver a clean, pinned `{REQUIREMENTS}` alongside `{ENTRYPOINT}`: the
+No packages are pre-installed — install them with `pip` during the session. Deliver a clean, pinned
+`{REQUIREMENTS}` alongside `{ENTRYPOINT}`: the
 code-runner installs exactly it before running the script, so list **exactly** what `{ENTRYPOINT}`
 imports (nothing unused — every listed package must install) and pin **recent** versions with
 prebuilt py3.12 wheels. `{ENTRYPOINT}` must only `import` its libraries — never `pip install` from
 inside it.
 
 The runner (where the gate executes the script): a CPU-only Linux container, Python 3.12, ~16
-cores, ~16 GB RAM, with the pinned `{REQUIREMENTS}` pip-installed (network is on for the install
+cores, ~16 GB RAM, a hard wall-clock budget of ~{runner_minutes} minutes for the install + run, with
+the pinned `{REQUIREMENTS}` pip-installed (network is on for the install
 only). scikit-learn, LightGBM, XGBoost, CatBoost, pandas, numpy all work. Do NOT use deep-learning
 frameworks (torch / tensorflow won't finish) or libraries with no prebuilt wheel (no compiler in
 the runner).
+
+### Testing
+Verify correctness end-to-end before submitting — on a **subsample** of `{TRAIN_INPUT}`. The
+sandbox's per-command execution budget (execute commands accept a timeout of up to 1500 s) is far
+smaller than the runner's ~{runner_minutes}-minute budget, so a full-data training run generally
+does not fit in the sandbox and is not expected there: the gate performs the full-data run. Never
+weaken the *submitted* script (fewer trees, smaller ensembles, single-threading) to make a local
+test fast — the submitted script honours the contract above and trains on the full data; only the
+local verification run subsamples.
 
 ### Evaluation Criteria
 - The proposal will be evaluated based on BALANCED ACCURACY.
@@ -567,11 +585,13 @@ Work the problem within the time allotted:
   models).
 
 Train on ALL the data, and finish in time:
-- TRAIN ON THE FULL training set — do NOT subsample. 
+- TRAIN ON THE FULL training set — do NOT subsample (the submitted script; local verification runs
+may subsample, see Testing).
 - USE ALL THE CORES: `n_jobs=-1` (scikit-learn / XGBoost / LightGBM), `thread_count=-1` (CatBoost).
 - Optimize for BALANCED accuracy: validate with stratified cross-validation and handle class
 imbalance (class weights / resampling / threshold tuning).
-- Keep any ensemble or search bounded — a model that doesn't finish scores nothing. And note: some
+- Keep any ensemble or search bounded — a model that doesn't finish within the runner's
+~{runner_minutes}-minute budget scores nothing. And note: some
 libraries that manage their own thread pools don't co-exist cleanly in one process (CatBoost
 alongside LightGBM/XGBoost is a known stall) — so to use several, train each in its own
 process (`multiprocessing` / `ProcessPoolExecutor`) and combine predictions.
@@ -588,3 +608,7 @@ an honest best estimate of the held-out balanced accuracy this submission will s
 not an optimistic one.
 
 """
+
+
+# The default rendering (the ablation ladder's calibrated 2400s gate budget, REPORT §4).
+FEATURE_ENGINEERING_INSTRUCTIONS = feature_engineering_instructions()

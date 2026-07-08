@@ -324,6 +324,22 @@ require it). This stays control-plane-generic: it reads a recorded score, not ve
   legitimate submissions); see the deferred-items note in ROADMAP.
 - **N.** 10/cell makes the ablation deltas estimable; report distributions + nonparametric effect
   sizes, pre-register 3−2 and 4−3 as the primary comparisons.
+- **Sandbox-image leakage (found 2026-07-07; #137).** Until the fix, `Dockerfile.sandbox` baked the
+  whole repo into `/app` — including `data/*/verifier/holdout_labels.csv` (the answer key) and
+  `results/` (prior accepted submissions for the same task). The gate's measurement was never at
+  risk (the code-runner image carries no repo), but a sandbox agent *could* have read the key.
+  **Audit of every recorded batch (~340 cycles): zero answer-key access; one benign features-only
+  read of `holdout.csv`; one directory listing.** Consequence: the 2026-07-05..07 gpt-5.4-mini
+  batches (`results/exp1-gpt5mini-120k-v2/`, `results/loop-gpt5mini-120k-exp2/`,
+  `results/loop-gpt5mini-120k-exp4b/`) are **re-designated smoke/calibration** — believed sound but
+  not publishable ladder data. Fixed by construction at the image boundary
+  (`Dockerfile.sandbox.dockerignore` + `tests/test_sandbox_image_purity.py`).
+- **Pre-registered environment change between calibration and the real ladder (#136/#138).** The
+  calibration transcripts motivated an affordance package applied 2026-07-07 — pip seeded into the
+  sandbox venv, the workspace map naming `scratch/provided/` + INDEX.md, an unambiguous outbox
+  gloss, the testing-regime split, and the runner budget stated in the instructions (workspace
+  contract v2; pins in `tests/test_prompt_freeze.py`). All rungs of the real ladder run on this
+  one surface; the calibration batches are not comparable to it and are not pooled with it.
 
 ---
 
@@ -333,6 +349,9 @@ require it). This stays control-plane-generic: it reads a recorded score, not ve
 - The "large hosted model" for Exp 5 (the `gpt-5.4-mini` id is pinned: `openai:gpt-5.4-mini`).
 - Exp 5 tuned configuration — finalized from the Exp 1–4b findings.
 - Exp 6 full design — task scope, rubric text, sandbox tooling, output schema.
-- **Measured ε + chosen `selection_margin`** (§7) — the 18K hold-out fixed the sampling floor at
-  ≈0.002; the training-nondeterminism ε (5× rerun) + the loop-rung `selection_margin` are still to be
-  measured/pinned before exp2–4b (exp1 is `always`-accept, so unaffected).
+- ~~**Measured ε + chosen `selection_margin`** (§7)~~ — **measured 2026-07-05**
+  (`results/epsilon-calibration/`): 5× reruns of a fixed submission through the real code runner,
+  on both an sklearn (HistGB+LogReg) and a LightGBM+XGBoost stack, were **bit-identical** →
+  training-nondeterminism ε = 0.0 on the study host (fixed seeds + the 16-cpu cap). Loop-rung
+  **`selection_margin` pinned at 0.0**, justified by measurement; the knob stays wired should a
+  future host measure ε > 0.

@@ -17,6 +17,13 @@ COPY . /app
 # Bake core + the sandbox extra into a venv in the image (no dev/test deps).
 RUN uv sync --frozen --no-dev --extra sandbox
 
+# Seed pip into the venv (#136): uv venvs ship without the pip module, so an agent's reasonable
+# `python -m pip install ...` dies with "No module named pip" (and the ensurepip escalation hits
+# the read-only root at runtime). pip is deliberately NOT a locked project dependency — it's a
+# property of the runtime image, pinned here. Installs still land in the writable workspace via
+# the runtime PIP_* env (see Dockerfile.fe-sandbox).
+RUN uv pip install --python /app/.venv pip==25.0.1
+
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1

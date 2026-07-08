@@ -8,3 +8,9 @@
 spikes
 spec/references
 .env
+# Isolation (#137): the agent runs inside this image — no datasets (the ablation answer key lives
+# under data/*/verifier/), no prior run results (past accepted submissions for the same task), no
+# analysis figures. The guard test pins these entries: tests/test_sandbox_image_purity.py.
+data
+results
+figures
