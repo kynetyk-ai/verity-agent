@@ -56,6 +56,39 @@ and a stub verifier in `tools/harness/`); **Phases 2–3** swap in the real veri
 criteria pass. This follows the spec's §17 build order (kernel contracts → extension interfaces →
 context assembly → service scaffolding → domain → acceptance).
 
+## Experiments: data & analysis live in a sibling repo
+
+The **runnable experiment machinery stays here**: the sweep orchestration + specs
+(`experiments/ablation/` — `sweep.py`, `analyze.py`, `figures.py`, `run_sweep_container.sh`, the
+`spec.*.json` plans, `README.md`) and the runnable spec (`docs/experimental-design.md`). Sweeps write
+to `results/` **as local scratch** — it is gitignored (except the `prototyping_datasci_test` task
+package). The durable `store/` object-blobs never leave scratch.
+
+The **experiment data, the R/renv analysis, and the paper writing** live in the sibling
+**`../verity-analysis`** repo (`data/<group>/`, notebooks + `scripts/`, `docs/paper-outline.md` +
+`docs/related-work.md`).
+
+### Where experimental results are saved
+
+1. **A run writes to `verity/results/<batch>/` — always scratch, never committed here.** That path
+   is the `<out-dir>` argument to `run_sweep_container.sh` and holds the RunReport JSONs, `manifest.json`,
+   `transcripts/`, `submissions/`, and the durable `store/` (the last is separately huge). All of it
+   is gitignored (`.gitignore` ignores `/results/*` except the `prototyping_datasci_test` package).
+   **Do not `git add` a result batch, a `store/`, or `figures/` in this repo** — the gitignore blocks
+   it by default; don't force past it.
+2. **To keep/version/analyze a finished batch, import it into `verity-analysis`:**
+   `cd ../verity-analysis && scripts/import_results.sh <batch-subdir> <group>` — this `rsync`s the
+   batch into `data/<group>/` **excluding `store/` and `sweep.log`** (only the extracted artifacts —
+   RunReports, transcripts, submissions — plus any figures are versioned; stores are regenerable and
+   never committed anywhere). Then commit it in `verity-analysis`. Groups so far: `exp1-model-breadth`,
+   `ablation-gpt5mini`.
+3. **`store/` dirs are disposable scratch.** Everything analysis needs is extracted at import; once a
+   batch is imported and committed in `verity-analysis`, its `verity/results/<batch>/` (stores
+   included) can be deleted to reclaim disk.
+
+So: run → `results/` scratch here → `import_results.sh` into `verity-analysis/data/` → commit there →
+delete the scratch. Analysis + figures + narrative writeups are authored in `verity-analysis`, not here.
+
 ## Coding habits
 
 Non-negotiable working norms for this repo:

@@ -25,25 +25,19 @@ npm-debug.log*
 /data/
 /store/
 
-# The feature-engineering / fe-kaggle task package lives here and IS committed (PROTOCOL.md,
-# task.json, run.sh, overview.md); only the large datasets + generated output stay out of git.
-# The package now lives under results/ (archived); keep both locations covered.
-/prototyping_datasci_test/*.csv
-/prototyping_datasci_test/out/
-/prototyping_datasci_test/agent/
-/prototyping_datasci_test/verifier/
+# results/ is a local sweep-output SCRATCH dir — the committed experimental record + analysis now
+# live in the sibling `verity-analysis` repo (finished batches are pulled over with
+# verity-analysis/scripts/import_results.sh). Ignore everything under results/ EXCEPT the
+# prototyping_datasci_test task package, which stays tracked (PROTOCOL.md / task.json / run.sh, ADR
+# 0005-linked) with only its large datasets + generated output excluded. figures/ is analysis output.
+/results/*
+!/results/.gitkeep
+!/results/prototyping_datasci_test/
 /results/prototyping_datasci_test/*.csv
 /results/prototyping_datasci_test/out/
 /results/prototyping_datasci_test/agent/
 /results/prototyping_datasci_test/verifier/
-
-# Ablation experiment OUTPUT — generated per-run (cell RunReports, sweep logs, durable stores).
-# The hand-authored docs (REPORT.md, METHODOLOGY.md, composed-system-prompt.txt) + the small
-# code-runner-calibration evidence ARE committed; the per-run output is not.
-/results/**/store/
-/results/**/sweep.log
-/results/ablation-ladder-calibration/exp1-*/
-/results/ablation-ladder-calibration/_smoke-plumbing-test/
+/figures/
 
 # OS / editor
 .DS_Store

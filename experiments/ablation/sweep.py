@@ -102,8 +102,9 @@ class Budgets:
 
     max_cycles: int = 10
     sandbox_timeout_s: float = 1500.0
-    # 2400 s is the measured calibration cap (results/ablation-ladder-calibration/REPORT.md §4):
-    # ≈2× the heaviest clean gate run, bounding a deadlocked submission to 40 min.
+    # 2400 s is the measured calibration cap (verity-analysis/data/ablation-gpt5mini/
+    # ablation-ladder-calibration/REPORT.md §4): ≈2× the heaviest clean gate run, bounding a
+    # deadlocked submission to 40 min.
     code_timeout_s: float = 2400.0
     recursion_limit: int = 200
     # The selection gate's noise-floor margin (audit C / V2): a submission must beat the incumbent
