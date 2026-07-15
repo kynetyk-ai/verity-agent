@@ -50,8 +50,10 @@ from verity.sandbox.deepagents_driver import (  # noqa: E402
     DeepAgentsInProcessDriver,
     StepBudgetExceeded,
     StepBudgetMiddleware,
+    ToolCallRecoveryMiddleware,
     _extract_telemetry,
     _make_propose_tool,
+    _tool_parse_rejection,
     build_deepagents_agent,
     run_agent,
 )
@@ -379,6 +381,98 @@ def test_deadline_middleware_recurring_note_is_throttled() -> None:
     clock.t = 85.0  # past 80% -> recurring tier stops (the one-time pivot is before_model's job)
     mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
     assert injected == [True, False, True, False]
+
+
+# ------------------------------------------------------- tool-call parse recovery (Ollama 500s)
+
+
+class _FakeAPIError(Exception):
+    """A duck-typed stand-in for ``openai.APIStatusError``: a status code + a parsed body."""
+
+    def __init__(self, status_code: int, body: object = None, text: str = "") -> None:
+        super().__init__(text or f"Error code: {status_code} - {body}")
+        self.status_code = status_code
+        self.body = body
+
+
+_OLLAMA_PARSE_MSG = (
+    "error parsing tool call: raw='{\"path\":\"$W\",\"ignore_cache=True\"}', "
+    "err=invalid character '}' after object key"
+)
+
+
+def test_tool_parse_rejection_classifies_only_the_ollama_signature() -> None:
+    # A 500 whose body message carries the exact signature: matched, and the raw payload extracted.
+    exc = _FakeAPIError(500, {"message": _OLLAMA_PARSE_MSG, "type": "api_error"})
+    assert _tool_parse_rejection(exc) == '{"path":"$W","ignore_cache=True"}'
+
+    # Same, but the server nests the message under "error" — still matched.
+    nested = _FakeAPIError(500, {"error": {"message": _OLLAMA_PARSE_MSG}})
+    assert _tool_parse_rejection(nested) == '{"path":"$W","ignore_cache=True"}'
+
+    # A genuine transient 500 (different message) is NOT our case — must propagate untouched.
+    assert _tool_parse_rejection(_FakeAPIError(500, {"message": "server overloaded"})) is None
+    # A non-500 (e.g. a 400) is never ours, even if it mentions tool parsing.
+    assert _tool_parse_rejection(_FakeAPIError(400, {"message": _OLLAMA_PARSE_MSG})) is None
+    # A plain exception with no status_code is ignored.
+    assert _tool_parse_rejection(RuntimeError("boom")) is None
+
+
+def test_tool_parse_rejection_matches_via_str_when_body_is_opaque() -> None:
+    # The signature is unique enough to match on the rendered string when body isn't a dict, and a
+    # missing raw='…' payload degrades to "" (generic correction), never a miss.
+    exc = _FakeAPIError(500, body=None, text="Error code: 500 - error parsing tool call happened")
+    assert _tool_parse_rejection(exc) == ""
+
+
+def test_tool_call_recovery_retries_with_the_correction_then_succeeds() -> None:
+    # First model call raises the Ollama parse 500; the middleware re-runs it with the rejected raw
+    # fed back in the system prompt, and the retry succeeds.
+    mw = ToolCallRecoveryMiddleware(max_retries=2)
+    seen: list[Any] = []
+    calls = iter([_FakeAPIError(500, {"message": _OLLAMA_PARSE_MSG}), "OK"])
+
+    def handler(req: Any) -> Any:
+        seen.append(req)
+        outcome = next(calls)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    result = mw.wrap_model_call(_FakeModelRequest("base prompt"), handler)  # type: ignore[arg-type]
+    assert result == "OK"
+    assert len(seen) == 2  # original + one recovery re-run
+    retried = seen[-1].system_message
+    assert "base prompt" in retried.content  # the clean base is preserved
+    assert "invalid JSON" in retried.content
+    assert 'ignore_cache=True' in retried.content  # the rejected payload is quoted back
+
+
+def test_tool_call_recovery_passes_non_matching_errors_through_unchanged() -> None:
+    mw = ToolCallRecoveryMiddleware()
+    boom = _FakeAPIError(500, {"message": "server overloaded"})  # a real transient 500
+
+    def handler(_req: Any) -> Any:
+        raise boom
+
+    with pytest.raises(_FakeAPIError) as caught:
+        mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
+    assert caught.value is boom  # same object, untouched — today's crash path is preserved
+
+
+def test_tool_call_recovery_reraises_after_exhausting_the_budget() -> None:
+    # A model that emits garbage on every attempt fails cleanly after max_retries re-runs.
+    mw = ToolCallRecoveryMiddleware(max_retries=2)
+    attempts = 0
+
+    def handler(_req: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise _FakeAPIError(500, {"message": _OLLAMA_PARSE_MSG})
+
+    with pytest.raises(_FakeAPIError):
+        mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
+    assert attempts == 3  # original + 2 bounded recovery re-runs, then it propagates
 
 
 def test_agent_builds_with_a_deadline(tmp_path: Path) -> None:
