@@ -512,6 +512,7 @@ def test_step_budget_middleware_is_silent_well_under_budget() -> None:
 
 _SUB_SIG = OperationSignature(
     "submit", inputs=("Dataset",), output="Submission",
+    required_payload_keys=("entrypoint", "requirements"),
     object_payload_keys=("entrypoint", "requirements"),
 )
 _SUB_PAYLOAD = {"entrypoint": "submission.py", "requirements": "requirements.txt"}
@@ -551,6 +552,36 @@ def test_propose_warns_but_records_when_not_attested_tested(tmp_path: Path) -> N
     result = propose(parents=["ds"], payload=_SUB_PAYLOAD)
     assert "proposal recorded" in result and "tested=false" in result
     assert (outbox / RESERVED_PROPOSAL_NAME).exists()
+
+
+def test_propose_rejects_when_a_required_field_is_missing(tmp_path: Path) -> None:
+    # #142: a submit that omits the required `entrypoint` is rejected IN-CYCLE with a fixable hint
+    # (this was gemma4's dominant failure — the CP's post-cycle shape check caught it with no
+    # feedback). The required-field check fires before the object-file check, and records nothing.
+    outbox = _seed_outbox(tmp_path, "submission.py", "requirements.txt")
+    propose = _make_propose_tool(_SUB_SIG, outbox)
+    result = propose(parents=["ds"], payload={"requirements": "requirements.txt"})  # no entrypoint
+    assert result.startswith("rejected:")
+    assert "'entrypoint'" in result and "missing or empty" in result
+    assert not (outbox / RESERVED_PROPOSAL_NAME).exists()  # nothing recorded
+
+
+def test_propose_rejects_when_a_required_field_is_empty(tmp_path: Path) -> None:
+    # Present-but-empty is treated as missing (a bare "" declares nothing).
+    outbox = _seed_outbox(tmp_path, "submission.py", "requirements.txt")
+    propose = _make_propose_tool(_SUB_SIG, outbox)
+    result = propose(parents=["ds"], payload={"entrypoint": "", "requirements": "requirements.txt"})
+    assert result.startswith("rejected:") and "'entrypoint'" in result
+    assert not (outbox / RESERVED_PROPOSAL_NAME).exists()
+
+
+def test_propose_ignores_required_check_when_op_declares_none(tmp_path: Path) -> None:
+    # An op with no required_payload_keys is unaffected — any non-empty payload passes the check.
+    sig = OperationSignature("note", inputs=("Source",), output="Note")
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    result = _make_propose_tool(sig, outbox)(parents=["s"], payload={"text": "hi"})
+    assert "proposal recorded" in result
 
 
 def test_propose_skips_presence_check_when_op_declares_no_object_keys(tmp_path: Path) -> None:

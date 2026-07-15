@@ -72,7 +72,10 @@ def build_code_domain(runner: CodeRunner) -> CodeDomain:
         # ``entrypoint`` is the only payload key a Submission declares; naming it lets the control
         # plane's payload-key allowlist strip any other key the agent rides to the gate (R1).
         OperationSignature(
-            "submit", inputs=(DATASET,), output=SUBMISSION, object_payload_keys=("entrypoint",)
+            "submit", inputs=(DATASET,), output=SUBMISSION,
+            # Required (not just object-valued) so the propose tool rejects an entrypoint-less
+            # submit in-cycle, not the post-cycle shape check catching it with no feedback (#142).
+            required_payload_keys=("entrypoint",), object_payload_keys=("entrypoint",),
         )
     )
 

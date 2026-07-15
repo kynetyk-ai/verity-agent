@@ -86,6 +86,7 @@ class CycleInput:
                         "name": s.name,
                         "inputs": list(s.inputs),
                         "output": s.output,
+                        "required_payload_keys": list(s.required_payload_keys),
                         "object_payload_keys": list(s.object_payload_keys),
                     }
                     for s in self.operations
@@ -103,6 +104,7 @@ class CycleInput:
         operations = tuple(
             OperationSignature(
                 name=o["name"], inputs=tuple(o["inputs"]), output=o["output"],
+                required_payload_keys=tuple(o.get("required_payload_keys", ())),
                 object_payload_keys=tuple(o.get("object_payload_keys", ())),
             )
             for o in obj["operations"]

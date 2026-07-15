@@ -610,7 +610,12 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
     op_name = signature.name
     out_type = signature.output
     in_types = ", ".join(signature.inputs) or "(none)"
+    required_keys = signature.required_payload_keys
     object_keys = signature.object_payload_keys
+
+    def _missing_required(payload: dict[str, Any]) -> list[str]:
+        """Required payload keys (by the op's `required_payload_keys`) that are absent or empty."""
+        return [key for key in required_keys if not payload.get(key)]
 
     def _missing_objects(payload: dict[str, Any]) -> list[str]:
         """Declared object files (by the op's `object_payload_keys`) absent from outbox/."""
@@ -628,6 +633,16 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
             return "rejected: payload must be a non-empty JSON object"
         if not parents:
             return "rejected: parents must include the input artifact id(s) from the context"
+        # Enforceable: every REQUIRED key must be present + non-empty — catch a schema-shape miss
+        # (e.g. a submit with no `entrypoint`) in-cycle with a fixable hint, instead of the control
+        # plane's post-cycle shape check rejecting it with no feedback (#142). Presence-only, keys
+        # come from the op's `required_payload_keys` — never a hardcoded field name.
+        if missing := _missing_required(payload):
+            return (
+                f"rejected: this {out_type} requires the payload field(s) "
+                f"{', '.join(repr(k) for k in missing)}, but they are missing or empty. Add them "
+                f"and call again. payload declared keys: {sorted(payload) or 'none'}."
+            )
         # Enforceable: every object the payload declares must actually be in outbox/ — catch a
         # missing/misplaced file in-cycle (a fixable rejected, no gate cycle spent) instead of a
         # runs-clean reject downstream. Generic: the keys come from the op, not hardcoded names.
@@ -661,9 +676,11 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
     propose.__doc__ = (
         f"Propose a {out_type} via {op_name} (inputs: {in_types}). Call once, last.\n\n"
         f"Before calling this:\n"
-        f"  1. Write every declared object file to {outbox}/ (this tool rejects the call if a\n"
+        f"  1. The payload MUST declare these field(s): {', '.join(required_keys) or '(none)'} "
+        f"(this tool rejects the call if any is missing or empty).\n"
+        f"  2. Write every declared object file to {outbox}/ (this tool rejects the call if a\n"
         f"     file the payload names is not there).\n"
-        f"  2. Actually RUN the script end-to-end with the execute tool and confirm its output\n"
+        f"  3. Actually RUN the script end-to-end with the execute tool and confirm its output\n"
         f"     — a crash, timeout, or missing output is an outright reject, no partial credit.\n\n"
         f"Args:\n"
         f"    parents: ids of the input artifact(s) of type {in_types}, from the context above.\n"
