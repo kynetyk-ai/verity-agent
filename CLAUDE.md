@@ -76,18 +76,24 @@ The **experiment data, the R/renv analysis, and the paper writing** live in the 
    is gitignored (`.gitignore` ignores `/results/*` except the `prototyping_datasci_test` package).
    **Do not `git add` a result batch, a `store/`, or `figures/` in this repo** — the gitignore blocks
    it by default; don't force past it.
-2. **To keep/version/analyze a finished batch, import it into `verity-analysis`:**
-   `cd ../verity-analysis && scripts/import_results.sh <batch-subdir> <group>` — this `rsync`s the
-   batch into `data/<group>/` **excluding `store/` and `sweep.log`** (only the extracted artifacts —
-   RunReports, transcripts, submissions — plus any figures are versioned; stores are regenerable and
-   never committed anywhere). Then commit it in `verity-analysis`. Groups so far: `exp1-model-breadth`,
-   `ablation-gpt5mini`.
+2. **To keep/version/analyze a finished batch, import it into `verity-analysis`, passing the exact
+   spec that produced it:**
+   `cd ../verity-analysis && scripts/import_results.sh <batch-subdir> <group> ../verity/experiments/ablation/<spec>.json`
+   — this `rsync`s the batch into `data/<group>/` **excluding `store/` and `sweep.log`** (only the
+   extracted artifacts — RunReports, transcripts, submissions — plus any figures are versioned; stores
+   are regenerable and never committed anywhere), **snapshots the producing spec into the batch dir as
+   `spec.json` + records this repo's git sha in `PROVENANCE.txt`** (so each run ties back to its exact
+   parameters), then you **add a row to `verity-analysis/data/REGISTRY.md`** and commit it in
+   `verity-analysis`. Always pass the spec arg. The registry is the human-readable index of what each
+   batch is; the runnable spec catalog stays here (`experiments/ablation/`, kept current — retired
+   specs move to `experiments/ablation/archive/`).
 3. **`store/` dirs are disposable scratch.** Everything analysis needs is extracted at import; once a
    batch is imported and committed in `verity-analysis`, its `verity/results/<batch>/` (stores
    included) can be deleted to reclaim disk.
 
-So: run → `results/` scratch here → `import_results.sh` into `verity-analysis/data/` → commit there →
-delete the scratch. Analysis + figures + narrative writeups are authored in `verity-analysis`, not here.
+So: run → `results/` scratch here → `import_results.sh <subdir> <group> <spec>` into
+`verity-analysis/data/` → add a `REGISTRY.md` row → commit there → delete the scratch. Analysis +
+figures + narrative writeups are authored in `verity-analysis`, not here.
 
 ## Coding habits
 
