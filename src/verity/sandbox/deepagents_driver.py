@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -51,6 +52,7 @@ from verity.sandbox.tools import resolve_tools
 __all__ = [
     "DeepAgentsInProcessDriver",
     "DeadlineMiddleware",
+    "ToolCallRecoveryMiddleware",
     "StepBudgetMiddleware",
     "StepBudgetExceeded",
     "AgentLoopError",
@@ -65,6 +67,32 @@ log = get_logger("verity.sandbox.deepagents_driver")
 _DEFAULT_RECURSION_LIMIT = 80
 _DEADLINE_WARN_FRACTION = 0.8  # warn the agent once it is this far into its time/step budget
 _DEADLINE_REMIND_FRACTION = 0.5  # start the recurring time-remaining awareness at the halfway mark
+
+# Tool-call parse recovery. An OpenAI-compatible server that cannot parse the model's emitted tool
+# call into its response format returns a 500 whose body message begins with ``error parsing tool
+# call`` and quotes the offending ``raw='…'`` (Ollama's exact wording). This is a DETERMINISTIC
+# content fault dressed as a transient 5xx: the OpenAI SDK's built-in retries (max_retries=2)
+# reproduce it verbatim — the same Ollama seed regenerates the same malformed tool call — so it
+# escapes as a fatal ``AgentLoopError`` and wastes the whole cycle. The only recovery is to CHANGE
+# THE INPUT: re-run the model call with the rejected payload fed back as a correction, so the next
+# generation differs. Bounded per model step; anything that is not this exact signature propagates
+# unchanged (a genuine transient 500 stays on the SDK's retry-then-crash path). NARROW BY DESIGN —
+# other servers (vLLM, llama.cpp) word this failure differently and will NOT match until their
+# signature is added to the check (tracked in #141).
+_TOOL_PARSE_SIGNATURE = "error parsing tool call"
+_TOOL_PARSE_RAW_RE = re.compile(r"raw='(.*)', err=", re.DOTALL)
+_TOOL_PARSE_MAX_RETRIES = 2
+_TOOL_PARSE_CORRECTION = (
+    "The previous tool call was REJECTED by the model server as invalid JSON and was NOT executed: "
+    "{raw}. Re-issue the intended tool call as a SINGLE well-formed JSON object with quoted keys "
+    'and values (for example {{"ignore_cache": true}}, never {{"ignore_cache=True"}}). Emit only '
+    "strictly valid JSON for every tool call."
+)
+_TOOL_PARSE_CORRECTION_GENERIC = (
+    "The previous tool call was REJECTED by the model server as invalid JSON and was NOT executed. "
+    "Re-issue the intended tool call as a SINGLE well-formed JSON object with quoted keys and "
+    "values. Emit only strictly valid JSON for every tool call."
+)
 
 # Finalize guard (#: end-of-loop, not time/step): a ReAct agent ends the moment the model returns a
 # message with no tool call — nothing structurally requires a proposal first. If the loop ends with
@@ -228,6 +256,82 @@ class StepBudgetMiddleware(AgentMiddleware):
         return None
 
 
+def _tool_parse_rejection(exc: BaseException) -> str | None:
+    """If ``exc`` is a provider-side tool-call *parse* rejection, return the offending raw payload
+    (best-effort; ``""`` when the payload cannot be extracted). ``None`` means "not this case" — the
+    caller MUST re-raise untouched, so a transient 500 or any other error keeps today's behavior.
+
+    Duck-typed (no hard ``openai`` import): a 500 status whose body/message carries the exact
+    ``error parsing tool call`` signature. Narrow by design — raw extraction is best-effort and
+    never gates the match (a format tweak degrades to the generic correction, not a miss).
+    """
+    if getattr(exc, "status_code", None) != 500:
+        return None
+    message = ""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error", body)  # some servers nest the message under "error"
+        if isinstance(inner, dict):
+            message = str(inner.get("message", ""))
+    if not message:  # fall back to the rendered "500 - {…}" string
+        message = str(exc)
+    if _TOOL_PARSE_SIGNATURE not in message:
+        return None
+    match = _TOOL_PARSE_RAW_RE.search(message)
+    return match.group(1) if match else ""
+
+
+class ToolCallRecoveryMiddleware(AgentMiddleware):
+    """Recover from a provider-side tool-call PARSE rejection instead of crashing the cycle.
+
+    Some OpenAI-compatible servers (Ollama today) return a 500 when they cannot parse the model's
+    emitted tool call into their response format. It is a DETERMINISTIC fault the SDK's transient
+    retry cannot fix (the same seed regenerates the same malformed call), so left alone it escapes
+    as a fatal :class:`AgentLoopError` and wastes the whole cycle. This wraps the model call and, on
+    that exact signature only, RE-RUNS it with the rejected payload appended to the system prompt as
+    a correction — perturbing the input so the next generation differs and (usually) emits valid
+    JSON. The correction is EPHEMERAL (it augments only the retried call, never durable state, like
+    the deadline note) and bounded to ``max_retries`` re-runs per model step; every other error
+    propagates unchanged so transient 500s stay on the SDK's retry-then-crash path.
+    """
+
+    def __init__(self, *, max_retries: int = _TOOL_PARSE_MAX_RETRIES) -> None:
+        super().__init__()
+        self._max_retries = max_retries
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        attempt = 0
+        current = request
+        while True:
+            try:
+                return handler(current)
+            except Exception as exc:  # noqa: BLE001 — re-raised at once unless it is our narrow case
+                raw = _tool_parse_rejection(exc)
+                if raw is None:
+                    raise
+                attempt += 1
+                if attempt > self._max_retries:
+                    log.warning("tool_call_parse_recovery_exhausted", max_retries=self._max_retries)
+                    raise
+                log.warning(
+                    "tool_call_parse_recovery", attempt=attempt, max_retries=self._max_retries
+                )
+                current = self._with_correction(request, raw)  # always augment the CLEAN base
+
+    @staticmethod
+    def _with_correction(request: ModelRequest, raw: str) -> ModelRequest:
+        correction = (
+            _TOOL_PARSE_CORRECTION.format(raw=raw) if raw else _TOOL_PARSE_CORRECTION_GENERIC
+        )
+        base = request.system_prompt or ""
+        augmented = SystemMessage(content=f"{base}\n\n{correction}".strip())
+        return request.override(system_message=augmented)
+
+
 def build_deepagents_agent(
     *,
     model: Any,
@@ -247,11 +351,17 @@ def build_deepagents_agent(
     the propose tools write the descriptor. ``extra_tools`` are domain/task tools the adapter binds
     (§8.2 seam, #6). ``middleware`` forwards to ``create_deep_agent``; when ``deadline_s`` is set a
     :class:`DeadlineMiddleware` is appended, and when ``step_budget`` is set a
-    :class:`StepBudgetMiddleware` is appended (ROADMAP 5.1). (Deep Agents auto-injects
-    **summarization/compaction** middleware into its base stack, so compaction is already on — 5.2.)
+    :class:`StepBudgetMiddleware` is appended (ROADMAP 5.1). A :class:`ToolCallRecoveryMiddleware`
+    is **always** appended — a no-op unless a provider raises a tool-call parse 500 (Ollama et al.).
+    (Deep Agents auto-injects **summarization/compaction** middleware into its base stack, so
+    compaction is already on — 5.2.)
     """
     tools = [_make_propose_tool(sig, outbox) for sig in operations] + list(extra_tools)
     stack = list(middleware)
+    # Always-on, self-bounding, no-op unless a provider emits a tool-call parse 500 (Ollama et al.);
+    # harmless on native providers that never raise it. Prepended so it wraps the pacing middleware
+    # below — a recovery re-run still re-applies their deadline/step notes.
+    stack.append(ToolCallRecoveryMiddleware())
     if deadline_s is not None:
         stack.append(DeadlineMiddleware(deadline_s))
     if step_budget is not None:
@@ -500,7 +610,12 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
     op_name = signature.name
     out_type = signature.output
     in_types = ", ".join(signature.inputs) or "(none)"
+    required_keys = signature.required_payload_keys
     object_keys = signature.object_payload_keys
+
+    def _missing_required(payload: dict[str, Any]) -> list[str]:
+        """Required payload keys (by the op's `required_payload_keys`) that are absent or empty."""
+        return [key for key in required_keys if not payload.get(key)]
 
     def _missing_objects(payload: dict[str, Any]) -> list[str]:
         """Declared object files (by the op's `object_payload_keys`) absent from outbox/."""
@@ -518,6 +633,16 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
             return "rejected: payload must be a non-empty JSON object"
         if not parents:
             return "rejected: parents must include the input artifact id(s) from the context"
+        # Enforceable: every REQUIRED key must be present + non-empty — catch a schema-shape miss
+        # (e.g. a submit with no `entrypoint`) in-cycle with a fixable hint, instead of the control
+        # plane's post-cycle shape check rejecting it with no feedback (#142). Presence-only, keys
+        # come from the op's `required_payload_keys` — never a hardcoded field name.
+        if missing := _missing_required(payload):
+            return (
+                f"rejected: this {out_type} requires the payload field(s) "
+                f"{', '.join(repr(k) for k in missing)}, but they are missing or empty. Add them "
+                f"and call again. payload declared keys: {sorted(payload) or 'none'}."
+            )
         # Enforceable: every object the payload declares must actually be in outbox/ — catch a
         # missing/misplaced file in-cycle (a fixable rejected, no gate cycle spent) instead of a
         # runs-clean reject downstream. Generic: the keys come from the op, not hardcoded names.
@@ -551,9 +676,11 @@ def _make_propose_tool(signature: OperationSignature, outbox: Path) -> Callable[
     propose.__doc__ = (
         f"Propose a {out_type} via {op_name} (inputs: {in_types}). Call once, last.\n\n"
         f"Before calling this:\n"
-        f"  1. Write every declared object file to {outbox}/ (this tool rejects the call if a\n"
+        f"  1. The payload MUST declare these field(s): {', '.join(required_keys) or '(none)'} "
+        f"(this tool rejects the call if any is missing or empty).\n"
+        f"  2. Write every declared object file to {outbox}/ (this tool rejects the call if a\n"
         f"     file the payload names is not there).\n"
-        f"  2. Actually RUN the script end-to-end with the execute tool and confirm its output\n"
+        f"  3. Actually RUN the script end-to-end with the execute tool and confirm its output\n"
         f"     — a crash, timeout, or missing output is an outright reject, no partial credit.\n\n"
         f"Args:\n"
         f"    parents: ids of the input artifact(s) of type {in_types}, from the context above.\n"

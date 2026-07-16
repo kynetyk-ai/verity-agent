@@ -35,6 +35,8 @@ from pathlib import Path
 from verity.logging import get_logger
 from verity.proc import DEFAULT_OUTPUT_CAP, drain_capped
 from verity.provisioning.backend import (
+    WORKER_GID,
+    WORKER_UID,
     CompletedWorker,
     Labels,
     ProvisioningError,
@@ -118,7 +120,7 @@ class DockerBackend:
             f"--memory={spec.limits.memory}", f"--memory-swap={spec.limits.memory}",
             f"--cpus={spec.limits.cpus}", f"--pids-limit={spec.limits.pids}",
             "--cap-drop=ALL", "--security-opt=no-new-privileges",
-            f"--user={os.getuid()}:{os.getgid()}",
+            f"--user={WORKER_UID}:{WORKER_GID}",  # fixed unprivileged uid, NOT the root launcher's
         ]
         if not spec.network:
             argv.append("--network=none")

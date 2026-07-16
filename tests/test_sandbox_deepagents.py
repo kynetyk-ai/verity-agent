@@ -50,8 +50,10 @@ from verity.sandbox.deepagents_driver import (  # noqa: E402
     DeepAgentsInProcessDriver,
     StepBudgetExceeded,
     StepBudgetMiddleware,
+    ToolCallRecoveryMiddleware,
     _extract_telemetry,
     _make_propose_tool,
+    _tool_parse_rejection,
     build_deepagents_agent,
     run_agent,
 )
@@ -381,6 +383,98 @@ def test_deadline_middleware_recurring_note_is_throttled() -> None:
     assert injected == [True, False, True, False]
 
 
+# ------------------------------------------------------- tool-call parse recovery (Ollama 500s)
+
+
+class _FakeAPIError(Exception):
+    """A duck-typed stand-in for ``openai.APIStatusError``: a status code + a parsed body."""
+
+    def __init__(self, status_code: int, body: object = None, text: str = "") -> None:
+        super().__init__(text or f"Error code: {status_code} - {body}")
+        self.status_code = status_code
+        self.body = body
+
+
+_OLLAMA_PARSE_MSG = (
+    "error parsing tool call: raw='{\"path\":\"$W\",\"ignore_cache=True\"}', "
+    "err=invalid character '}' after object key"
+)
+
+
+def test_tool_parse_rejection_classifies_only_the_ollama_signature() -> None:
+    # A 500 whose body message carries the exact signature: matched, and the raw payload extracted.
+    exc = _FakeAPIError(500, {"message": _OLLAMA_PARSE_MSG, "type": "api_error"})
+    assert _tool_parse_rejection(exc) == '{"path":"$W","ignore_cache=True"}'
+
+    # Same, but the server nests the message under "error" — still matched.
+    nested = _FakeAPIError(500, {"error": {"message": _OLLAMA_PARSE_MSG}})
+    assert _tool_parse_rejection(nested) == '{"path":"$W","ignore_cache=True"}'
+
+    # A genuine transient 500 (different message) is NOT our case — must propagate untouched.
+    assert _tool_parse_rejection(_FakeAPIError(500, {"message": "server overloaded"})) is None
+    # A non-500 (e.g. a 400) is never ours, even if it mentions tool parsing.
+    assert _tool_parse_rejection(_FakeAPIError(400, {"message": _OLLAMA_PARSE_MSG})) is None
+    # A plain exception with no status_code is ignored.
+    assert _tool_parse_rejection(RuntimeError("boom")) is None
+
+
+def test_tool_parse_rejection_matches_via_str_when_body_is_opaque() -> None:
+    # The signature is unique enough to match on the rendered string when body isn't a dict, and a
+    # missing raw='…' payload degrades to "" (generic correction), never a miss.
+    exc = _FakeAPIError(500, body=None, text="Error code: 500 - error parsing tool call happened")
+    assert _tool_parse_rejection(exc) == ""
+
+
+def test_tool_call_recovery_retries_with_the_correction_then_succeeds() -> None:
+    # First model call raises the Ollama parse 500; the middleware re-runs it with the rejected raw
+    # fed back in the system prompt, and the retry succeeds.
+    mw = ToolCallRecoveryMiddleware(max_retries=2)
+    seen: list[Any] = []
+    calls = iter([_FakeAPIError(500, {"message": _OLLAMA_PARSE_MSG}), "OK"])
+
+    def handler(req: Any) -> Any:
+        seen.append(req)
+        outcome = next(calls)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    result = mw.wrap_model_call(_FakeModelRequest("base prompt"), handler)  # type: ignore[arg-type]
+    assert result == "OK"
+    assert len(seen) == 2  # original + one recovery re-run
+    retried = seen[-1].system_message
+    assert "base prompt" in retried.content  # the clean base is preserved
+    assert "invalid JSON" in retried.content
+    assert 'ignore_cache=True' in retried.content  # the rejected payload is quoted back
+
+
+def test_tool_call_recovery_passes_non_matching_errors_through_unchanged() -> None:
+    mw = ToolCallRecoveryMiddleware()
+    boom = _FakeAPIError(500, {"message": "server overloaded"})  # a real transient 500
+
+    def handler(_req: Any) -> Any:
+        raise boom
+
+    with pytest.raises(_FakeAPIError) as caught:
+        mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
+    assert caught.value is boom  # same object, untouched — today's crash path is preserved
+
+
+def test_tool_call_recovery_reraises_after_exhausting_the_budget() -> None:
+    # A model that emits garbage on every attempt fails cleanly after max_retries re-runs.
+    mw = ToolCallRecoveryMiddleware(max_retries=2)
+    attempts = 0
+
+    def handler(_req: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise _FakeAPIError(500, {"message": _OLLAMA_PARSE_MSG})
+
+    with pytest.raises(_FakeAPIError):
+        mw.wrap_model_call(_FakeModelRequest("p"), handler)  # type: ignore[arg-type]
+    assert attempts == 3  # original + 2 bounded recovery re-runs, then it propagates
+
+
 def test_agent_builds_with_a_deadline(tmp_path: Path) -> None:
     # Smoke: building with a deadline (which appends DeadlineMiddleware) succeeds and keeps tools.
     outbox = tmp_path / "outbox"
@@ -418,6 +512,7 @@ def test_step_budget_middleware_is_silent_well_under_budget() -> None:
 
 _SUB_SIG = OperationSignature(
     "submit", inputs=("Dataset",), output="Submission",
+    required_payload_keys=("entrypoint", "requirements"),
     object_payload_keys=("entrypoint", "requirements"),
 )
 _SUB_PAYLOAD = {"entrypoint": "submission.py", "requirements": "requirements.txt"}
@@ -457,6 +552,36 @@ def test_propose_warns_but_records_when_not_attested_tested(tmp_path: Path) -> N
     result = propose(parents=["ds"], payload=_SUB_PAYLOAD)
     assert "proposal recorded" in result and "tested=false" in result
     assert (outbox / RESERVED_PROPOSAL_NAME).exists()
+
+
+def test_propose_rejects_when_a_required_field_is_missing(tmp_path: Path) -> None:
+    # #142: a submit that omits the required `entrypoint` is rejected IN-CYCLE with a fixable hint
+    # (this was gemma4's dominant failure — the CP's post-cycle shape check caught it with no
+    # feedback). The required-field check fires before the object-file check, and records nothing.
+    outbox = _seed_outbox(tmp_path, "submission.py", "requirements.txt")
+    propose = _make_propose_tool(_SUB_SIG, outbox)
+    result = propose(parents=["ds"], payload={"requirements": "requirements.txt"})  # no entrypoint
+    assert result.startswith("rejected:")
+    assert "'entrypoint'" in result and "missing or empty" in result
+    assert not (outbox / RESERVED_PROPOSAL_NAME).exists()  # nothing recorded
+
+
+def test_propose_rejects_when_a_required_field_is_empty(tmp_path: Path) -> None:
+    # Present-but-empty is treated as missing (a bare "" declares nothing).
+    outbox = _seed_outbox(tmp_path, "submission.py", "requirements.txt")
+    propose = _make_propose_tool(_SUB_SIG, outbox)
+    result = propose(parents=["ds"], payload={"entrypoint": "", "requirements": "requirements.txt"})
+    assert result.startswith("rejected:") and "'entrypoint'" in result
+    assert not (outbox / RESERVED_PROPOSAL_NAME).exists()
+
+
+def test_propose_ignores_required_check_when_op_declares_none(tmp_path: Path) -> None:
+    # An op with no required_payload_keys is unaffected — any non-empty payload passes the check.
+    sig = OperationSignature("note", inputs=("Source",), output="Note")
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    result = _make_propose_tool(sig, outbox)(parents=["s"], payload={"text": "hi"})
+    assert "proposal recorded" in result
 
 
 def test_propose_skips_presence_check_when_op_declares_no_object_keys(tmp_path: Path) -> None:

@@ -143,6 +143,10 @@ def build_feature_engineering_domain(code_timeout_s: float = 2400.0) -> FeatureE
     schema.register_operation(
         OperationSignature(
             "submit", inputs=(DATASET_VERSION,), output=SUBMISSION,
+            # These keys are BOTH required (must be present) and object-valued (name outbox files),
+            # so the propose tool rejects a submit that omits `entrypoint`/`requirements` in-cycle,
+            # not the control plane's post-cycle shape check catching it with no feedback (#142).
+            required_payload_keys=_SUBMISSION_OBJECT_KEYS,
             object_payload_keys=_SUBMISSION_OBJECT_KEYS,
         )
     )
@@ -151,6 +155,7 @@ def build_feature_engineering_domain(code_timeout_s: float = 2400.0) -> FeatureE
     schema.register_operation(
         OperationSignature(
             "revises", inputs=(SUBMISSION,), output=SUBMISSION,
+            required_payload_keys=_SUBMISSION_OBJECT_KEYS,
             object_payload_keys=_SUBMISSION_OBJECT_KEYS,
         )
     )

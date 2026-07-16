@@ -1,0 +1,21 @@
+# Generic build-context ignore — applies to ALL images and, crucially, to the LEGACY docker
+# builder too. Per-Dockerfile ignore files (e.g. Dockerfile.sandbox.dockerignore) are a BuildKit
+# ONLY feature; a legacy build silently ignores them and `COPY . /app` then bakes secrets + the
+# answer key into the image. This file makes the isolation boundary builder-independent. Keep it a
+# superset of the security-critical entries in Dockerfile.sandbox.dockerignore.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+spikes
+spec/references
+# Secrets — must never enter any image (#137, trusted-submitter creds never reach a worker).
+.env
+# Isolation (#137): the agent runs inside the sandbox image — no datasets (the ablation answer key
+# lives under data/*/verifier/), no prior run results, no analysis figures.
+data
+results
+figures

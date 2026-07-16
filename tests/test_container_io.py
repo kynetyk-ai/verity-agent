@@ -17,6 +17,7 @@ def test_cycle_input_roundtrips() -> None:
         operations=(
             OperationSignature(
                 "submit", ("Dataset",), "Submission",
+                required_payload_keys=("entrypoint", "requirements"),  # must be present (#142)
                 object_payload_keys=("entrypoint", "requirements"),  # declared outbox files
             ),
         ),
@@ -31,6 +32,8 @@ def test_cycle_input_roundtrips() -> None:
     assert back.step_budget == 30
     # the op's object-payload keys survive the host -> container hop (drives the presence check)
     assert back.operations[0].object_payload_keys == ("entrypoint", "requirements")
+    # #142: required-payload keys survive too, so the propose tool can enforce them in-cycle
+    assert back.operations[0].required_payload_keys == ("entrypoint", "requirements")
 
 
 def test_effective_step_budget_is_a_fixed_model_step_default() -> None:
