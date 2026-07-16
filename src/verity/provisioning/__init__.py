@@ -10,6 +10,8 @@ the `SandboxPort`/`VerifierPort`, so the control plane stays agnostic to how wor
 from __future__ import annotations
 
 from verity.provisioning.backend import (
+    WORKER_GID,
+    WORKER_UID,
     CompletedWorker,
     Labels,
     ResourceLimits,
@@ -38,4 +40,6 @@ __all__ = [
     "docker_available",
     "build_selector",
     "reap",
+    "WORKER_UID",
+    "WORKER_GID",
 ]

@@ -11,13 +11,14 @@ network-off) are asserted against one `WorkerSpec`.
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from verity.provisioning import (
+    WORKER_GID,
+    WORKER_UID,
     DockerBackend,
     Labels,
     ResourceLimits,
@@ -65,7 +66,8 @@ def _code_runner_spec() -> WorkerSpec:
 
 def test_argv_applies_the_hardened_baseline_for_both_postures() -> None:
     backend = DockerBackend()
-    uid_gid = f"--user={os.getuid()}:{os.getgid()}"
+    # Workers run as a FIXED unprivileged uid (nobody), NOT the root launcher's os.getuid().
+    uid_gid = f"--user={WORKER_UID}:{WORKER_GID}"
     for spec in (_sandbox_spec(), _code_runner_spec()):
         argv = backend.build_argv(spec, name="n", mounts=[])
         assert argv[:5] == ["docker", "run", "--rm", "--name", "n"]

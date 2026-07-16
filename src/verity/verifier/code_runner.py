@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import shutil
 import subprocess
 import tempfile
@@ -34,6 +33,8 @@ from verity.contracts.run_context import RunContext
 from verity.logging import get_logger
 from verity.proc import communicate_capped
 from verity.provisioning.backend import (
+    WORKER_GID,
+    WORKER_UID,
     Labels,
     ProvisioningError,
     ResourceLimits,
@@ -164,6 +165,10 @@ class ContainerCodeRunner:
             for input_name, blob in request.inputs.items():
                 (data_dir / input_name).write_bytes(blob)
             out_dir.chmod(0o777)  # the non-root container user must be able to write here
+            # ...and traverse/read the :ro input mounts regardless of the launcher's umask (the
+            # worker's fixed non-root uid differs from this dir's creator).
+            code_dir.chmod(0o755)
+            data_dir.chmod(0o755)
 
             cmd = self._docker_cmd(name, code_dir, data_dir, out_dir, request)
             result = await self._run_container(cmd, name, request.timeout_s)
@@ -204,7 +209,7 @@ class ContainerCodeRunner:
             f"--memory={self.memory}", f"--memory-swap={self.memory}",
             f"--cpus={self.cpus}", f"--pids-limit={self.pids_limit}",
             "--cap-drop=ALL", "--security-opt=no-new-privileges",
-            f"--user={os.getuid()}:{os.getgid()}",
+            f"--user={WORKER_UID}:{WORKER_GID}",  # fixed unprivileged uid, NOT the root launcher's
             "-v", f"{code_dir}:/work:ro",
             "-v", f"{data_dir}:/data:ro",
             "-v", f"{out_dir}:/out:rw",

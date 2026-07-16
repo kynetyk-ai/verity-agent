@@ -44,7 +44,21 @@ __all__ = [
     "ResourceLimits",
     "Tmpfs",
     "ProvisioningError",
+    "WORKER_UID",
+    "WORKER_GID",
 ]
+
+# Untrusted workers (the sandbox agent + the verifier's code-runner) run as this fixed UNPRIVILEGED
+# uid/gid — NOT the launcher's os.getuid(), which is root when the control plane runs as root.
+# Non-root shrinks the blast radius of a container escape (closes exploits that gate on uid==0), on
+# top of the existing --cap-drop=ALL / --security-opt=no-new-privileges / --read-only baseline.
+#
+# 65534 = `nobody`, which exists in the debian-slim base so getpwuid() resolves — an arbitrary uid
+# (e.g. 12345) has no passwd entry and would KeyError in tools that look one up. No image change is
+# needed: the plumbing already supports any uid (/work is 0777, /tmp tmpfs 1777, inputs are
+# world-readable, and pip installs are redirected to the writable /work/pylib, never /app/.venv).
+WORKER_UID = 65534
+WORKER_GID = 65534
 
 
 class ProvisioningError(RuntimeError):
