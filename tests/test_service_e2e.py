@@ -1,6 +1,6 @@
 """End-to-end service split (ROADMAP Phase 7.2): a control plane driving a *containerized* verifier
 over real HTTP. ``@docker`` — auto-skipped without Docker, the ``verity-verifier`` image, or the
-``service`` extra (build it: ``docker build -f Dockerfile.verifier -t verity-verifier:latest .``).
+``service`` extra (build it: ``docker build --target verifier -t verity-verifier:latest .``).
 
 This is the milestone proof: the CP serializes a ``VerifierRequest``, POSTs it to a verifier running
 in another container, decodes the ``VerdictBundle``, and commits — with **no control-plane change**

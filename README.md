@@ -117,7 +117,7 @@ cp .env.example .env            # then set ANTHROPIC_API_KEY
 #    at <data-dir>/{train.csv,test.csv}  (gitignored)
 
 # c. build the sandbox image the agent runs in (once)
-docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
+docker build --target sandbox -t verity-sandbox:latest .
 
 # d. run it (loads .env into the environment first)
 set -a; . ./.env; set +a
@@ -234,11 +234,13 @@ CLAUDE.md     orientation for coding agents working in this repo
 ROADMAP.md    the living path (now: post-MVP backlog)
 .env.example  copy to .env for the live demo
 pyproject.toml / justfile   uv project + dev commands
-Dockerfile.sandbox          the base image the container sandbox runs the agent in
-Dockerfile.fe-sandbox       FROM verity-sandbox + ML system libs; the FE tasks' agent image (Option A)
-Dockerfile.verifier         the standing advisory-verifier service image (Phase 7.1)
-Dockerfile.coderunner       the verifier's code-runner image (installs a submission's requirements.txt)
-Dockerfile.controlplane     the task-agnostic control-plane image (launches worker containers)
+Dockerfile    every image, one `--target` each, one shared build context:
+                controlplane  the task-agnostic control-plane image (launches worker containers)
+                verifier      the standing advisory-verifier service image (gates + kaggle extra)
+                sandbox       the base image the container sandbox runs the agent in
+                fe-sandbox    FROM sandbox + ML system libs; the FE tasks' agent image (Option A)
+                coderunner    the verifier's code-runner image (installs a submission's requirements.txt)
+.dockerignore the single isolation boundary for all of them (no datasets, results or .env in any image)
 infra/            compose files for the containerized topology (compose.daemon.yml — the standing daemon)
 docs/             API reference, guides, and architecture decision records (see Docs below)
 src/verity/

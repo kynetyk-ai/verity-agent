@@ -30,12 +30,13 @@ check: lint typecheck test
 # standing `verity serve` container. Drive it with `just cp <subcommand>`; stop with `just cp-down`.
 # Files cross via the exchange: drop inputs into the exchange's in/ dir, find exports under out/.
 cp-serve:
-    docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
-    # FE sandbox extends the base with the CPU ML stack so FE agents can self-test (build it AFTER).
-    docker build -f Dockerfile.fe-sandbox -t verity-fe-sandbox:latest .
-    docker build -f Dockerfile.coderunner -t verity-code-runner:latest .
-    docker build -f Dockerfile.verifier -t verity-verifier:latest .
-    docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
+    # One multi-stage Dockerfile, one target per image. fe-sandbox is FROM sandbox, so the target
+    # dependency is expressed in the build graph rather than in this recipe's ordering.
+    docker build --target sandbox      -t verity-sandbox:latest .
+    docker build --target fe-sandbox   -t verity-fe-sandbox:latest .
+    docker build --target coderunner   -t verity-code-runner:latest .
+    docker build --target verifier     -t verity-verifier:latest .
+    docker build --target controlplane -t verity-controlplane:latest .
     mkdir -p /tmp/verity-staging "${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/in" \
         "${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}/out" "${VERITY_STORE_HOST:-/tmp/verity-store}"
     # --env-file .env: compose otherwise resolves ${KAGGLE_*} against infra/.env (the compose-file's

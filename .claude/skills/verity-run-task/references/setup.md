@@ -21,11 +21,11 @@ on the host Docker daemon. This is the deployment the `verity` CLI talks to.
 ## Build the images (once)
 
 ```bash
-docker build -f Dockerfile.sandbox      -t verity-sandbox:latest .   # the agent worker (runtime only)
-docker build -f Dockerfile.fe-sandbox   -t verity-fe-sandbox:latest .  # base + ML system libs (libgomp…) — FE tasks default to this so the agent can install reqs + self-test (build AFTER the base)
-docker build -f Dockerfile.coderunner   -t verity-code-runner:latest .  # the gate's code-runner (system libs for the CPU ML stack)
-docker build -f Dockerfile.verifier     -t verity-verifier:latest .  # the verifier sibling (gates + kaggle extra; §9.1)
-docker build -f Dockerfile.controlplane -t verity-controlplane:latest .  # the daemon (carries the docker CLI + service extra)
+docker build --target sandbox      -t verity-sandbox:latest .   # the agent worker (runtime only)
+docker build --target fe-sandbox   -t verity-fe-sandbox:latest .  # base + ML system libs (libgomp…); FE tasks default to this so the agent can install reqs + self-test
+docker build --target coderunner   -t verity-code-runner:latest .  # the gate's code-runner (system libs for the CPU ML stack)
+docker build --target verifier     -t verity-verifier:latest .  # the verifier sibling (gates + kaggle extra; §9.1)
+docker build --target controlplane -t verity-controlplane:latest .  # the daemon (carries the docker CLI + service extra)
 ```
 
 `just cp-serve` builds all of them for you. (The `code` task uses the base `verity-sandbox`; `fe-holdout`/`fe-kaggle` use `verity-fe-sandbox`.)

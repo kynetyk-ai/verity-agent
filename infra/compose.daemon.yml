@@ -23,9 +23,9 @@
 # carries no gate/kaggle code.
 #
 # Prereqs: build the images (just cp-serve does this for you):
-#   docker build -f Dockerfile.sandbox      -t verity-sandbox:latest .
-#   docker build -f Dockerfile.verifier     -t verity-verifier:latest .
-#   docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
+#   docker build --target sandbox      -t verity-sandbox:latest .
+#   docker build --target verifier     -t verity-verifier:latest .
+#   docker build --target controlplane -t verity-controlplane:latest .
 #
 # Volume model — three host dirs, each with a distinct job. The EXCHANGE and the STORE are mounted
 # into the CP container ONLY, never into a worker (ADR 0004 §f; the byte-provenance invariant): data
@@ -46,7 +46,8 @@ services:
     container_name: verity-cp
     build:
       context: ..
-      dockerfile: Dockerfile.controlplane
+      dockerfile: Dockerfile
+      target: controlplane
     # The image's default ENTRYPOINT is already `verity serve`; stated explicitly here for clarity.
     entrypoint: ["verity", "serve"]
     restart: unless-stopped

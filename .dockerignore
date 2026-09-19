@@ -1,8 +1,8 @@
-# Generic build-context ignore — applies to ALL images and, crucially, to the LEGACY docker
-# builder too. Per-Dockerfile ignore files (e.g. Dockerfile.sandbox.dockerignore) are a BuildKit
-# ONLY feature; a legacy build silently ignores them and `COPY . /app` then bakes secrets + the
-# answer key into the image. This file makes the isolation boundary builder-independent. Keep it a
-# superset of the security-critical entries in Dockerfile.sandbox.dockerignore.
+# The build-context ignore for EVERY image: all five are `--target`s of the root Dockerfile and
+# share this one context. It is also the only ignore file that the LEGACY docker builder honours
+# (per-Dockerfile ignore files are BuildKit-only; a legacy build silently skipped them and
+# `COPY . /app` then baked secrets + the answer key into the image, #137). Isolation here is
+# therefore builder- and target-independent. tests/test_sandbox_image_purity.py pins the entries.
 .git
 .venv
 **/__pycache__

@@ -31,7 +31,7 @@ __all__ = [
 # SYSTEM shared libraries the CPU ML wheels link, e.g. libgomp). FE agents install their own pinned
 # requirements (mirroring the gate's clean install) and self-test their script — the base image
 # can't (the wheels import-fail without the system libs). So an FE task defaults to the FE image;
-# the Python ML packages are NOT baked in, on purpose (see Dockerfile.fe-sandbox).
+# the Python ML packages are NOT baked in, on purpose (see the Dockerfile's fe-sandbox target).
 BASE_SANDBOX_IMAGE = "verity-sandbox:latest"
 FE_SANDBOX_IMAGE = "verity-fe-sandbox:latest"
 
