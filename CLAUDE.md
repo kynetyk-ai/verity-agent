@@ -63,9 +63,10 @@ outright. This repo is the harness; the experiments that use it, and everything 
 versioned elsewhere.
 
 - **`experiments/`** — the sweep machinery (`ablation/sweep.py`, `analyze.py`, `figures.py`,
-  `run_sweep_container.sh`), the `spec.*.json` catalog, and the runnable experimental design. It is
-  operator-local: keep it on disk and in the sibling repo, not in a commit here. `tests/test_ablation_*.py`
-  `importorskip` it, so a checkout without it still runs green.
+  `run_sweep_container.sh`) and the `spec.*.json` catalog. Operator-local: keep it on disk, not in a
+  commit here. `tests/test_ablation_*.py` `importorskip` it, so a checkout without it still runs
+  green. The runnable experimental design it implements is versioned next to the analysis, at
+  `../verity-analysis/docs/experimental-design.md`.
 - **`results/`** — raw sweep output: RunReport JSONs, `manifest.json`, `transcripts/`, `submissions/`,
   and the durable `store/`. Always scratch. Transcripts record agent tool output verbatim, which
   includes rows of whatever dataset the agent read, so a result batch is **never** committed here:
