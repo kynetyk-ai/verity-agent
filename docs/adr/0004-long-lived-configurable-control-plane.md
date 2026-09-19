@@ -9,6 +9,14 @@
 - **Supersedes:** nothing. This is **purely additive** — a control/data plane *in front of* the
   existing kernel and the ADR 0003 worker model. No kernel refactor.
 
+> **Editorial note (2026-09-19).** The decision stands and is implemented. Two things this record
+> describes as *present* no longer exist: the one-shot batch entrypoint
+> `composition/fe_run.py` and its `infra/compose.fe.yml` wiring were removed with the basic-`fe`
+> task (#68) — the image's default `ENTRYPOINT` is `verity serve` and the daemon is the only path —
+> and the per-image Dockerfiles were consolidated into one multi-stage `Dockerfile` whose
+> `controlplane` target builds the daemon. Read those references as the state of the world the ADR
+> argued from, not as a map of the tree.
+
 ## Context
 
 After ROADMAP 7.5 the control plane runs *in a container* and launches ephemeral sandbox + code-runner

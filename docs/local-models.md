@@ -70,7 +70,7 @@ on the Metal GPU. The **only** container is Verity's sandbox, reaching *out* to 
 1. **Start a model server on the host**, exposing an OpenAI-compatible API (default port `8000`).
 2. **Rebuild the sandbox image** so it has the current code:
    ```
-   docker build -f Dockerfile.sandbox -t verity-sandbox:latest .
+   docker build --target sandbox -t verity-sandbox:latest .
    ```
    (The image already bakes in `langchain-openai`; no image change is needed for local models.)
 3. **Register a local sandbox** and point a task at it:

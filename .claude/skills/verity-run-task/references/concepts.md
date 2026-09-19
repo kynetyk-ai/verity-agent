@@ -5,10 +5,9 @@ installed and runnable*, read the live catalog (`verity catalog`), not this file
 
 ## The kernel is domain-agnostic
 
-Verity implements the **Self-Revising Discovery Harness** (spec
-`spec/self-revising-discovery-harness.md`): a domain-agnostic **kernel** that keeps an agent's durable
-state as a **typed provenance record** — artifacts, the operations that produced them, and the gate
-decisions about them — behind a **verifier-aware commit lifecycle** (§1). Shorthand: *git + a type
+Verity is a domain-agnostic **kernel** that keeps an agent's durable state as a **typed provenance
+record** — artifacts, the operations that produced them, and the gate decisions about them — behind a
+**verifier-aware commit lifecycle** (§1). Shorthand: *git + a type
 system + a verifier-aware lifecycle for agent artifacts*. The loop is **read → propose → gate →
 commit**, with load-bearing rules: no implicit accept, the proposer is never its own gate, and a status
 richer than accept/reject (`proposed → tentative → accepted`, plus `rejected` / `superseded` /
@@ -36,8 +35,8 @@ Any task where work products are **typed artifacts with provenance** and "worth 
   context-restricted reviewers + deterministic commit-time validators (the *pilar* lineage, §3.8).
 - **Code-execution tasks** — submissions gated by parse + run-clean checks.
 - More broadly, self-revising **scientific discovery** — the conceptual origin (Wang & Buehler,
-  *Self-Revising Discovery Systems for Science*, arXiv:2606.01444, in `spec/references/`), and the
-  typed-provenance prior art *ScienceClaw* (§3.7).
+  *Self-Revising Discovery Systems for Science*, arXiv:2606.01444), and the typed-provenance prior art
+  *ScienceClaw* (§3.7).
 
 The thesis payoff (Phase 6): *good proposals from cheap models* — the disciplined record + gate let
 smaller/local models contribute, because trust comes from the verifier, not the proposer.
@@ -82,7 +81,6 @@ type is built), while **`--stop-on-accept`** and **`policy.provisioning`** are t
 These resolve only if you have the repo checked out; at runtime the live source of truth is
 `verity catalog`.
 
-- `spec/self-revising-discovery-harness.md` — authoritative specification (cited `§N`).
-- `spec/references/` — the origin paper + prior-art analyses.
+- `README.md` — what the system is, what it guarantees, and the usage recipes.
 - `docs/api-surface.md` — the control-plane API reference (incl. the standing-daemon + HTTP surfaces).
 - `ROADMAP.md` — where the implementation is and what's next.

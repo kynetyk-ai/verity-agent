@@ -5,8 +5,10 @@ carry no datasets (the ablation answer key lives under ``data/*/verifier/``), no
 (past accepted submissions for the same task), and its venv must satisfy the agent's reasonable
 ``python -m pip`` assumption. Two layers:
 
-* an offline pin of the ``Dockerfile.sandbox.dockerignore`` entries — the cheap regression guard
-  (the 2026-07-07 leak existed precisely because ``data``/``results`` were missing from this file);
+* an offline pin of the root ``.dockerignore`` entries — the cheap regression guard (the 2026-07-07
+  leak existed precisely because ``data``/``results`` were missing from the ignore file that
+  applied). The root file is the only ignore file now: every image is one ``--target`` of the single
+  ``Dockerfile``, sharing one build context, so the exclusions hold for every builder and target;
 * ``docker``-marked checks against the *built* image — the invariant asserted where it actually
   holds, by construction at the image boundary (sibling in spirit to
   ``test_cp_image_carries_no_data_prep``).
@@ -48,15 +50,26 @@ def _run_in(image: str, command: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_sandbox_dockerignore_excludes_data_and_results() -> None:
-    """The leak-vector entries stay pinned in the per-Dockerfile ignore file."""
+def test_dockerignore_excludes_data_and_results() -> None:
+    """The leak-vector entries stay pinned in the root ignore file that every target shares."""
     entries = {
         line.strip()
-        for line in (REPO / "Dockerfile.sandbox.dockerignore").read_text().splitlines()
+        for line in (REPO / ".dockerignore").read_text().splitlines()
         if line.strip() and not line.startswith("#")
     }
     missing = {"data", "results", ".env", ".git"} - entries
-    assert not missing, f"Dockerfile.sandbox.dockerignore lost isolation entries: {missing}"
+    assert not missing, f".dockerignore lost isolation entries: {missing}"
+
+
+def test_single_dockerfile_defines_every_image_target() -> None:
+    """One Dockerfile, one ``--target`` per image: no stray per-image Dockerfile can drift."""
+    assert not list(REPO.glob("Dockerfile.*")), (
+        "per-image Dockerfiles are consolidated into the root Dockerfile's targets; "
+        f"found {[p.name for p in REPO.glob('Dockerfile.*')]}"
+    )
+    body = (REPO / "Dockerfile").read_text()
+    for target in ("controlplane", "verifier", "sandbox", "fe-sandbox", "coderunner"):
+        assert f"AS {target}\n" in body, f"Dockerfile lost the `{target}` target"
 
 
 @docker_test

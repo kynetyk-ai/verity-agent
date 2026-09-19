@@ -12,8 +12,8 @@ images, a model (an ``ANTHROPIC_API_KEY`` or a ``VERITY_LOCAL_BASE_URL``), the s
 submits to the real leaderboard — accept the competition rules on kaggle.com first, else a 403).
 Build the images first: ``just cp-serve`` does it, or::
 
-    docker build -f Dockerfile.sandbox      -t verity-sandbox:latest .
-    docker build -f Dockerfile.controlplane -t verity-controlplane:latest .
+    docker build --target sandbox      -t verity-sandbox:latest .
+    docker build --target controlplane -t verity-controlplane:latest .
 
 The flow asserted end to end:
   1. ``verity catalog`` lists **both** ``fe-kaggle`` and ``code`` task types (multi-type, 1 image);

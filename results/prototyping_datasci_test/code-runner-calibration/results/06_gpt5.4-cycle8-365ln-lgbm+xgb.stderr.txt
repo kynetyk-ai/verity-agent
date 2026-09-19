@@ -1,5 +1,0 @@
-
-[notice] A new release of pip is available: 25.0.1 -> 26.1.2
-[notice] To update, run: pip install --upgrade pip
-/tmp/site/sklearn/linear_model/_logistic.py:455: OptimizeWarning: Unknown solver options: iprint
-  opt_res = optimize.minimize(

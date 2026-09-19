@@ -6,6 +6,9 @@ Pins that the sweep is **config-only**: every cell runs the same task, and the p
 policy reaches the real scorer (the decision gate differs — ``score-and-accept`` under ``always`` vs
 ``selection`` under ``improve_over_best_prior``). Plus the spec's condition→config mapping and the
 equal-compute guard.
+
+`experiments/` is no longer tracked in this repo (it is operator-local sweep machinery), so this
+module skips wholesale when it is absent rather than failing a fresh clone's suite.
 """
 
 from __future__ import annotations
@@ -15,12 +18,6 @@ import json
 from dataclasses import dataclass
 
 import pytest
-from experiments.ablation.sweep import (
-    SweepSpec,
-    build_task_request,
-    load_role_files,
-    run_sweep,
-)
 
 from tests._fe_offline import offline_holdout_catalog, preds_csv, role_files_from_raw
 from verity.domains.feature_engineering import ENTRYPOINT, PREDICTIONS_OUTPUT, REQUIREMENTS
@@ -30,6 +27,15 @@ from verity.sandbox import ProposalDescriptor
 from verity.sandbox.container_io import CONTAINER_OUTBOX
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
 from verity.service.control_service import ControlService
+
+sweep = pytest.importorskip(
+    "experiments.ablation.sweep", reason="experiments/ not present in this checkout"
+)
+
+SweepSpec = sweep.SweepSpec
+build_task_request = sweep.build_task_request
+load_role_files = sweep.load_role_files
+run_sweep = sweep.run_sweep
 
 _RAW = b"id,a,class\n0,0,X\n1,2,X\n2,4,Y\n3,6,Y\n4,8,Z\n5,10,Z\n"
 _TEST = b"id\n100\n101\n"
