@@ -12,6 +12,7 @@ machinery, the registries) stay in :mod:`verity.control_plane`; only what crosse
 
 from __future__ import annotations
 
+from verity.contracts.errors import GateUnavailable
 from verity.contracts.model import (
     Artifact,
     ArtifactStatus,
@@ -36,7 +37,9 @@ from verity.contracts.ports import (
     ServiceLifecycle,
     VerifierPort,
     VerifierRequest,
+    VerifierSetup,
 )
+from verity.contracts.run_context import RunContext, SupportsRunContext
 
 __all__ = [
     # model
@@ -53,6 +56,7 @@ __all__ = [
     "VerdictBundle",
     # ports
     "ServiceLifecycle",
+    "VerifierSetup",
     "VerifierRequest",
     "VerifierPort",
     "ProposalEnvelope",
@@ -62,4 +66,9 @@ __all__ = [
     "ProviderError",
     "SANDBOX_PROVIDERS",
     "VERIFIER_PROVIDERS",
+    # run identity
+    "RunContext",
+    "SupportsRunContext",
+    # errors
+    "GateUnavailable",
 ]

@@ -24,18 +24,23 @@ What it does (the §3.4 API contract):
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import json
+import time
+import uuid
+from collections.abc import Callable, Mapping
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field, replace
 
 from verity.contracts import (
-    SANDBOX_PROVIDERS,
-    VERIFIER_PROVIDERS,
+    GateUnavailable,
     Operation,
     OperationStatus,
     ProposalEnvelope,
     ProviderRegistry,
+    RunContext,
     SandboxPort,
     ServedContext,
+    SupportsRunContext,
     VerdictBundle,
     VerdictKind,
     VerifierPort,
@@ -47,16 +52,29 @@ from verity.control_plane.commit import (
     ShapeError,
     run_commit,
 )
-from verity.control_plane.config import TaskConfig
+from verity.control_plane.config import TaskConfig, orientation_digest
 from verity.control_plane.context import AssembledContext, ContextAssembler
 from verity.control_plane.independence import resolve_declared_slice
+from verity.control_plane.run_record import (
+    InMemoryRunRecordStore,
+    RunRecord,
+    RunRecordStore,
+)
+from verity.control_plane.run_report import (
+    CycleInput,
+    RunReport,
+    Timings,
+    build_run_report,
+)
 from verity.control_plane.store import (
     Artifact,
     ArtifactStatus,
     Clock,
+    ContractVersion,
     ObjectRef,
     Provenance,
     SqliteStore,
+    StoreError,
     default_clock,
 )
 from verity.logging import get_logger
@@ -70,9 +88,16 @@ __all__ = [
     "ControlPlaneError",
     "UnknownTask",
     "OrchestrationError",
+    "RunReport",
+    "RunRecord",
 ]
 
 log = get_logger("verity.control_plane.api")
+
+
+def _default_run_id() -> str:
+    """A fresh run id — distinct from the task id, so task and run stay separate identities."""
+    return uuid.uuid4().hex
 
 
 class ControlPlaneError(RuntimeError):
@@ -91,11 +116,13 @@ class OrchestrationError(ControlPlaneError):
 class IntakeResult:
     """The outcome of submitting one proposal (spec §3.4 intake).
 
-    ``entered_protocol`` is False exactly when the proposal was malformed *or* the sandbox produced
-    no usable proposal this cycle. On a malformed proposal ``shape_error`` carries the correction;
-    on a sandbox failure ``sandbox_error`` carries the reason. In both cases **nothing is recorded**
-    (no object harvested, no `proposed` row, no decision — §7.0). Otherwise ``commit`` is the §7
-    result and ``harvested`` maps each outbox object's name to its content-addressed reference.
+    ``entered_protocol`` is False exactly when the proposal was malformed, the sandbox produced no
+    usable proposal this cycle, *or* the gate was unavailable. On a malformed proposal
+    ``shape_error`` carries the correction; on a sandbox failure ``sandbox_error`` carries the
+    reason; on a gate-infra failure ``gate_error`` carries it (the proposal *was* recorded, but no
+    verdict could be rendered — §3.4, ROADMAP 5.1). For shape/sandbox failures **nothing is
+    recorded** (no object harvested, no `proposed` row, no decision — §7.0). Otherwise ``commit`` is
+    the §7 result and ``harvested`` maps each outbox object name to its content-addressed reference.
     """
 
     entered_protocol: bool
@@ -103,6 +130,9 @@ class IntakeResult:
     commit: CommitResult | None = None
     harvested: dict[str, ObjectRef] = field(default_factory=dict)
     sandbox_error: str | None = None
+    gate_error: str | None = None
+    # The content-addressed reference to this cycle's step transcript (instrumentation), or None.
+    transcript_ref: ObjectRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,9 +143,10 @@ class OrchestrationPolicy:
     ``refine_cap`` bounds how many times a single lineage may be sent back to refine before it
     terminates in ``rejected`` (so an un-satisfiable artifact cannot loop forever, §12 seam).
     ``stop_on_accept`` ends the run as soon as an artifact is accepted (useful for tests/demos).
-    ``max_consecutive_sandbox_failures`` bounds how many cycles in a row may fail to produce a
-    proposal (a timed-out / crashed / runaway sandbox) before the run aborts, so a wholly-broken
-    sandbox cannot spin to ``max_cycles``; the counter resets on any cycle that does propose.
+    ``max_consecutive_sandbox_failures`` bounds how many cycles in a row may fail (a timed-out /
+    crashed / runaway sandbox, *or* an unavailable gate) before the run aborts, so a wholly-broken
+    sandbox or verifier cannot spin to ``max_cycles``; the counter resets on any cycle that proposes
+    and is evaluated.
     """
 
     max_cycles: int = 20
@@ -135,6 +166,8 @@ class TaskState:
     sandbox: SandboxPort
     verifier: VerifierPort
     rationale: dict[str, str] = field(default_factory=dict)
+    history: list[CycleInput] = field(default_factory=list)  # per-cycle facts for the RunReport
+    run_context: RunContext = field(default_factory=RunContext)  # run identity stamped onto workers
 
 
 class ControlPlane:
@@ -146,32 +179,91 @@ class ControlPlane:
         *,
         assembler: ContextAssembler | None = None,
         policy: OrchestrationPolicy | None = None,
-        sandbox_providers: ProviderRegistry[SandboxPort] = SANDBOX_PROVIDERS,
-        verifier_providers: ProviderRegistry[VerifierPort] = VERIFIER_PROVIDERS,
+        sandbox_providers: ProviderRegistry[SandboxPort] | None = None,
+        verifier_providers: ProviderRegistry[VerifierPort] | None = None,
         clock: Clock = default_clock,
+        timer: Callable[[], float] = time.monotonic,
+        dispatch_timeout_s: float | None = None,
+        run_id_source: Callable[[], str] | None = None,
+        run_records: RunRecordStore | None = None,
     ) -> None:
         self._store = store
         self._assembler = assembler if assembler is not None else ContextAssembler()
         self._policy = policy if policy is not None else OrchestrationPolicy()
-        self._sandbox_providers = sandbox_providers
-        self._verifier_providers = verifier_providers
+        # Fresh, empty registries by default: a control plane is task-agnostic — tasks register
+        # their providers through the API (`register_sandbox`/`register_verifier`), not here.
+        self._sandbox_providers = (
+            sandbox_providers if sandbox_providers is not None else ProviderRegistry("sandbox")
+        )
+        self._verifier_providers = (
+            verifier_providers if verifier_providers is not None else ProviderRegistry("verifier")
+        )
         self._clock = clock
+        self._timer = timer  # monotonic seconds, injected so RunReport timings are testable
+        # A run's identity, minted per run() — distinct from the task it executes (task != run). The
+        # default is a fresh uuid; tests inject a deterministic source.
+        self._run_id_source = run_id_source if run_id_source is not None else _default_run_id
+        # Operational metadata emitted at run end (a RunRecord pointing into the store). A pure seam
+        # with an in-memory default; the standing job server swaps the adapter (7.4.h / ADR 0003).
+        self._run_records = run_records if run_records is not None else InMemoryRunRecordStore()
+        # A backstop on the one opaque verifier handoff: a hung verifier becomes a recoverable
+        # GateUnavailable rather than blocking the cycle forever (ROADMAP 5.1). None = no backstop.
+        self._dispatch_timeout_s = dispatch_timeout_s
         self._tasks: dict[str, TaskState] = {}
+
+    # -- task registration (the configuration API; the CP stays task-agnostic) -----
+
+    @property
+    def store(self) -> SqliteStore:
+        """The durable provenance store. Exposed so a task builder can seed its root inputs (a
+        dataset version) at setup; the loop's mutations still go only through the commit path."""
+        return self._store
+
+    def register_sandbox(self, key: str, factory: Callable[[], SandboxPort]) -> None:
+        """Register a task's sandbox provider under ``key`` (named by ``TaskConfig.sandbox_key``).
+        A task is applied to a generic control plane through this API, never baked into it."""
+        self._sandbox_providers.register(key, factory)
+
+    def register_verifier(self, key: str, factory: Callable[[], VerifierPort]) -> None:
+        """Register a task's verifier provider under ``key`` (referenced by ``verifier_key``)."""
+        self._verifier_providers.register(key, factory)
 
     # -- configure-by-task --------------------------------------------------------
 
     async def configure(self, config: TaskConfig) -> None:
-        """Register a task: stamp its schema version, resolve + provision its services (§3.4)."""
+        """Register a task: stamp schema + contract versions, resolve + provision services."""
         current = self._store.current_schema_version()
         version = (current.version + 1) if current is not None else 1
         self._store.register_schema_version(
             config.schema.snapshot(version=version, created_at=self._clock())
         )
+        # Stamp the workspace-contract / orientation version too (#12, §3.4): a versioned kernel
+        # artifact recorded like the schema, not left ambient. Idempotent across tasks.
+        self._store.register_contract_version(
+            ContractVersion(
+                version=config.contract.version,
+                orientation_digest=orientation_digest(config.contract),
+                created_at=self._clock(),
+            )
+        )
         sandbox = self._sandbox_providers.create(config.sandbox_key)
         verifier = self._verifier_providers.create(config.verifier_key)
         await sandbox.provision()
-        await verifier.provision()
-        self._tasks[config.task_id] = TaskState(config=config, sandbox=sandbox, verifier=verifier)
+        # The verifier is provisioned on the RUN boundary, not here (#96): `run()` provisions it at
+        # run-start and tears it down at run-end, so an idle verifier sibling (a 4 GB container for
+        # fe-kaggle) never outlives its run on a resident task. In-process verifiers provision as a
+        # no-op, so this is uniform across verifier types.
+        state = TaskState(
+            config=config, sandbox=sandbox, verifier=verifier,
+            run_context=RunContext(tenant_id=config.tenant_id, run_id=self._run_id_source()),
+        )
+        # Bind the run-identity cell to any service that stamps it onto the work it provisions (a
+        # backend-backed sandbox/verifier labels its workers; a stub ignores it). Bound once — the
+        # cell is mutable, so advancing the cycle / re-minting the run id shows without re-binding.
+        for service in (sandbox, verifier):
+            if isinstance(service, SupportsRunContext):
+                service.bind_run_context(state.run_context)
+        self._tasks[config.task_id] = state
         log.info("task_configured", task_id=config.task_id, schema_version=version)
 
     async def teardown(self, task_id: str) -> None:
@@ -210,6 +302,30 @@ class ControlPlane:
 
     # -- proposal intake (§3.4, §7) -----------------------------------------------
 
+    def _check_shape(self, task: TaskState, envelope: ProposalEnvelope) -> ShapeError | None:
+        """Validate proposal shape at intake (§7.0, ROADMAP 5.1 #13). Returns a correction or None.
+
+        Three layers, kernel-first: (1) the payload must be a **JSON object** — a kernel guarantee
+        independent of any domain (the domain validator skips types it doesn't recognize, so without
+        this a non-object payload could slip through); (2) any **required payload keys** the
+        operation declares must be present (a per-operation payload schema, presence-only — the
+        kernel never interprets payload *semantics*); (3) the domain's own ``shape_validator``.
+        """
+        payload = envelope.artifact.payload
+        if not isinstance(payload, dict):
+            return ShapeError(
+                f"a proposal payload must be a JSON object, got {type(payload).__name__}"
+            )
+        signature = task.config.schema.operation(envelope.operation.op_name)
+        if signature is not None and signature.required_payload_keys:
+            missing = [k for k in signature.required_payload_keys if k not in payload]
+            if missing:
+                return ShapeError(
+                    f"payload for operation {signature.name!r} is missing required key(s): "
+                    f"{', '.join(missing)}"
+                )
+        return task.config.shape_validator(envelope.artifact)
+
     async def submit_proposal(
         self, task_id: str, envelope: ProposalEnvelope
     ) -> IntakeResult:
@@ -218,22 +334,53 @@ class ControlPlane:
 
         # §7.0 — a malformed proposal is corrected and records NOTHING (no harvest, no row). The
         # shape check is a presence/type filter only; if it fails the verifier is never triggered.
-        shape_error = task.config.shape_validator(envelope.artifact)
+        shape_error = self._check_shape(task, envelope)
         if shape_error is not None:
             log.info("intake_shape_error", task_id=task_id, artifact_id=envelope.artifact.id)
             return IntakeResult(entered_protocol=False, shape_error=shape_error)
 
-        # Harvest the outbox objects BEFORE the sandbox is regenerated, content-addressing each
+        # Harvest only the objects the proposal DECLARES — context discipline: an undeclared file
+        # the agent left in the outbox must never enter durable state or be provisioned next cycle.
+        # The domain declares its object names (§3.4); extras are dropped (recorded, non-fatal).
+        declared = task.config.object_namer(envelope.artifact)
+        dropped = sorted(name for name in envelope.objects if name not in declared)
+        if dropped:
+            log.warning(
+                "undeclared_outbox_objects_dropped",
+                task_id=task_id, artifact_id=envelope.artifact.id, dropped=dropped,
+            )
+        objects = {name: data for name, data in envelope.objects.items() if name in declared}
+
+        # R1 — payload-key allowlist. The payload reaches the verifier verbatim (it *is*
+        # request.proposal), so an agent could otherwise smuggle free-text self-justification past
+        # the presence-only shape check into a gate's input, defeating §10 independence the moment a
+        # gate reads payload text. Where the operation declares its payload keys, keep ONLY those —
+        # the structural mirror of the undeclared-object drop above. (An operation that declares no
+        # payload keys has no schema to enforce, so its payload is left untouched.)
+        clean_payload = envelope.artifact.payload
+        signature = task.config.schema.operation(envelope.operation.op_name)
+        if signature is not None and isinstance(clean_payload, dict):
+            allowed = set(signature.required_payload_keys) | set(signature.object_payload_keys)
+            extra = sorted(k for k in clean_payload if k not in allowed) if allowed else []
+            if extra:
+                log.warning(
+                    "undeclared_payload_keys_dropped",
+                    task_id=task_id, artifact_id=envelope.artifact.id, dropped=extra,
+                )
+                clean_payload = {k: v for k, v in clean_payload.items() if k in allowed}
+
+        # Harvest the declared objects BEFORE the sandbox is regenerated, content-addressing each
         # into the object store (§3.4). Harvest-before-teardown is the hard ordering constraint.
-        harvested = {name: self._store.put_object(data) for name, data in envelope.objects.items()}
+        harvested = {name: self._store.put_object(data) for name, data in objects.items()}
 
         # Record the object refs as a control-plane-owned **sidecar** on the artifact (§4.1, ADR
-        # 0001) — the domain payload is stored verbatim; the control plane never reaches into it.
-        artifact = (
-            replace(envelope.artifact, objects=tuple(harvested.items()))
-            if harvested
-            else envelope.artifact
-        )
+        # 0001) — the domain payload is stored verbatim (modulo the allowlist strip above); the
+        # control plane never reaches into the surviving payload values.
+        artifact = envelope.artifact
+        if clean_payload is not envelope.artifact.payload:
+            artifact = replace(artifact, payload=clean_payload)
+        if harvested:
+            artifact = replace(artifact, objects=tuple(harvested.items()))
 
         # The agent's rationale is provenance/context — stored here, NEVER sent to a gate (§10).
         if envelope.metadata:
@@ -247,14 +394,45 @@ class ControlPlane:
         refines = self._count_lineage_refines(envelope.operation)
         refine_exhausted = refines >= self._policy.refine_cap
         result = await self._run_commit(
-            task, artifact.id, envelope.objects, refine_exhausted=refine_exhausted
+            task, artifact.id, objects, refine_exhausted=refine_exhausted
         )
         # On acceptance, harvest the domain's child artifacts (e.g. one Feature per declared
         # feature, §12): each is an inspectable node, committed through its own declared gate.
         if result.outcome is CommitOutcome.ACCEPTED and task.config.harvester is not None:
-            await self._harvest_children(task, artifact)
+            try:
+                await self._harvest_children(task, artifact)
+            except Exception as exc:  # noqa: BLE001 — S3: the parent is ALREADY committed ACCEPTED.
+                # A child-harvest failure (a child gate going unavailable, a store-IO error) must
+                # not propagate out and let `run_cycle` rewrite this cycle's outcome into a failure
+                # — that would desync the store (accepted) from the RunReport (gate_error) and
+                # wrongly bump the consecutive-failure counter. Record it; keep the parent's result.
+                log.warning(
+                    "harvest_children_failed", task_id=task_id, parent_id=artifact.id,
+                    error=str(exc),
+                )
         log.info("proposal_committed", task_id=task_id, outcome=result.outcome.value)
-        return IntakeResult(entered_protocol=True, commit=result, harvested=harvested)
+        transcript_ref = self._store_transcript(envelope.transcript)
+        return IntakeResult(
+            entered_protocol=True, commit=result, harvested=harvested,
+            transcript_ref=transcript_ref,
+        )
+
+    def _store_transcript(self, transcript: bytes | None) -> ObjectRef | None:
+        """Content-address a cycle's step transcript into the object store (instrumentation).
+
+        Best-effort and never fatal: a transcript is an observation, not part of the artifact or its
+        verdict, so a store failure here must not sink an otherwise-good cycle. Returns the object
+        reference for the cycle's report, or None when there is no transcript (or the write failed).
+        Used both for a successful proposal (``envelope.transcript``) and a failed/no-proposal cycle
+        (``SandboxError.transcript`` — e.g. a recursion/budget limit-end), so failures stay legible.
+        """
+        if transcript is None:
+            return None
+        try:
+            return self._store.put_object(transcript)
+        except StoreError as exc:  # instrumentation is best-effort — degrade to no reference
+            log.warning("transcript_store_failed", error=str(exc))
+            return None
 
     async def _harvest_children(self, task: TaskState, parent: Artifact) -> None:
         """Mint the domain's harvested children from an accepted parent and gate each (§4.1, §12).
@@ -315,13 +493,25 @@ class ControlPlane:
 
         def dispatch(artifact: Artifact) -> VerdictBundle:
             declared = task.config.gated_types.resolve(artifact.type) or frozenset()
+            store_slice = resolve_declared_slice(self._store, artifact, declared)
             request = VerifierRequest(
                 proposal=artifact,
-                store_slice=resolve_declared_slice(self._store, artifact, declared),
+                store_slice=store_slice,
                 objects=bound_objects,
+                # Hand the verifier its own durably-recorded measurements for the slice, so a gate's
+                # "best prior" baseline survives a verifier restart instead of resetting to 0 (G3).
+                scores=self._recorded_scores(store_slice),
             )
             future = asyncio.run_coroutine_threadsafe(task.verifier.dispatch(request), loop)
-            return future.result()
+            try:
+                return future.result(timeout=self._dispatch_timeout_s)
+            except FuturesTimeout as exc:
+                # The verifier hung past the backstop: cancel it and surface a recoverable failure
+                # (a verdict could not be rendered this cycle), not an aborting raw timeout.
+                future.cancel()
+                raise GateUnavailable(
+                    f"verifier did not respond within {self._dispatch_timeout_s}s"
+                ) from exc
 
         return await asyncio.to_thread(
             run_commit,
@@ -334,6 +524,27 @@ class ControlPlane:
             clock=self._clock,
             refine_exhausted=refine_exhausted,
         )
+
+    def _recorded_scores(
+        self, store_slice: tuple[Artifact, ...]
+    ) -> dict[str, dict[str, float]]:
+        """The control plane's durably-recorded per-gate scores for the slice ({id: {gate: score}}).
+
+        Reconstructed from the stored :class:`Decision` rows so a gate can read its prior
+        measurements from the (durable) control plane rather than its own in-process ledger — which
+        a verifier restart mid-run would have wiped (G3). Domain-agnostic: the control plane copies
+        the gate name + score verbatim without interpreting either.
+        """
+        recorded: dict[str, dict[str, float]] = {}
+        for artifact in store_slice:
+            gate_scores = {
+                d.gate: d.score
+                for d in self._store.decisions_for(artifact.id)
+                if d.score is not None
+            }
+            if gate_scores:
+                recorded[artifact.id] = gate_scores
+        return recorded
 
     def _count_lineage_refines(self, operation: Operation) -> int:
         """How many ancestors of this (revising) proposal are ``revised`` — the refine depth (§3.4).
@@ -380,17 +591,125 @@ class ControlPlane:
         single bad cycle cannot destroy a multi-round session (§3.4; issue #21).
         """
         task = self._task(task_id)
-        await self.serve_context(task_id, goal=goal, feedback=feedback)
+        task.run_context.cycle += 1  # advance the cycle stamp so this cycle's workers are labelled
+        started = self._timer()
+        context: tuple[int, int] | None = None
+        # The whole cycle runs under a final catch-all (below): the two inner handlers classify the
+        # *expected* boundary failures (SandboxError, GateUnavailable); anything else predictable —
+        # a store-IO error harvesting objects or assembling context, a verifier handoff neither
+        # typed error covered — is still a recorded failed cycle with the workspace regenerated,
+        # never an un-recorded run abort ("a failed step is recorded, not fatal", §3.4).
         try:
-            envelope = await task.sandbox.collect_proposal()
-        except SandboxError as exc:
-            log.warning("sandbox_cycle_failed", task_id=task_id, error=str(exc))
-            await task.sandbox.regenerate()  # discard the broken workspace; next cycle starts fresh
-            return IntakeResult(entered_protocol=False, sandbox_error=str(exc))
-        result = await self.submit_proposal(task_id, envelope)
-        # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
-        await task.sandbox.regenerate()
-        return result
+            served = await self.serve_context(task_id, goal=goal, feedback=feedback)
+            context = _context_metrics(served)  # F4: served-context size + provisioned-object bytes
+            sandbox_started = self._timer()
+            try:
+                envelope = await task.sandbox.collect_proposal()
+            except SandboxError as exc:
+                sandbox_ms = (self._timer() - sandbox_started) * 1000
+                log.warning("sandbox_cycle_failed", task_id=task_id, error=str(exc))
+                # Salvage the transcript AND telemetry a failed/no-proposal cycle carries (e.g. a
+                # recursion/budget limit-end) so it stays debuggable and the report names *why* it
+                # stopped (stop_reason). Store + reference / record before discarding the workspace.
+                # Best-effort; never blocks the degrade-don't-crash path.
+                transcript_ref = self._store_transcript(getattr(exc, "transcript", None))
+                agent_telemetry = _failed_cycle_telemetry(getattr(exc, "telemetry", None))
+                await task.sandbox.regenerate()  # discard the broken workspace; next starts fresh
+                result = IntakeResult(
+                    entered_protocol=False, sandbox_error=str(exc), transcript_ref=transcript_ref,
+                )
+                self._record_cycle(task, goal, result, Timings(
+                    cycle_ms=(self._timer() - started) * 1000, sandbox_ms=sandbox_ms),
+                    agent_telemetry=agent_telemetry, context=context)
+                return result
+            sandbox_ms = (self._timer() - sandbox_started) * 1000
+            commit_started = self._timer()
+            try:
+                result = await self.submit_proposal(task_id, envelope)
+            except GateUnavailable as exc:
+                # Symmetric with the sandbox path: a gate that could not render a verdict (transient
+                # model/container failure, or a timed-out handoff) is a recoverable failed cycle,
+                # not a run abort. The proposal may already be recorded as `proposed`; it simply
+                # went un-gated this cycle. Discard the workspace and feed the reason back (5.1).
+                commit_ms = (self._timer() - commit_started) * 1000
+                log.warning("gate_cycle_failed", task_id=task_id, error=str(exc))
+                await task.sandbox.regenerate()
+                result = IntakeResult(entered_protocol=False, gate_error=str(exc))
+                self._record_cycle(task, goal, result, Timings(
+                    cycle_ms=(self._timer() - started) * 1000,
+                    sandbox_ms=sandbox_ms, commit_ms=commit_ms),
+                    agent_telemetry=envelope.agent_telemetry, context=context)
+                return result
+            commit_ms = (self._timer() - commit_started) * 1000
+            # Harvest already happened in submit_proposal; now the ephemeral workspace is discarded.
+            await task.sandbox.regenerate()
+            self._record_cycle(
+                task, goal, result,
+                Timings(cycle_ms=(self._timer() - started) * 1000,
+                        sandbox_ms=sandbox_ms, commit_ms=commit_ms),
+                agent_telemetry=envelope.agent_telemetry, context=context,
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001 — degrade-don't-crash: an unexpected boundary
+            # failure (e.g. a raw store-IO error) is a recorded failed cycle, not a run abort. It
+            # rides the `sandbox_error` field so the run loop's failure check + consecutive-failure
+            # cap still bound a persistently-failing boundary (it cannot spin forever).
+            log.warning("cycle_failed", task_id=task_id, error=str(exc))
+            try:
+                await task.sandbox.regenerate()
+            except Exception as regen_exc:  # noqa: BLE001 — cleanup is best-effort
+                log.warning("regenerate_after_cycle_failure_failed", task_id=task_id,
+                            error=str(regen_exc))
+            result = IntakeResult(entered_protocol=False, sandbox_error=f"cycle failed: {exc}")
+            self._record_cycle(
+                task, goal, result,
+                Timings(cycle_ms=(self._timer() - started) * 1000), context=context)
+            return result
+
+    def _record_cycle(
+        self, task: TaskState, goal: str, result: IntakeResult, timings: Timings,
+        *, agent_telemetry: Mapping[str, object] | None = None,
+        context: tuple[int, int] | None = None,
+    ) -> None:
+        """Append this cycle's raw facts to the task's history (the RunReport's input, 5.3a/b).
+
+        ``context`` is the (served-context chars, provisioned-object bytes) pair for the cycle (F4),
+        or ``None`` when the cycle never reached context assembly.
+
+        A FAILED cycle (sandbox / gate / shape — anything that minted no gated artifact) is also
+        recorded durably in the store (#32): the artifact tables deliberately carry nothing for it
+        (§7.0), so the `cycle_failures` row is its only restart-surviving trace — what the
+        served-context digest reads so the agent's failure history includes timeouts, not just
+        rejects. Best-effort, like the transcript store: a failed insert never masks the cycle.
+        """
+        failure_kind, failure_detail = _failure_of(result)
+        if failure_kind is not None and failure_detail is not None:
+            try:
+                self._store.record_cycle_failure(
+                    kind=failure_kind, detail=failure_detail,
+                    transcript_ref=(
+                        result.transcript_ref.content_hash
+                        if result.transcript_ref is not None else None
+                    ),
+                )
+            except StoreError as exc:
+                log.warning("cycle_failure_record_failed", error=str(exc))
+        served_chars, provisioned_bytes = context if context is not None else (None, None)
+        task.history.append(CycleInput(
+            goal=goal,
+            entered_protocol=result.entered_protocol,
+            shape_error=result.shape_error.message if result.shape_error is not None else None,
+            sandbox_error=result.sandbox_error,
+            gate_error=result.gate_error,
+            commit=result.commit,
+            timings=timings,
+            agent_telemetry=agent_telemetry,
+            served_context_chars=served_chars,
+            provisioned_object_bytes=provisioned_bytes,
+            transcript_ref=(
+                result.transcript_ref.content_hash if result.transcript_ref is not None else None
+            ),
+        ))
 
     async def run(self, task_id: str, *, goal: str) -> list[IntakeResult]:
         """Drive cycles until the orchestration policy stops the run (§3.4).
@@ -398,37 +717,103 @@ class ControlPlane:
         The correction from each cycle (a shape-error or refine defects) is fed back into the next
         cycle's served context, so the agent can fix or revise (§3.5).
         """
+        task = self._task(task_id)
+        # A run is one execution of a task (task != run): mint a fresh run id and reset the cycle
+        # stamp, so this run's workers + RunRecord are identified distinctly from any prior run.
+        task.run_context.run_id = self._run_id_source()
+        task.run_context.cycle = 0
         results: list[IntakeResult] = []
         feedback = ""
         cycles = 0
         consecutive_failures = 0
-        while self._policy.should_continue(cycles_run=cycles):
-            result = await self.run_cycle(task_id, goal=goal, feedback=feedback)
-            results.append(result)
-            cycles += 1
-            if result.sandbox_error is not None:
-                # A failed cycle: bound runaway failure, else feed the reason back and continue.
-                consecutive_failures += 1
-                cap = self._policy.max_consecutive_sandbox_failures
-                if cap and consecutive_failures >= cap:
-                    log.error("run_aborted_sandbox_failures", task_id=task_id, failures=cap)
-                    raise OrchestrationError(
-                        f"aborting run after {consecutive_failures} consecutive sandbox failures "
-                        f"(last: {result.sandbox_error})"
-                    )
-            else:
-                consecutive_failures = 0
-                if (
-                    self._policy.stop_on_accept
-                    and result.commit is not None
-                    and result.commit.status is ArtifactStatus.ACCEPTED
-                ):
-                    break
-            feedback = _feedback_from(result)
-        log.info("run_complete", task_id=task_id, cycles=cycles)
-        return results
+        # Run-scoped verifier lifecycle (#96): provision at run-start, tear down in `finally` at
+        # run-end (even on abort/exception) so an idle verifier sibling never outlives its run.
+        # `provision` is inside the `try` so a partially-launched verifier is still reaped; both
+        # `provision` and `teardown` are no-ops for in-process verifiers.
+        try:
+            await task.verifier.provision()
+            while self._policy.should_continue(cycles_run=cycles):
+                result = await self.run_cycle(task_id, goal=goal, feedback=feedback)
+                results.append(result)
+                cycles += 1
+                failure = result.sandbox_error or result.gate_error
+                if failure is not None:
+                    # A failed cycle (sandbox could not propose, or the gate was unavailable): bound
+                    # runaway failure, else feed the reason back and continue.
+                    consecutive_failures += 1
+                    cap = self._policy.max_consecutive_sandbox_failures
+                    if cap and consecutive_failures >= cap:
+                        log.error(
+                            "run_aborted_consecutive_failures", task_id=task_id, failures=cap
+                        )
+                        self._record_run(task_id, status="aborted")
+                        raise OrchestrationError(
+                            f"aborting run after {consecutive_failures} consecutive failed cycles "
+                            f"(last: {failure})"
+                        )
+                else:
+                    consecutive_failures = 0
+                    if (
+                        self._policy.stop_on_accept
+                        and result.commit is not None
+                        and result.commit.status is ArtifactStatus.ACCEPTED
+                    ):
+                        break
+                feedback = _feedback_from(result)
+            record = self._record_run(task_id, status="complete")
+            log.info(
+                "run_complete", task_id=task_id, tenant_id=task.config.tenant_id,
+                run_id=record.run_id, cycles=cycles,
+            )
+            return results
+        finally:
+            # Best-effort: a teardown failure must never mask the run's outcome (it is already
+            # idempotent + suppresses its own transport/destroy errors).
+            try:
+                await task.verifier.teardown()
+            except Exception as exc:  # noqa: BLE001 - degrade-don't-crash on cleanup
+                log.warning("verifier_teardown_failed", task_id=task_id, error=str(exc))
+
+    def _record_run(self, task_id: str, *, status: str) -> RunRecord:
+        """Build the run's operational metadata from the store-derived report and persist it.
+
+        The `RunRecord` references the typed-provenance store (accepted ids point back at the system
+        of record); it is never a copy. Keyed by ``(tenant_id, run_id)`` — task : run is 1 : many.
+        Workers are reaped out of band by ``verity-reaper`` against the labels this run stamped, so
+        the control plane stays provisioning-agnostic and never touches a backend.
+        """
+        task = self._task(task_id)
+        record = RunRecord.from_report(
+            self.run_report(task_id), run_id=task.run_context.run_id, status=status
+        )
+        self._run_records.put(record)
+        return record
+
+    def run_records(self) -> RunRecordStore:
+        """The run-results read side — operational metadata for finished runs (7.4.h)."""
+        return self._run_records
 
     # -- extraction (§3.4) --------------------------------------------------------
+
+    def run_report(self, task_id: str) -> RunReport:
+        """A generic, machine-readable projection of a task's run so far (ROADMAP 5.3a).
+
+        Built from the recorded per-cycle facts + the store's lifecycle queries; it assumes nothing
+        about the verifier or domain (decisions are projected verbatim, ``score`` nullable). The
+        control plane *emits* it; parsing it is the receiving service's job.
+        """
+        task = self._task(task_id)
+        policy = {
+            "max_cycles": self._policy.max_cycles,
+            "refine_cap": self._policy.refine_cap,
+            "stop_on_accept": self._policy.stop_on_accept,
+            "max_consecutive_sandbox_failures": self._policy.max_consecutive_sandbox_failures,
+        }
+        return build_run_report(
+            task.history, self._store, task_id=task_id, policy=policy,
+            generated_at=self._clock(), rationale=task.rationale,
+            tenant_id=task.config.tenant_id,
+        )
 
     def accepted_artifacts(self, *, type: str | None = None) -> list[Artifact]:
         return self._store.query_artifacts(type=type, status=ArtifactStatus.ACCEPTED)
@@ -454,6 +839,51 @@ class ControlPlane:
         return None
 
 
+def _context_metrics(served: ServedContext) -> tuple[int, int]:
+    """The (served-context chars, provisioned-object bytes) pair for a cycle (exp-design F4).
+
+    The size of what the agent was actually served (system prompt + volatile tail + feedback) and
+    the total bytes of durable objects materialized into its workspace — the direct evidence for the
+    context-hygiene claim (curated conditions stay bounded; accumulating ones balloon).
+    """
+    served_chars = len(served.system_prompt) + len(served.tail) + len(served.feedback)
+    provisioned_bytes = sum(
+        len(blob) for files in served.workspace_objects.values() for blob in files.values()
+    )
+    return served_chars, provisioned_bytes
+
+
+def _failed_cycle_telemetry(raw: bytes | None) -> dict[str, object] | None:
+    """Parse the ``__telemetry__.json`` bytes a failed cycle carries on its ``SandboxError``.
+
+    The dict (incl. ``stop_reason``) is recorded on the cycle so a no-proposal limit-end names *why*
+    it stopped. Best-effort and advisory: malformed/empty telemetry degrades to ``None``.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        log.warning("failed_cycle_telemetry_unparseable", error=str(exc))
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _failure_of(result: IntakeResult) -> tuple[str | None, str | None]:
+    """Classify a cycle result as a durable failure ``(kind, detail)``, or ``(None, None)``.
+
+    Kinds mirror the feedback channel's classification; the detail is the same text the
+    next-cycle correction carries, so the digest and the correction never tell different stories.
+    """
+    if result.sandbox_error is not None:
+        return "sandbox-error", result.sandbox_error
+    if result.gate_error is not None:
+        return "gate-error", result.gate_error
+    if result.shape_error is not None:
+        return "shape-error", result.shape_error.message
+    return None, None
+
+
 def _feedback_from(result: IntakeResult) -> str:
     """Render the cycle's correction for the next served context (§3.5, widened — issue #21).
 
@@ -464,8 +894,13 @@ def _feedback_from(result: IntakeResult) -> str:
     """
     if result.sandbox_error is not None:
         return (
-            f"sandbox-error: your previous attempt did not produce a valid submission "
+            f"sandbox-error: the previous attempt did not produce a valid submission "
             f"({result.sandbox_error}); produce exactly one complete proposal within the budget"
+        )
+    if result.gate_error is not None:
+        return (
+            f"gate-unavailable: the verifier could not evaluate the last proposal "
+            f"({result.gate_error}) — this was not a rejection; submit the proposal again"
         )
     if not result.entered_protocol and result.shape_error is not None:
         return f"shape-error: {result.shape_error.message}"

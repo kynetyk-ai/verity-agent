@@ -28,7 +28,7 @@ from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import SqliteStore
-from verity.domains.code import DATASET, ENTRYPOINT, SUBMISSION, build_code_domain
+from verity.domains.code import DATASET, ENTRYPOINT, SUBMISSION, build_code_domain, declared_objects
 from verity.domains.fake import NOTE, build_fake_verifier
 from verity.verifier import FakeCodeRunner, RunResult
 
@@ -91,7 +91,8 @@ def _run_code_submission(tmp_path: Path, code: bytes) -> str:
     config = TaskConfig(
         task_id="t1", instructions="submit", domain_instructions="entrypoint script",
         schema=domain.schema, gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key="stub", verifier_key="stub",
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
+        sandbox_key="stub", verifier_key="stub",
     )
     asyncio.run(cp.configure(config))
     result = asyncio.run(cp.run_cycle("t1", goal="submit a feature"))

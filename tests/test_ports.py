@@ -75,12 +75,20 @@ def test_provider_registry_rejects_duplicate_registration() -> None:
 
 
 def test_dispatch_excludes_rationale_by_construction() -> None:
-    # A VerifierRequest carries only the proposal, the declared slice, and objects — no field
-    # (and no gate name) through which the proposer's rationale could reach the verifier (§10).
+    # A VerifierRequest carries only the proposal, the declared slice, objects, and the control
+    # plane's recorded per-gate *scores* — no field (and no gate name) through which the proposer's
+    # rationale could reach the verifier (§10). ``scores`` is numeric measurements, not rationale.
     request = VerifierRequest(proposal=_artifact("n1"))
     field_names = {f.name for f in dataclasses.fields(request)}
-    assert field_names == {"proposal", "store_slice", "objects"}
+    assert field_names == {"proposal", "store_slice", "objects", "scores"}
     assert "rationale" not in field_names
+    # The scores channel carries only {artifact_id: {gate: float}} — never proposer text.
+    populated = VerifierRequest(proposal=_artifact("n1"), scores={"n0": {"selection": 0.91}})
+    assert all(
+        isinstance(v, float)
+        for gates in populated.scores.values()
+        for v in gates.values()
+    )
 
 
 def test_async_dispatch_and_lifecycle_round_trip() -> None:

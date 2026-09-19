@@ -19,6 +19,7 @@ pipeline itself lives in :func:`build_fake_verifier` (the opaque verifier packag
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from verity.contracts import JSONValue, VerifierRequest
 from verity.control_plane.commit import ShapeError, ShapeValidator
@@ -32,6 +33,9 @@ from verity.control_plane.registries import (
 from verity.control_plane.store import Artifact
 from verity.verifier import CheckOutcome, GateStep, SdkVerifier, deterministic_check
 
+if TYPE_CHECKING:
+    from verity.verifier.registry import VerifierRegistry
+
 __all__ = [
     "SOURCE",
     "NOTE",
@@ -40,7 +44,11 @@ __all__ = [
     "FakeDomain",
     "build_fake_domain",
     "build_fake_verifier",
+    "register_verifier",
+    "declared_objects",
 ]
+
+FAKE_VERIFIER_NAME = "fake"
 
 SOURCE = "Source"
 NOTE = "Note"
@@ -98,6 +106,11 @@ def build_fake_verifier() -> SdkVerifier:
     )
 
 
+def register_verifier(registry: VerifierRegistry) -> None:
+    """Register the dataless ``fake`` verifier (a ``verity.verifier_types`` entry point)."""
+    registry.register_impl(FAKE_VERIFIER_NAME, build_fake_verifier)
+
+
 def _validate_shape(artifact: Artifact) -> ShapeError | None:
     """A ``Note`` must be a dict carrying a ``text`` field (the proposal-shape spec, §7.0)."""
     if artifact.type != NOTE:
@@ -106,6 +119,21 @@ def _validate_shape(artifact: Artifact) -> ShapeError | None:
     if not isinstance(payload, dict) or "text" not in payload:
         return ShapeError("a Note payload must be an object with a 'text' field")
     return None
+
+
+def declared_objects(artifact: Artifact) -> frozenset[str]:
+    """A proposal's declared object names — read from an optional payload ``objects`` list.
+
+    The generic test-double analogue of a real domain's declaration: the control plane harvests only
+    these from the outbox. A proposal with no ``objects`` list declares none.
+    """
+    payload = artifact.payload
+    if not isinstance(payload, dict):
+        return frozenset()
+    names = payload.get("objects")
+    if not isinstance(names, list):
+        return frozenset()
+    return frozenset(name for name in names if isinstance(name, str))
 
 
 def _markers(request: VerifierRequest) -> dict[str, JSONValue]:

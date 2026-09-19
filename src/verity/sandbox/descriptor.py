@@ -20,10 +20,25 @@ from dataclasses import dataclass
 from verity.contracts import JSONValue
 from verity.sandbox.errors import SandboxError
 
-__all__ = ["RESERVED_PROPOSAL_NAME", "ProposalDescriptor"]
+__all__ = [
+    "RESERVED_PROPOSAL_NAME",
+    "RESERVED_TELEMETRY_NAME",
+    "RESERVED_TRANSCRIPT_NAME",
+    "ProposalDescriptor",
+]
 
 # The reserved outbox filename the propose tool writes; filtered out of the harvested object set.
 RESERVED_PROPOSAL_NAME = "__proposal__.json"
+
+# The reserved outbox filename the agent loop writes its telemetry to (tokens / steps / model);
+# harvested + split out like the proposal descriptor, so it never becomes an object attachment.
+RESERVED_TELEMETRY_NAME = "__telemetry__.json"
+
+# The reserved outbox filename the agent loop writes its rendered step transcript to, EVERY cycle
+# (not just on a no-proposal failure). Harvested + split out like the telemetry, content-addressed
+# into the object store, and referenced from the cycle's report — the step-level record the
+# experiments read back (experimental instrumentation). Best-effort: never fails a cycle.
+RESERVED_TRANSCRIPT_NAME = "__transcript__.json"
 
 
 @dataclass(frozen=True, slots=True)

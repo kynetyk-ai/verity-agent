@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import shutil
 import subprocess
 import tempfile
@@ -29,7 +28,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from verity.contracts import GateUnavailable
+from verity.contracts.run_context import RunContext
 from verity.logging import get_logger
+from verity.proc import communicate_capped
+from verity.provisioning.backend import (
+    WORKER_GID,
+    WORKER_UID,
+    Labels,
+    ProvisioningError,
+    ResourceLimits,
+    Tmpfs,
+    WorkerBackend,
+    WorkerSpec,
+)
 
 __all__ = [
     "RunRequest",
@@ -38,6 +50,7 @@ __all__ = [
     "CodeRunner",
     "FakeCodeRunner",
     "ContainerCodeRunner",
+    "BackendCodeRunner",
     "docker_available",
 ]
 
@@ -152,6 +165,10 @@ class ContainerCodeRunner:
             for input_name, blob in request.inputs.items():
                 (data_dir / input_name).write_bytes(blob)
             out_dir.chmod(0o777)  # the non-root container user must be able to write here
+            # ...and traverse/read the :ro input mounts regardless of the launcher's umask (the
+            # worker's fixed non-root uid differs from this dir's creator).
+            code_dir.chmod(0o755)
+            data_dir.chmod(0o755)
 
             cmd = self._docker_cmd(name, code_dir, data_dir, out_dir, request)
             result = await self._run_container(cmd, name, request.timeout_s)
@@ -192,11 +209,15 @@ class ContainerCodeRunner:
             f"--memory={self.memory}", f"--memory-swap={self.memory}",
             f"--cpus={self.cpus}", f"--pids-limit={self.pids_limit}",
             "--cap-drop=ALL", "--security-opt=no-new-privileges",
-            f"--user={os.getuid()}:{os.getgid()}",
+            f"--user={WORKER_UID}:{WORKER_GID}",  # fixed unprivileged uid, NOT the root launcher's
             "-v", f"{code_dir}:/work:ro",
             "-v", f"{data_dir}:/data:ro",
             "-v", f"{out_dir}:/out:rw",
-            "-w", "/work",
+            # CWD is the writable (ephemeral, tmpfs) /tmp, NOT the read-only /work mount: libraries
+            # that scribble scratch relative to the CWD (CatBoost's `catboost_info/`, matplotlib,
+            # joblib memmaps) then just work. The script is still run by absolute path and reads
+            # /data / writes /out by absolute path, so the CWD does not affect its real I/O.
+            "-w", "/tmp",
             "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HOME=/tmp",
         ]
         for key, value in request.env.items():
@@ -219,15 +240,24 @@ class ContainerCodeRunner:
         return ["sh", "-c", install]
 
     async def _run_container(self, cmd: list[str], name: str, timeout_s: float) -> RunResult:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError as exc:
+            # A missing/unreachable docker binary means the gate cannot run the code at all — that
+            # is infrastructure, not a verdict. Surface it as a recoverable GateUnavailable (5.1) so
+            # the control plane degrades the cycle instead of aborting on a raw OSError.
+            raise GateUnavailable(
+                f"could not launch the code runner ({self.docker_bin}): {exc}"
+            ) from exc
+        try:
+            # Capped capture (V3): a runaway submission can't OOM the host via an unbounded pipe.
+            out, err = await asyncio.wait_for(communicate_capped(proc), timeout=timeout_s)
         except TimeoutError:
             await self._kill(name)
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                await asyncio.wait_for(communicate_capped(proc), timeout=5.0)
             return RunResult(exit_code=-1, stdout="", stderr="", timed_out=True)
         return RunResult(
             exit_code=proc.returncode if proc.returncode is not None else -1,
@@ -242,6 +272,99 @@ class ContainerCodeRunner:
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(killer.wait(), timeout=10.0)
+
+
+@dataclass(slots=True)
+class BackendCodeRunner:
+    """A :class:`CodeRunner` that runs the submitted code as an isolated **worker** via a
+    `WorkerBackend` (ROADMAP 7.4.d / ADR 0003) — the clean resolution of the dropped in-process
+    subprocess idea: untrusted code runs in a launched, labelled, isolated worker (a fresh container
+    on Docker; a Pod on k8s later), while the gate logic stays trusted in-process.
+
+    Maps the bytes-in/out `RunRequest` onto a `WorkerSpec`: the submission + ``requirements.txt`` +
+    datasets are physically-ro inputs, ``/out`` is the writable output dir, the declared output file
+    is harvested. With ``requirements`` it pip-installs into an exec tmpfs first (needs
+    ``network=True``, set by the gate). Only ``request.inputs`` reach the worker — a gate's private
+    answer key (e.g. the FE reserved labels) never does, by construction.
+
+    The control plane binds a `RunContext` (7.4.h, via the verifier that holds this runner), so each
+    code-runner worker is **labelled** with its ``tenant``/``run``/``cycle`` for audit + reaping.
+    """
+
+    backend: WorkerBackend
+    image: str = "python:3.12-slim"
+    memory: str = "512m"
+    cpus: str = "1"
+    pids_limit: int = 128
+    tmpfs_size: str = "64m"
+    runtime: str | None = None
+    config: str = ""
+    run_context: RunContext | None = None
+
+    def bind_run_context(self, ctx: RunContext) -> None:
+        """Take the run-identity cell the verifier forwards; we stamp it onto every worker."""
+        self.run_context = ctx
+
+    def _labels(self) -> Labels:
+        ctx = self.run_context
+        if ctx is None:
+            return Labels(role="code-runner", config=self.config)
+        return Labels(
+            role="code-runner", config=self.config,
+            tenant=ctx.tenant_id, run=ctx.run_id, cycle=str(ctx.cycle),
+        )
+
+    async def run(self, request: RunRequest, /) -> RunResult:
+        spec = self._worker_spec(request)
+        try:
+            result = await self.backend.run_to_completion(spec)
+        except ProvisioningError as exc:
+            # the worker could not be launched — infrastructure, not a verdict: a recoverable gate.
+            raise GateUnavailable(f"could not run the submitted code: {exc}") from exc
+        output = result.outputs.get(f"/out/{request.output_name}")
+        log.info(
+            "backend_code_run",
+            entrypoint=request.entrypoint, exit_code=result.exit_code,
+            timed_out=result.timed_out, produced_output=output is not None,
+        )
+        return RunResult(
+            exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr,
+            output=output, timed_out=result.timed_out,
+        )
+
+    def _worker_spec(self, request: RunRequest) -> WorkerSpec:
+        with_deps = request.requirements is not None
+        readonly: dict[str, bytes] = {f"/work/{request.entrypoint}": request.code}
+        if request.requirements is not None:
+            readonly[f"/work/{_REQUIREMENTS_NAME}"] = request.requirements
+        for name, blob in request.inputs.items():
+            readonly[f"/data/{name}"] = blob
+        if with_deps:
+            command: tuple[str, ...] = (
+                "sh", "-c",
+                f"pip install --no-cache-dir --target=/tmp/site -r /work/{_REQUIREMENTS_NAME} "
+                f"&& PYTHONPATH=/tmp/site python /work/{request.entrypoint}",
+            )
+        else:
+            command = ("python", f"/work/{request.entrypoint}")
+        return WorkerSpec(
+            image=self.image,
+            command=command,
+            labels=self._labels(),
+            readonly_inputs=readonly,
+            writable_dirs=("/out",),
+            output_globs=(f"/out/{request.output_name}",),
+            network=request.network,
+            env=dict(request.env),
+            limits=ResourceLimits(memory=self.memory, cpus=self.cpus, pids=self.pids_limit),
+            scratch=Tmpfs(size=self.tmpfs_size, allow_exec=with_deps),
+            # CWD is the writable tmpfs (/tmp), NOT the read-only /work mount, so libraries that
+            # write scratch relative to the CWD (CatBoost's `catboost_info/`, matplotlib, joblib)
+            # work. The script runs by absolute path and uses /data / /out, so CWD is irrelevant.
+            workdir="/tmp",
+            runtime=self.runtime,
+            timeout_s=request.timeout_s,
+        )
 
 
 def docker_available(docker_bin: str = "docker") -> bool:

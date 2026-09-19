@@ -23,13 +23,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from verity.contracts.model import Artifact, Operation, VerdictBundle
 from verity.logging import get_logger
 
 __all__ = [
     "ServiceLifecycle",
+    "VerifierSetup",
     "VerifierRequest",
     "VerifierPort",
     "ProposalEnvelope",
@@ -68,6 +69,22 @@ class ServiceLifecycle(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class VerifierSetup:
+    """Per-task data + knobs shipped to a **remote** verifier before its first dispatch.
+
+    The seam that lets a data-bearing verifier (e.g. feature-engineering's split CSVs) run in its
+    own image: the control plane ships the per-task inputs once, at provisioning, and the verifier
+    service builds its gate stack from them server-side. Deliberately **generic** — ``objects`` are
+    named byte blobs, ``params`` are JSON-serializable knobs — so the wire stays domain-agnostic
+    (the control plane treats both as opaque; only the verifier image interprets them). Carries no
+    rationale field (segregation is structural, §10), exactly like :class:`VerifierRequest`.
+    """
+
+    objects: Mapping[str, bytes] = field(default_factory=dict)
+    params: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class VerifierRequest:
     """The whole proposal, handed to the opaque verifier in **one** call (ADR 0001, amends §3.6).
 
@@ -76,11 +93,19 @@ class VerifierRequest:
     rejected-log, …); it is a tuple of :class:`Artifact`, which has no rationale field, so the
     proposer's reasoning cannot ride along (§10). ``objects`` are the harvested attachments a check
     may need to *execute* (e.g. submitted code), keyed by name (§3.4).
+
+    ``scores`` carries the control-plane's **durably recorded** per-gate measurements for the
+    artifacts in ``store_slice`` (``{artifact_id: {gate: score}}``), reconstructed from the stored
+    :class:`Decision` rows. A gate that derives a "best prior" baseline (e.g. feature-engineering's
+    selection rung) reads it instead of relying on its own in-process ledger, so the baseline
+    survives a verifier restart mid-run (the durable state stays in the control plane). It carries
+    *measurements*, never rationale, so §10 segregation is unaffected.
     """
 
     proposal: Artifact
     store_slice: tuple[Artifact, ...] = ()
     objects: Mapping[str, bytes] = field(default_factory=dict)
+    scores: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -135,12 +160,20 @@ class ProposalEnvelope:
     ``metadata`` is the agent's how/why summary — stored as provenance/context, and **kept off**
     the :class:`VerifierRequest` (the rationale channel, decision recorded for this engagement).
     ``objects`` are what the agent wrote to the outbox, harvested before teardown (§3.4).
+    ``agent_telemetry`` is the loop's optional usage record (tokens / steps / model, ROADMAP 5.3b),
+    carried for the RunReport — ``None`` when the harness emits none. ``transcript`` is the loop's
+    optional rendered step transcript (JSON bytes), carried for the same instrumentation path: the
+    control plane content-addresses it into the object store and references it from the cycle's
+    report (``None`` when the harness emits none). Like ``metadata``/``agent_telemetry`` it is
+    provenance/instrumentation — never part of a :class:`VerifierRequest`.
     """
 
     artifact: Artifact
     operation: Operation
     metadata: str = ""
     objects: Mapping[str, bytes] = field(default_factory=dict)
+    agent_telemetry: Mapping[str, object] | None = None
+    transcript: bytes | None = None
 
 
 @runtime_checkable

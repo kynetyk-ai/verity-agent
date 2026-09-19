@@ -33,7 +33,14 @@ from verity.control_plane.store import (
     SqliteStore,
     VerdictKind,
 )
-from verity.domains.fake import NOTE, ORPHAN, SOURCE, build_fake_domain, build_fake_verifier
+from verity.domains.fake import (
+    NOTE,
+    ORPHAN,
+    SOURCE,
+    build_fake_domain,
+    build_fake_verifier,
+    declared_objects,
+)
 from verity.verifier import SdkVerifier
 
 # --------------------------------------------------------------------------- helpers
@@ -48,6 +55,7 @@ def _config(domain) -> TaskConfig:
         gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=declared_objects,
         sandbox_key="stub",
         verifier_key="stub",
     )
@@ -65,6 +73,8 @@ def _env(
 ) -> ProposalEnvelope:
     if payload is None:
         payload = {"text": "hi"} if artifact_type == NOTE else {"x": 1}
+    if objects:  # a well-formed proposal declares its objects so the harvest keeps them
+        payload = {**payload, "objects": sorted(objects)}
     artifact = Artifact(artifact_id, artifact_type, payload, ArtifactStatus.PROPOSED, "agent", "")
     op = Operation(f"op-{artifact_id}", op_name, parents, artifact_id, OperationStatus.SUCCESS, "")
     return ProposalEnvelope(

@@ -19,6 +19,7 @@ context the control plane assembled — nothing task-specific is hardcoded here.
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from collections.abc import Callable, Mapping
@@ -31,7 +32,9 @@ from verity.contracts import (
     Operation,
     OperationStatus,
     ProposalEnvelope,
+    RunContext,
     ServedContext,
+    SupportsRunContext,
 )
 from verity.control_plane.registries import SchemaRegistry
 from verity.control_plane.workspace import (
@@ -40,13 +43,55 @@ from verity.control_plane.workspace import (
     WorkspaceLayout,
 )
 from verity.logging import get_logger
-from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME, ProposalDescriptor
+from verity.sandbox.descriptor import (
+    RESERVED_PROPOSAL_NAME,
+    RESERVED_TELEMETRY_NAME,
+    RESERVED_TRANSCRIPT_NAME,
+    ProposalDescriptor,
+)
 from verity.sandbox.driver import SandboxDriver
 from verity.sandbox.errors import SandboxError
 
-__all__ = ["AgentSandbox"]
+__all__ = ["AgentSandbox", "SPEC_SCHEMA_NAME", "render_output_schema_json"]
 
 log = get_logger("verity.sandbox.core")
+
+#: The file the agent finds under ``/work/spec/`` — the proposal/output contract the kernel
+#: orientation promises ("the required output schema for the proposal lives under spec/").
+SPEC_SCHEMA_NAME = "output-schema.json"
+
+
+def render_output_schema_json(schema: SchemaRegistry) -> bytes:
+    """Render the task's proposal/output contract as JSON, **from the kernel's type + operation
+    registry** — the same source the propose tools are built from — so ``spec/`` honestly carries
+    the schema the orientation promises. Accurate by construction (no hand-written field names):
+    every type/operation/payload-key is read straight from the registry.
+    """
+    doc = {
+        "$comment": (
+            "The proposal/output contract for this task. Propose by calling exactly one operation "
+            "tool with `parents` (ids of artifacts whose type appears in that operation's "
+            "`inputs`) and a `payload` JSON object. Every key in an operation's "
+            "`object_payload_keys` names a file that must be written to /work/outbox/ before the "
+            "call (the propose tool "
+            "rejects the call if a declared object file is missing). The control plane reads only "
+            "the meta-schema (names/signatures); it never interprets payload values."
+        ),
+        "artifact_types": [
+            {"name": t.name, "is_root": t.is_root} for t in schema.types()
+        ],
+        "operations": [
+            {
+                "name": op.name,
+                "inputs": list(op.inputs),
+                "output": op.output,
+                "required_payload_keys": list(op.required_payload_keys),
+                "object_payload_keys": list(op.object_payload_keys),
+            }
+            for op in schema.operations()
+        ],
+    }
+    return json.dumps(doc, indent=2).encode("utf-8")
 
 
 def _default_id() -> str:
@@ -55,6 +100,25 @@ def _default_id() -> str:
 
 def _default_clock() -> str:
     return ""
+
+
+def _parse_telemetry(raw: bytes | None) -> dict[str, object] | None:
+    """Parse the advisory ``__telemetry__.json`` (5.3b); degrade to ``None`` on any decode error.
+
+    Telemetry is observability, not the proposal — a malformed or non-object telemetry file must
+    never fail an otherwise-valid cycle (ROADMAP 5.1), so it is dropped with a warning, not raised.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        log.warning("telemetry_unparseable", error=str(exc))
+        return None
+    if not isinstance(parsed, dict):
+        log.warning("telemetry_not_an_object", got=type(parsed).__name__)
+        return None
+    return parsed
 
 
 @dataclass
@@ -80,14 +144,30 @@ class AgentSandbox:
 
     # -- lifecycle ----------------------------------------------------------------
 
+    def bind_run_context(self, ctx: RunContext) -> None:
+        """Forward the control plane's run-identity cell to the driver, if it stamps it (a
+        backend-backed driver labels its workers; an in-process driver ignores this)."""
+        if isinstance(self.driver, SupportsRunContext):
+            self.driver.bind_run_context(ctx)
+
     async def provision(self) -> None:
-        self._workspace = self.layout.provision(self.root, dict(self.static_contents))
+        self._workspace = self.layout.provision(self.root, self._provision_contents())
 
     async def regenerate(self) -> None:
         # Discard the writable workspace and re-provision empty — one ephemerality event (§3.5).
         if self.root.exists():
             shutil.rmtree(self.root)
-        self._workspace = self.layout.provision(self.root, dict(self.static_contents))
+        self._workspace = self.layout.provision(self.root, self._provision_contents())
+
+    def _provision_contents(self) -> dict[str, dict[str, bytes]]:
+        """The static contents to provision, with the generated output-schema added to ``spec/`` so
+        the orientation's "schema lives under spec/" is true (§3.4). A task that supplies its own
+        ``spec/`` schema file wins (``setdefault``); otherwise it gets the registry-rendered one."""
+        contents = {role: dict(named) for role, named in self.static_contents.items()}
+        spec = dict(contents.get("spec", {}))
+        spec.setdefault(SPEC_SCHEMA_NAME, render_output_schema_json(self.schema))
+        contents["spec"] = spec
+        return contents
 
     async def teardown(self) -> None:
         if self.root.exists():
@@ -131,22 +211,56 @@ class AgentSandbox:
             raise SandboxError("collect_proposal called before serve_context")
         workspace = self._require_workspace()
 
-        await self.driver.run(
-            system_prompt=served.system_prompt,
-            user_message=self._user_message(served),
-            operations=self.schema.operations(),
-            workspace=workspace,
-        )
+        try:
+            await self.driver.run(
+                system_prompt=served.system_prompt,
+                user_message=self._user_message(served),
+                operations=self.schema.operations(),
+                workspace=workspace,
+            )
+        except SandboxError as exc:
+            # The driver failed (e.g. a HARD wall-clock timeout that SIGKILLs the worker mid-run).
+            # The workspace is bind-mounted, so the incrementally-written transcript/telemetry
+            # survive on the host even though the worker never exited cleanly — salvage them onto
+            # the error so even a timeout stays debuggable (F4). Best-effort; never mask it.
+            if exc.transcript is None or exc.telemetry is None:
+                try:
+                    salvaged = self.layout.harvest(workspace)
+                except OSError:
+                    salvaged = {}
+                exc.transcript = exc.transcript or salvaged.get(RESERVED_TRANSCRIPT_NAME)
+                exc.telemetry = exc.telemetry or salvaged.get(RESERVED_TELEMETRY_NAME)
+            raise
 
-        harvested = self.layout.harvest(workspace)
+        try:
+            harvested = self.layout.harvest(workspace)
+        except OSError as exc:
+            # An outbox I/O error is a failed cycle, not a crash: type it so the control plane's
+            # degrade-don't-crash path catches it like any other sandbox failure (ROADMAP 5.1).
+            raise SandboxError(f"could not harvest the outbox: {exc}") from exc
         descriptor_bytes = harvested.pop(RESERVED_PROPOSAL_NAME, None)
+        telemetry_bytes = harvested.pop(RESERVED_TELEMETRY_NAME, None)
+        # The step transcript is split out like the telemetry (so it never becomes a domain object);
+        # carried on the envelope for the control plane to content-address + reference (instrument).
+        transcript_bytes = harvested.pop(RESERVED_TRANSCRIPT_NAME, None)
         if descriptor_bytes is None:
+            # No proposal (e.g. a recursion/step-budget limit-end). Carry the transcript AND the
+            # telemetry (incl. stop_reason) on the err so the control plane can store + record them,
+            # a failed cycle stays debuggable, and the report names *why* it stopped.
             raise SandboxError(
                 "the agent produced no proposal "
-                f"(no {RESERVED_PROPOSAL_NAME} in the outbox); outbox had: {sorted(harvested)}"
+                f"(no {RESERVED_PROPOSAL_NAME} in the outbox); outbox had: {sorted(harvested)}",
+                transcript=transcript_bytes,
+                telemetry=telemetry_bytes,
             )
         descriptor = ProposalDescriptor.from_json(descriptor_bytes)
-        envelope = self._mint(descriptor, objects=harvested)
+        # Telemetry is advisory (5.3b): a corrupt __telemetry__.json must never sink an otherwise
+        # good proposal, so parse defensively and degrade to None on any decode error.
+        agent_telemetry = _parse_telemetry(telemetry_bytes)
+        envelope = self._mint(
+            descriptor, objects=harvested,
+            agent_telemetry=agent_telemetry, transcript=transcript_bytes,
+        )
         log.info(
             "proposal_collected",
             op=descriptor.op_name,
@@ -159,7 +273,12 @@ class AgentSandbox:
     # -- internals ----------------------------------------------------------------
 
     def _mint(
-        self, descriptor: ProposalDescriptor, *, objects: Mapping[str, bytes]
+        self,
+        descriptor: ProposalDescriptor,
+        *,
+        objects: Mapping[str, bytes],
+        agent_telemetry: Mapping[str, object] | None = None,
+        transcript: bytes | None = None,
     ) -> ProposalEnvelope:
         """Mint the typed artifact + provenance edge from the agent's declaration (host-trusted)."""
         signature = self.schema.operation(descriptor.op_name)
@@ -190,6 +309,8 @@ class AgentSandbox:
             operation=operation,
             metadata=descriptor.metadata,
             objects=dict(objects),
+            agent_telemetry=agent_telemetry,
+            transcript=transcript,
         )
 
     def _user_message(self, served: ServedContext) -> str:
@@ -197,9 +318,9 @@ class AgentSandbox:
         if served.tail.strip():
             parts.append(served.tail.strip())
         if served.feedback.strip():
-            parts.append("# Correction from your previous attempt\n" + served.feedback.strip())
+            parts.append("# Correction from the previous attempt\n" + served.feedback.strip())
         parts.append(
-            "Do the work, then call exactly one operation tool to submit your proposal. "
+            "Do the work, then call exactly one operation tool to submit the proposal. "
             "Reference the input artifact id(s) from the context above as `parents`."
         )
         return "\n\n".join(parts)

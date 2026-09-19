@@ -22,11 +22,53 @@ npm-debug.log*
 *.sqlite
 *.sqlite3
 *.db
-/data/
 /store/
+store/
 
-# Local task datasets (large; not source) — e.g. the stellar feature-engineering data
-/feature-engineering-test/
+# ---------------------------------------------------------------------------
+# Third-party datasets — NEVER committed. We hold access rights to the Kaggle
+# competition data; we hold no right to redistribute it. This repo may go
+# public, so the rules below are deliberately broad and extension-based rather
+# than path-anchored: a dataset dropped in a new directory must be ignored by
+# default, not by remembering to add a path. Tracking a data file requires an
+# explicit `!` exception here and a deliberate answer to "may we publish this?".
+# ---------------------------------------------------------------------------
+data/
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.arrow
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.xlsx
+*.zip
+*.csv.gz
+*.tsv.gz
+*.json.gz
+*.jsonl
+*.ndjson
+
+# The experiment tree is operator-local and out of this repo entirely.
+#
+#   experiments/  the sweep machinery + spec catalog + the runnable experimental design. It drives
+#                 runs, it is not part of the harness, and the experimental record it produces is
+#                 versioned in the sibling `verity-analysis` repo. Keep a copy there or on disk.
+#   results/      raw sweep output (RunReports, transcripts, submissions, the durable store) plus
+#                 the prototyping task package. Finished batches are imported into verity-analysis
+#                 with scripts/import_results.sh; what is left here is scratch.
+#   figures/      analysis output, authored and versioned in verity-analysis.
+#
+# tests/test_ablation_*.py `importorskip` the experiments package, so a checkout without it stays
+# green.
+/experiments/
+/results/
+/figures/
+figures/
 
 # OS / editor
 .DS_Store

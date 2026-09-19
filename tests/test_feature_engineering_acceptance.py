@@ -1,10 +1,15 @@
-"""The twelve §13 acceptance criteria, on the feature-engineering domain (ROADMAP Phase 4.4 → MVP).
+"""The §13 acceptance criteria, on the feature-engineering domain (ROADMAP Phase 4.4 → MVP).
 
 Each criterion is a runnable check driving the **real** control plane, the real ``SdkVerifier`` (the
-two ``Submission`` gates + the ``Feature`` grounding gate), and the real ``AgentSandbox`` with a
-scripted driver over a deterministic ``FakeCodeRunner`` — so the whole read → propose → gate →
-commit loop runs offline. Genuine in-container execution and a real multi-round model run are the
-``@pytest.mark.docker`` / ``@pytest.mark.live`` demonstrations (``test_feature_engineering_live``).
+two ``Submission`` gates), and the real ``AgentSandbox`` with a scripted driver over a deterministic
+``FakeCodeRunner`` — so the whole read → propose → gate → commit loop runs offline. Genuine
+in-container execution and a real multi-round model run are the ``@pytest.mark.docker`` /
+``@pytest.mark.live`` demonstrations (``test_feature_engineering_live``).
+
+The domain was broadened beyond feature engineering (submission is the unit; reject-only), so the
+two §13 criteria that exercised the harvested-``Feature`` machinery and the ``refine`` path
+(§13.8) are no longer demonstrated here — see ``verity.domains.feature_engineering`` for the
+divergence note.
 """
 
 from __future__ import annotations
@@ -34,8 +39,8 @@ from verity.control_plane.commit import CommitOutcome, NoImplicitAccept
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import (
     DefaultRetrievalPolicy,
-    ObjectProvisioningPolicy,
     ObjectProvisionMode,
+    provisioning_policy,
 )
 from verity.control_plane.store import SqliteStore
 from verity.domains.feature_engineering import (
@@ -45,6 +50,7 @@ from verity.domains.feature_engineering import (
     SUBMISSION,
     build_feature_engineering_domain,
     build_feature_engineering_verifier,
+    declared_objects,
 )
 from verity.sandbox import AgentSandbox, ProposalDescriptor
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
@@ -99,8 +105,7 @@ class _Driver:
         out = workspace.outbox()  # type: ignore[attr-defined]
         (out / ENTRYPOINT).write_bytes(_entrypoint(marker, names))
         (out / REQUIREMENTS).write_bytes(b"pandas==2.2.2")
-        features = [{"name": n, "definition": "d", "rationale": "r"} for n in names]
-        payload = {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS, "features": features}
+        payload = {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS}
         (out / RESERVED_PROPOSAL_NAME).write_bytes(
             ProposalDescriptor(op_name, parents, payload, metadata="i reasoned thus").to_json()
         )
@@ -141,10 +146,10 @@ def _build(
         task_id="fe", instructions="design features that improve the model",
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key="fe", verifier_key="fe",
-        harvester=domain.harvester,
-        object_provisioning=ObjectProvisioningPolicy(
-            mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
+        sandbox_key="fe", verifier_key="fe",
+        object_provisioning=provisioning_policy(
+            ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
         ),
     )
     asyncio.run(cp.configure(config))
@@ -153,15 +158,11 @@ def _build(
 
 def _submission_envelope(
     sub_id: str, *, marker: bytes, names: list[str], parents: tuple[str, ...] = ("ds",),
-    op_name: str = "submit", payload_features: list[dict[str, str]] | None = None,
+    op_name: str = "submit",
 ) -> ProposalEnvelope:
-    features = (
-        payload_features if payload_features is not None
-        else [{"name": n, "definition": "d", "rationale": "r"} for n in names]
-    )
     artifact = Artifact(
         sub_id, SUBMISSION,
-        {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS, "features": features},
+        {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS},
         ArtifactStatus.PROPOSED, "fe:agent", "t1",
     )
     op = Operation(f"op-{sub_id}", op_name, parents, sub_id, OperationStatus.SUCCESS, "t1")
@@ -202,7 +203,7 @@ def test_02_submission_rejected_and_retained(tmp_path: Path) -> None:
     assert any(d.verdict is VerdictKind.REJECT for d in store.decisions_for("sub-2"))
 
 
-def test_03_superseded_with_intact_lineage_including_features(tmp_path: Path) -> None:
+def test_03_superseded_with_intact_lineage(tmp_path: Path) -> None:
     cp, store, _ = _build(
         tmp_path, runner=_marker_runner(dict([_OK, _GOOD])),
         steps=[("submit", ("ds",), b"ok", ["feat0"]), ("submit", ("ds",), b"good", ["feat0"])],
@@ -211,11 +212,12 @@ def test_03_superseded_with_intact_lineage_including_features(tmp_path: Path) ->
     asyncio.run(cp.run_cycle("fe", goal="c2"))
     sub1 = store.get_artifact("sub-1")
     assert sub1 is not None and sub1.status is ArtifactStatus.SUPERSEDED
-    # both incumbents' harvested features survive in provenance (§4.2, §13.3)
-    assert store.get_artifact("sub-1::feature::0") is not None
-    assert store.get_artifact("sub-2::feature::0") is not None
-    prov = cp.provenance("sub-2::feature::0")
-    assert {"ds", "sub-2"} <= {a.id for a in prov.ancestors}
+    assert sub1.superseded_by == "sub-2"
+    sub2 = store.get_artifact("sub-2")
+    assert sub2 is not None and sub2.status is ArtifactStatus.ACCEPTED
+    # lineage intact: the accepted submission still traces to the dataset root (§4.2, §13.3)
+    prov = cp.provenance("sub-2")
+    assert "ds" in {a.id for a in prov.ancestors}
 
 
 def test_04_why_accepted_is_answerable_from_provenance(tmp_path: Path) -> None:
@@ -230,8 +232,8 @@ def test_04_why_accepted_is_answerable_from_provenance(tmp_path: Path) -> None:
         d for d in prov.decisions if d.verdict is VerdictKind.ACCEPT and d.gate == "selection"
     ]
     assert accept and accept[0].score is not None  # the scored accept decision
-    # the feature harvest is recorded as an operation out of the submission
-    assert any(op.op_name == "harvest" for op in _store_ops_out(cp, "sub-1"))
+    # the submit op that produced it is recorded out of the dataset root
+    assert any(op.op_name == "submit" for op in _store_ops_out(cp, "ds"))
     # the agent's rationale is retained off the gate channel
     assert cp.rationale_for("sub-1") == "i reasoned thus"
 
@@ -277,7 +279,15 @@ def test_06_refusal_to_commit_a_gateless_type(tmp_path: Path) -> None:
 
 def test_07_malformed_proposal_is_correctable_not_recorded(tmp_path: Path) -> None:
     cp, store, _ = _build(tmp_path, runner=_marker_runner(dict([_GOOD])), steps=[])
-    bad = _submission_envelope("sub-1", marker=b"good", names=["feat0"], payload_features=[])
+    # a Submission missing its required 'entrypoint' key is malformed (a shape error, not a reject)
+    bad = ProposalEnvelope(
+        artifact=Artifact(
+            "sub-1", SUBMISSION, {"requirements": REQUIREMENTS},
+            ArtifactStatus.PROPOSED, "fe:agent", "t1",
+        ),
+        operation=Operation("op-sub-1", "submit", ("ds",), "sub-1", OperationStatus.SUCCESS, "t1"),
+        objects={ENTRYPOINT: _entrypoint(b"good", ["feat0"]), REQUIREMENTS: b"pandas==2.2.2"},
+    )
     result = asyncio.run(cp.submit_proposal("fe", bad))
     assert result.entered_protocol is False and result.shape_error is not None
     assert result.harvested == {} and store.rejected_log(type=SUBMISSION) == []
@@ -286,41 +296,6 @@ def test_07_malformed_proposal_is_correctable_not_recorded(tmp_path: Path) -> No
     good = _submission_envelope("sub-1", marker=b"good", names=["feat0"])
     ok = asyncio.run(cp.submit_proposal("fe", good))
     assert ok.commit is not None and ok.commit.outcome is CommitOutcome.ACCEPTED
-
-
-def test_08_refine_yields_a_tracked_revision(tmp_path: Path) -> None:
-    # Direct envelopes so cycle 1's code omits the declared feature (the driver always embeds them).
-    cp, store, _ = _build(tmp_path, runner=_marker_runner({b"runs": dict(RESERVED)}), steps=[])
-    absent = ProposalEnvelope(
-        artifact=Artifact(
-            "sub-1", SUBMISSION,
-            {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS,
-             "features": [{"name": "wedge", "definition": "d", "rationale": "r"}]},
-            ArtifactStatus.PROPOSED, "fe:agent", "t1",
-        ),
-        operation=Operation("op-sub-1", "submit", ("ds",), "sub-1", OperationStatus.SUCCESS, "t1"),
-        objects={ENTRYPOINT: b"runs cleanly but adds no new column", REQUIREMENTS: b"x"},
-    )
-    fixed = ProposalEnvelope(
-        artifact=Artifact(
-            "sub-2", SUBMISSION,
-            {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS,
-             "features": [{"name": "wedge", "definition": "d", "rationale": "r"}]},
-            ArtifactStatus.PROPOSED, "fe:agent", "t1",
-        ),
-        operation=Operation(
-            "op-sub-2", "revises", ("sub-1",), "sub-2", OperationStatus.SUCCESS, "t1"
-        ),
-        objects={ENTRYPOINT: b"runs and adds df['wedge'] column", REQUIREMENTS: b"x"},
-    )
-    r1 = asyncio.run(cp.submit_proposal("fe", absent))
-    r2 = asyncio.run(cp.submit_proposal("fe", fixed))
-    assert r1.commit is not None and r1.commit.outcome is CommitOutcome.REVISED
-    assert r1.commit.defects == ("wedge",)
-    assert r2.commit is not None and r2.commit.outcome is CommitOutcome.ACCEPTED
-    sub1 = store.get_artifact("sub-1")
-    assert sub1 is not None and sub1.status is ArtifactStatus.REVISED and sub1.revised_by == "sub-2"
-    assert any(op.op_name == "revises" for op in store.operations_into("sub-2"))
 
 
 def test_09_privileged_mutator_boundary_holds(tmp_path: Path) -> None:
@@ -413,12 +388,13 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
         pytest.skip("no ANTHROPIC_API_KEY")
     if not docker_available():
         pytest.skip("no Docker for the verifier's code runner")
-    dataset = Path("feature-engineering-test/train.csv")
+    dataset = Path("results/prototyping_datasci_test/train.csv")
     if not dataset.exists():
         pytest.skip("the stellar dataset is not present")
     from tools.harness.dataset import stratified_split
 
-    from verity.sandbox.container_driver import DeepAgentsContainerDriver
+    from verity.provisioning import DockerBackend
+    from verity.sandbox.backend_driver import BackendSandboxDriver
     from verity.sandbox.registration import build_sandbox
 
     raw = _subsample(dataset.read_bytes(), per_class=400)  # small slice → fast per-cycle training
@@ -435,13 +411,13 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     # *run and test* its script before proposing (the in-process backend cannot execute code, so a
     # code-writing agent loops to the recursion cap). The data rides the workspace mount via
     # static_contents (the gold-data role is re-mounted read-only on top — physical isolation).
-    driver = DeepAgentsContainerDriver(
-        model="anthropic:claude-sonnet-4-6", image="verity-sandbox:latest",
-        recursion_limit=200, timeout_s=1500.0, memory="4g",
+    driver = BackendSandboxDriver(
+        backend=DockerBackend(), model="anthropic:claude-sonnet-4-6",
+        image="verity-sandbox:latest", recursion_limit=200, timeout_s=1500.0, memory="4g",
     )
     sandbox = build_sandbox(
         schema=domain.schema, root=tmp_path / "ws", driver=driver,
-        proposer_identity="deepagents-container:claude",
+        proposer_identity="deepagents-worker:claude",
         static_contents={"data": {"train.csv": split.agent_train_csv,
                                   "test.csv": split.reserved_test_csv}},
     )
@@ -460,17 +436,18 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     config = TaskConfig(
         task_id="fe",
         instructions=(
-            "Engineer 1-3 features that improve balanced accuracy. Be FAST: train one small, "
-            "fixed model (no hyperparameter search, no cross-validation, no big ensembles); your "
-            "edge is the features, not the model. Run the script once to confirm it works, then "
-            "submit — do not keep retraining."
+            "Improve balanced accuracy by any means that fits in one script — engineered features, "
+            "model choice, a small ensemble, calibration, imbalance handling. If there's no "
+            "incumbent yet, explore the data with code first; if there is one (under "
+            "scratch/provided/), read it and target its weakness. Keep the pipeline fast enough to "
+            "finish the gate's time budget; run the script once to confirm it works, then submit."
         ),
         domain_instructions=domain.domain_instructions, schema=domain.schema,
         gated_types=domain.gated_types, retrieval=DefaultRetrievalPolicy(),
-        shape_validator=domain.shape_validator, sandbox_key="fe", verifier_key="fe",
-        harvester=domain.harvester,
-        object_provisioning=ObjectProvisioningPolicy(
-            mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+        shape_validator=domain.shape_validator, object_namer=declared_objects,
+        sandbox_key="fe", verifier_key="fe",
+        object_provisioning=provisioning_policy(
+            ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
         ),
     )
     asyncio.run(cp.configure(config))
@@ -479,7 +456,7 @@ def test_feature_engineering_live(tmp_path: Path) -> None:
     # so run() returns normally; assert on what committed across the cycles.
     asyncio.run(cp.run(
         "fe",
-        goal="Improve balanced accuracy via feature engineering; keep training fast and simple.",
+        goal="Improve balanced accuracy on a held-out set; keep the pipeline fast and simple.",
     ))
     accepted = store.query_artifacts(type=SUBMISSION, status=ArtifactStatus.ACCEPTED)
     assert accepted, "no accepted submission across the live run"

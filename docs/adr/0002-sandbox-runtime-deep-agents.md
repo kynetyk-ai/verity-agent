@@ -94,7 +94,7 @@ trusted core (mint, provenance, harvest, lifecycle) is shared by every present a
   network for the model API and the workspace mounted writable, the read-only roles re-mounted ro on
   top (physical gold-data isolation) and `data_sources` mounted ro into `data/`. The container
   entrypoint (`container_entry`) reuses the shared agent builders; a host that only orchestrates
-  containers needs no Deep Agents install (`Dockerfile.sandbox` carries it). Safe YOLO execution of
+  containers needs no Deep Agents install (the sandbox image carries it). Safe YOLO execution of
   arbitrary code lands here. Validated by a docker+live integration test (agent writes+runs code in
   the container, proposes a `Submission`, gated `ACCEPTED`) and a cross-cycle feedback/ephemerality
   test. The **Phase 3 exit** (read→propose→gate→commit by a real agent; ephemerality + gold-data

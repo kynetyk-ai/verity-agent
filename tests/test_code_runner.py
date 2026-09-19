@@ -50,6 +50,18 @@ def test_fake_runner_records_calls_and_returns_scripted_result() -> None:
     assert runner.calls[0].code == b"print('hi')"
 
 
+def test_docker_cmd_uses_a_writable_cwd_not_the_ro_code_mount(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The container's CWD is the writable tmpfs (/tmp), while the code mount stays read-only — so
+    libraries that write scratch relative to the CWD (CatBoost's ``catboost_info/``, matplotlib,
+    joblib) work, without weakening the read-only-root / read-only-code posture."""
+    cmd = ContainerCodeRunner()._docker_cmd(
+        "w", tmp_path, tmp_path, tmp_path, RunRequest(code=b"x = 1")
+    )
+    assert cmd[cmd.index("-w") + 1] == "/tmp"  # CWD is writable
+    assert any(a.endswith(":/work:ro") for a in cmd)  # the code stays read-only
+    assert "--read-only" in cmd  # root filesystem still read-only (posture unchanged)
+
+
 # ----------------------------------------------------------------- the auto-code-runner primitive
 
 

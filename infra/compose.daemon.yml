@@ -1,0 +1,117 @@
+# The long-lived Verity control-plane DAEMON (ROADMAP 8.3, ADR 0004).
+#
+# Brings up the GENERIC control plane as a STANDING service — `verity serve` over a Unix-domain
+# socket inside the container (the image's default ENTRYPOINT) — that an operator (or Claude Code)
+# drives at runtime with NO image rebuild between tasks:
+#
+#     just cp-serve                          # build images + bring this up (detached)
+#     docker exec verity-cp verity catalog   # the `verity` CLI is a thin client over the socket
+#     docker exec verity-cp verity ingest train.csv      # data arrives via the exchange, not a mount
+#     docker exec verity-cp verity create --type fe --data <handle> --model …
+#     docker exec verity-cp verity run <task_id>
+#     docker exec verity-cp verity results <run_id>
+#     docker exec verity-cp verity export  <run_id>       # durable artifacts -> exchange out/
+#   (or: `just cp <subcommand>` / `just cp-down`)
+#
+# The CP launches ephemeral sandbox + code-runner WORKER containers as *siblings* on the host daemon
+# via the mounted /var/run/docker.sock (ADR 0003 §f — not docker-in-docker). Agent workers reach a
+# host-local model at host.docker.internal (set VERITY_LOCAL_BASE_URL) or a hosted API by key.
+#
+# §9.1: for a data-bearing task (fe-kaggle) the CP also launches a TRUSTED verifier SIBLING (its own
+# image, carrying the gates + the kaggle extra) on a shared user-defined network (`verity-net`), and
+# reaches it by its container name via Docker DNS (VERITY_VERIFIER_NETWORK). The CP image itself
+# carries no gate/kaggle code.
+#
+# Prereqs: build the images (just cp-serve does this for you):
+#   docker build --target sandbox      -t verity-sandbox:latest .
+#   docker build --target verifier     -t verity-verifier:latest .
+#   docker build --target controlplane -t verity-controlplane:latest .
+#
+# Volume model — three host dirs, each with a distinct job. The EXCHANGE and the STORE are mounted
+# into the CP container ONLY, never into a worker (ADR 0004 §f; the byte-provenance invariant): data
+# reaches a worker exclusively through the CP provisioning path (static_contents -> ephemeral
+# per-worker staging), so a worker can never see another task's files, an export in flight, or an
+# answer key. Drop input files into <exchange-host>/in/ before `verity ingest`; exports land under
+# <exchange-host>/out/<run_id>/.
+#
+# Ownership footgun (we have hit Docker bind-mount ownership walls before): the daemon runs as root
+# in the container, so files it writes to the exchange/store bind mounts are root-owned on the host.
+# `chown` them back, or run with a matched uid, if a non-root host user needs them.
+#
+# The staging dir is bind-mounted at an IDENTICAL host<->container path so worker bind-mount sources
+# (created by the CP container) resolve on the host daemon — see DockerBackend / VERITY_WORKER_STAGING.
+services:
+  controlplane:
+    image: verity-controlplane:latest
+    container_name: verity-cp
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: controlplane
+    # The image's default ENTRYPOINT is already `verity serve`; stated explicitly here for clarity.
+    entrypoint: ["verity", "serve"]
+    restart: unless-stopped
+    environment:
+      # Where the daemon serves, stores, and exchanges (the container-side paths).
+      VERITY_SOCKET: "/run/verity.sock"
+      VERITY_EXCHANGE: "/exchange"
+      VERITY_STORE_ROOT: "/var/lib/verity"
+      VERITY_WORKER_STAGING: "/tmp/verity-staging"
+      # Worker selection + model wiring (per-task knobs are supplied at `verity create` time).
+      VERITY_SANDBOX_IMAGE: "verity-sandbox:latest"
+      VERITY_MODEL: "${VERITY_MODEL:-qwen3.6:27b-coding-mxfp8}"
+      VERITY_LOCAL_BASE_URL: "${VERITY_LOCAL_BASE_URL:-http://host.docker.internal:11434/v1}"
+      # The image the verifier's code-runner runs untrusted submissions in. Forwarded to the verifier
+      # sibling (composition/fe_kaggle _VERIFIER_RUNNER_ENV). MUST be the purpose-built runner, not a
+      # bare python:3.12-slim — the slim image lacks the system .so's (libgomp etc.) that LightGBM /
+      # XGBoost link at runtime, so those submissions would crash with `OSError: libgomp.so.1`.
+      VERITY_CODE_IMAGE: "${VERITY_CODE_IMAGE:-verity-code-runner:latest}"
+      # Memory cap for the code-runner (where the untrusted submission trains on full data). Forwarded
+      # to the verifier sibling, which launches the code-runner with it. The 4 GB default OOM-rejects
+      # a heavy full-data ensemble (RF+ExtraTrees+CalibratedCV); raise it now that the Docker VM has
+      # room. Swap is disabled in the runner (--memory-swap=memory), so under-provisioning is an
+      # instant OOM-reject, not a slowdown.
+      VERITY_CODE_MEMORY: "${VERITY_CODE_MEMORY:-16g}"
+      # CPU cap for the code-runner (hard cgroup ceiling). The worker default is 1 CPU, which pins
+      # full-data training to a single core; 16 of the VM's 24 leaves headroom for the host.
+      VERITY_CODE_CPUS: "${VERITY_CODE_CPUS:-16}"
+      # §9.1 verifier sibling: the image to launch + the shared network the CP reaches it on by name.
+      VERITY_VERIFIER_IMAGE: "verity-verifier:latest"
+      VERITY_VERIFIER_NETWORK: "verity-net"
+      # Memory cap for the verifier sibling. It is shipped the whole verifier-role dataset as its
+      # setup payload over HTTP and buffers it, so this must clear the dataset size (full-data
+      # fe-kaggle is ~230 MB of CSV); the 512 MB worker default OOM-kills it on a real run.
+      VERITY_VERIFIER_MEMORY: "${VERITY_VERIFIER_MEMORY:-4g}"
+      # CP→verifier dispatch timeout: ONE HTTP call held open for the whole gate evaluation (proxy
+      # train + competitive + Kaggle train + submit/poll). Must exceed the sum of those — with the
+      # calibrated 216-min per-script code_timeout_s (#111) that's two trainings (~7.2h) + the Kaggle
+      # wait, so ~3x the per-script budget ≈ 10.8h.
+      VERITY_VERIFIER_TIMEOUT: "${VERITY_VERIFIER_TIMEOUT:-38880}"
+      # Model credentials — the CP forwards the selected model's key env to the agent worker
+      # (sandbox env-passthrough). Empty unless a hosted model is used; a local model needs none.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      # Kaggle creds for the fe-kaggle task — the CP forwards them (by NAME) only to the verifier
+      # sibling it launches, where the trusted final-test gate submits + scores. They are NOT in the
+      # sandbox env-passthrough, so they never reach an agent worker, and the CP image carries no
+      # kaggle code. (They do transit the CP container's env to be forwarded; mounting them as a
+      # secret into the verifier only is a hardening item — see the fleet-lifecycle issue.)
+      KAGGLE_USERNAME: "${KAGGLE_USERNAME:-}"
+      KAGGLE_KEY: "${KAGGLE_KEY:-}"
+    networks:
+      - verity-net
+    volumes:
+      # The controlled host socket — the CP launches sibling workers through it (ADR 0003 §f).
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared staging at an identical path so worker bind-mount sources resolve on the host daemon.
+      - ${VERITY_WORKER_STAGING:-/tmp/verity-staging}:/tmp/verity-staging
+      # Client<->CP file exchange (in/ for ingest, out/ for export). CP-ONLY — never a worker.
+      - ${VERITY_EXCHANGE_HOST:-/tmp/verity-exchange}:/exchange
+      # Persistent provenance stores + task definitions (durable across restarts). CP-ONLY.
+      - ${VERITY_STORE_HOST:-/tmp/verity-store}:/var/lib/verity
+
+# A fixed-name user-defined network so the CP-launched verifier sibling (joined via
+# VERITY_VERIFIER_NETWORK) is reachable from the CP by its container name through Docker DNS (§9.1).
+networks:
+  verity-net:
+    name: verity-net

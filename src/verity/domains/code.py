@@ -39,6 +39,7 @@ __all__ = [
     "CODE_VERIFIER_IDENTITY",
     "CodeDomain",
     "build_code_domain",
+    "declared_objects",
 ]
 
 DATASET = "Dataset"
@@ -67,7 +68,16 @@ def build_code_domain(runner: CodeRunner) -> CodeDomain:
     schema = SchemaRegistry()
     schema.register_type(ArtifactTypeDef(DATASET, is_root=True))
     schema.register_type(ArtifactTypeDef(SUBMISSION))
-    schema.register_operation(OperationSignature("submit", inputs=(DATASET,), output=SUBMISSION))
+    schema.register_operation(
+        # ``entrypoint`` is the only payload key a Submission declares; naming it lets the control
+        # plane's payload-key allowlist strip any other key the agent rides to the gate (R1).
+        OperationSignature(
+            "submit", inputs=(DATASET,), output=SUBMISSION,
+            # Required (not just object-valued) so the propose tool rejects an entrypoint-less
+            # submit in-cycle, not the post-cycle shape check catching it with no feedback (#142).
+            required_payload_keys=("entrypoint",), object_payload_keys=("entrypoint",),
+        )
+    )
 
     # 'Submission' is gated; its checks judge the object attachment, not the store, so the declared
     # slice is empty (the verifier sees only the artifact under test, §8.3, §10).
@@ -102,6 +112,14 @@ def _validate_shape(artifact: Artifact) -> ShapeError | None:
     if not isinstance(payload, dict) or not isinstance(payload.get("entrypoint"), str):
         return ShapeError("a Submission payload must be an object with a string 'entrypoint'")
     return None
+
+
+def declared_objects(artifact: Artifact) -> frozenset[str]:
+    """The object a Submission declares — its ``entrypoint`` script (the only file harvested)."""
+    if artifact.type != SUBMISSION or not isinstance(artifact.payload, dict):
+        return frozenset()
+    entrypoint = artifact.payload.get("entrypoint")
+    return frozenset({entrypoint}) if isinstance(entrypoint, str) and entrypoint else frozenset()
 
 
 def _parses(request: VerifierRequest) -> CheckOutcome:

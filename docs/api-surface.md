@@ -1,45 +1,56 @@
 # Verity API Surface
 
-Reference for Verity's **in-process async Python API** — there is no HTTP layer. The "API" is the
-control-plane service class plus the typed **port contracts** that cross the service boundaries to
-the sandbox and verifier. Everything here is checkable against source; locations are cited as
-`path:line`.
+Reference for Verity's **in-process async Python API** — there is no HTTP layer on the control plane.
+The "API" is the control-plane service class plus the typed **port contracts** that cross the service
+boundaries to the sandbox and verifier. Everything here is checkable against source; locations are
+cited as `path:line`.
 
-> Naming note: the orientation prompt for this task referred to a class `ControlPlaneApi`. The actual
-> public class is **`ControlPlane`** (`src/verity/control_plane/api.py:125`). There is no
-> `ControlPlaneApi`. This document uses the real name.
-
-The control plane is the **only** service that mutates durable state (spec §3.4). It is async by
-design: external calls are coroutines so today's in-process stubs and tomorrow's networked services
-share one shape. The proven §7 commit path stays synchronous and runs in a worker thread while the
-API awaits the advisory verifier (`api.py:1-22`, `api.py:230-260`).
+The public class is **`ControlPlane`** (`src/verity/control_plane/api.py:169`). It is the **only**
+service that mutates durable state (spec §3.4). It is async by design: external calls are coroutines
+so today's in-process services and tomorrow's networked ones share one shape. The proven §7 commit
+path stays synchronous and runs in a worker thread while the API awaits the advisory verifier
+(`api.py:1-22`, `api.py:409-453`).
 
 The loop is **read → propose → gate → commit**.
+
+> **Genericity.** A `ControlPlane` is constructed knowing **no task**. Its provider registries default
+> to fresh, empty `ProviderRegistry` instances, and a task is applied *through the CP's API* —
+> `register_sandbox` / `register_verifier` + `configure` — never baked into the class. This is enforced
+> mechanically: an AST guard asserts `verity.control_plane` imports nothing from `verity.domains`
+> (`tests/test_control_plane_genericity.py`), and one generic CP runs both the FE and `code` tasks. The
+> `verity.composition` layer is the one place allowed to know both a domain and the control plane; see
+> the **worked example** at the end.
 
 ---
 
 ## Endpoint index
 
-`ControlPlane` (`src/verity/control_plane/api.py:125`):
+`ControlPlane` (`src/verity/control_plane/api.py:169`):
 
 | Method | Async? | One-line purpose | Mutates durable state? |
 |---|---|---|---|
-| `__init__` | sync | Construct the service over a store, assembler, policy, registries, clock | No (in-memory wiring) |
-| `configure(config)` | **async** | Register a task: stamp schema version, resolve + provision sandbox/verifier | Yes (writes a `schema_versions` row) |
-| `teardown(task_id)` | **async** | Tear down a task's sandbox and verifier | No (store untouched; service lifecycle only) |
-| `serve_context(task_id, *, goal, scratch, feedback)` | **async** | Assemble §9 bounded context and hand it to the sandbox | No (pure read of the store) |
-| `submit_proposal(task_id, envelope)` | **async** | Shape-check → harvest objects → propose → run commit path | Yes (object store, `proposed` row, decisions, status) |
-| `run_cycle(task_id, *, goal, feedback)` | **async** | One full read→propose→gate→commit cycle, then regenerate sandbox | Yes (via `submit_proposal`) |
-| `run(task_id, *, goal)` | **async** | Drive cycles until the orchestration policy stops | Yes (via `run_cycle`) |
+| `__init__` | sync | Construct the service over a store, assembler, policy, (empty) registries, clocks | No (in-memory wiring) |
+| `store` (property) | sync | The durable provenance store — exposed so a task builder can seed its root inputs | No (accessor) |
+| `register_sandbox(key, factory)` | sync | Register a task's sandbox provider under `key` | No (registry wiring) |
+| `register_verifier(key, factory)` | sync | Register a task's verifier provider under `key` | No (registry wiring) |
+| `configure(config)` | **async** | Register a task: stamp schema + contract versions, provision + bind the sandbox (the verifier is provisioned at run-start, #96) | Yes (schema/contract rows) |
+| `teardown(task_id)` | **async** | Tear down a task's sandbox (+ an idempotent verifier-teardown backstop; verifier teardown is run-scoped, #96) | No (service lifecycle only) |
+| `serve_context(task_id, *, goal, scratch, feedback)` | **async** | Assemble §9 bounded context and hand it to the sandbox | No (pure read) |
+| `submit_proposal(task_id, envelope)` | **async** | Shape-check → harvest objects → propose → run commit path | Yes (object store, rows, status) |
+| `run_cycle(task_id, *, goal, feedback)` | **async** | One read→propose→gate→commit cycle, then regenerate sandbox | Yes (via `submit_proposal`) |
+| `run(task_id, *, goal)` | **async** | Drive cycles until the orchestration policy stops; emit a `RunRecord` | Yes (via `run_cycle`) |
+| `run_report(task_id)` | sync | Store-derived, score-agnostic JSON projection of the run so far | No (read) |
+| `run_records()` | sync | The run-results read side (operational metadata for finished runs) | No (read) |
 | `accepted_artifacts(*, type=None)` | sync | Extract accepted artifacts | No (read) |
 | `provenance(artifact_id)` | sync | Full lineage + decisions behind an artifact | No (read) |
 | `rejected_log(*, type=None)` | sync | The rejected-artifact log | No (read) |
 | `superseded_log(*, type=None)` | sync | The superseded-artifact log | No (read) |
 | `revised_log(*, type=None)` | sync | The revised-artifact log | No (read) |
-| `rationale_for(artifact_id)` | sync | The agent's how/why summary (never a gate input) | No (read of in-memory rationale channel) |
+| `rationale_for(artifact_id)` | sync | The agent's how/why summary (never a gate input) | No (read of in-memory channel) |
 
-Private helpers (`_task`, `_run_commit`, `_link_revision_if_any`) are not part of the public surface
-and are documented inline only where they explain an endpoint's downstream effect.
+Private helpers (`_task`, `_run_commit`, `_harvest_children`, `_count_lineage_refines`,
+`_link_revision_if_any`, `_record_cycle`, `_record_run`) are not part of the public surface and are
+documented inline only where they explain an endpoint's downstream effect.
 
 ---
 
@@ -47,7 +58,7 @@ and are documented inline only where they explain an endpoint's downstream effec
 
 ### `ControlPlane.__init__`
 
-`src/verity/control_plane/api.py:128-144`
+`src/verity/control_plane/api.py:172-208`
 
 ```python
 def __init__(
@@ -56,71 +67,100 @@ def __init__(
     *,
     assembler: ContextAssembler | None = None,
     policy: OrchestrationPolicy | None = None,
-    sandbox_providers: ProviderRegistry[SandboxPort] = SANDBOX_PROVIDERS,
-    verifier_providers: ProviderRegistry[VerifierPort] = VERIFIER_PROVIDERS,
+    sandbox_providers: ProviderRegistry[SandboxPort] | None = None,
+    verifier_providers: ProviderRegistry[VerifierPort] | None = None,
     clock: Clock = default_clock,
+    timer: Callable[[], float] = time.monotonic,
+    dispatch_timeout_s: float | None = None,
+    run_id_source: Callable[[], str] | None = None,
+    run_records: RunRecordStore | None = None,
 ) -> None: ...
 ```
 
 | Param | Type | Meaning |
 |---|---|---|
-| `store` | `SqliteStore` | The sole durable store (`store.py:254`). Implements both `Store` (reads/propose/objects) and `CommitSink` (privileged writes). |
-| `assembler` | `ContextAssembler \| None` | §9 context assembler; defaults to `ContextAssembler()` with the bounded-context caps (`context.py:108`). |
-| `policy` | `OrchestrationPolicy \| None` | The run-again/stop rule; defaults to `OrchestrationPolicy()` (`api.py:96`). |
-| `sandbox_providers` | `ProviderRegistry[SandboxPort]` | Registry that resolves `config.sandbox_key` → a `SandboxPort`. Defaults to module-level `SANDBOX_PROVIDERS` (`ports.py:189`). |
-| `verifier_providers` | `ProviderRegistry[VerifierPort]` | Registry that resolves `config.verifier_key` → a `VerifierPort`. Defaults to `VERIFIER_PROVIDERS` (`ports.py:190`). |
-| `clock` | `Clock` | Injected ISO-8601 timestamp source for determinism (`store.py:120`). |
+| `store` | `SqliteStore` | The sole durable store (`store.py`). Implements both `Store` (reads/propose/objects) and `CommitSink` (privileged writes). In-memory by default; pass `path=...`/`object_dir=Path(...)` to persist. |
+| `assembler` | `ContextAssembler \| None` | §9 context assembler; defaults to `ContextAssembler()` with the bounded-context caps. |
+| `policy` | `OrchestrationPolicy \| None` | The run-again/stop rule; defaults to `OrchestrationPolicy()`. |
+| `sandbox_providers` | `ProviderRegistry[SandboxPort] \| None` | Registry resolving `config.sandbox_key` → a `SandboxPort`. **Defaults to a fresh empty `ProviderRegistry("sandbox")`** — a task registers its provider via `register_sandbox`. |
+| `verifier_providers` | `ProviderRegistry[VerifierPort] \| None` | Registry resolving `config.verifier_key` → a `VerifierPort`. **Defaults to a fresh empty `ProviderRegistry("verifier")`.** |
+| `clock` | `Clock` | Injected ISO-8601 timestamp source for determinism. |
+| `timer` | `Callable[[], float]` | Monotonic seconds source, injected so `RunReport` timings are testable (default `time.monotonic`). |
+| `dispatch_timeout_s` | `float \| None` | Backstop on the one opaque verifier handoff: a hang past this becomes a recoverable `GateUnavailable`, not a blocked cycle. `None` = no backstop. |
+| `run_id_source` | `Callable[[], str] \| None` | Source of a run's id, minted per `run()` (task ≠ run). Defaults to a fresh `uuid4().hex`; tests inject a deterministic source. |
+| `run_records` | `RunRecordStore \| None` | Where the per-run `RunRecord` is emitted at run end. Defaults to `InMemoryRunRecordStore()`; the standing job server swaps the adapter (7.4.h / ADR 0003). |
 
 **Effect**: pure in-memory wiring; holds an empty `_tasks: dict[str, TaskState]`. No store writes.
 
-**Ordering constraint**: providers for the keys named in any `TaskConfig` you later `configure`
-must already be `register`ed on the supplied registries, or `configure` raises `ProviderError`.
+**Key change from earlier builds.** The registries are **empty by default** — there are no
+module-level `SANDBOX_PROVIDERS`/`VERIFIER_PROVIDERS` defaults on the control plane any more. Register
+each task's providers through `register_sandbox`/`register_verifier` (or hand pre-populated registries
+to `__init__`) **before** you `configure` a task that names those keys, or `configure` raises
+`ProviderError`.
 
 ```python
 import asyncio
-from verity.contracts import ProviderRegistry, SandboxPort, VerifierPort
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.store import SqliteStore
 
 store = SqliteStore()  # in-memory; pass path="..."/object_dir=Path(...) to persist
 
-sandbox_providers: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
-verifier_providers: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
-sandbox_providers.register("stub", lambda: MySandbox())   # zero-arg factory → SandboxPort
-verifier_providers.register("stub", lambda: MyVerifier())  # zero-arg factory → VerifierPort
-
-cp = ControlPlane(
-    store,
-    policy=OrchestrationPolicy(max_cycles=5, stop_on_accept=True),
-    sandbox_providers=sandbox_providers,
-    verifier_providers=verifier_providers,
-)
+cp = ControlPlane(store, policy=OrchestrationPolicy(max_cycles=5, stop_on_accept=True))
+cp.register_sandbox("stub", lambda: MySandbox())   # zero-arg factory → SandboxPort
+cp.register_verifier("stub", lambda: MyVerifier())  # zero-arg factory → VerifierPort
 ```
+
+### `store`, `register_sandbox`, `register_verifier`
+
+`src/verity/control_plane/api.py:212-225`
+
+```python
+@property
+def store(self) -> SqliteStore: ...
+def register_sandbox(self, key: str, factory: Callable[[], SandboxPort]) -> None: ...
+def register_verifier(self, key: str, factory: Callable[[], VerifierPort]) -> None: ...
+```
+
+The **task-registration surface** that keeps the control plane task-agnostic. `store` exposes the
+durable provenance store so a task builder can seed its **root inputs** (e.g. a dataset version) at
+setup; the loop's own mutations still go only through the commit path. `register_sandbox`/
+`register_verifier` add a task's providers under the keys its `TaskConfig` names (`sandbox_key` /
+`verifier_key`). A task is *applied to* a generic control plane through these, never compiled into the
+**kernel** (`verity.control_plane` imports no domain — an AST guard enforces it). Since **Phase 9** the
+*image* matches the kernel: the **verifier runs as a sibling container** (9.1), **data prep is
+user-side** (9.2, the CP routes opaque role-keyed blobs — ADR 0005), and task & verifier types are
+**discovered via entry-point plugins** (9.3, ADR 0006), so a new type ships a container + an installed
+entry point with **no control-plane rebuild**.
 
 ### `OrchestrationPolicy`
 
-`src/verity/control_plane/api.py:96-111`
+`src/verity/control_plane/api.py:134-155`
 
 ```python
 @dataclass(frozen=True, slots=True)
 class OrchestrationPolicy:
-    max_cycles: int = 20      # bounds the run
-    refine_cap: int = 3       # max refines on one lineage before terminal reject (§12 seam)
-    stop_on_accept: bool = False  # end the run as soon as an artifact is accepted
+    max_cycles: int = 20                       # bounds the run
+    refine_cap: int = 3                        # max refines on one lineage before terminal reject
+    stop_on_accept: bool = False               # end the run as soon as an artifact is accepted
+    max_consecutive_sandbox_failures: int = 3  # abort after this many failed cycles in a row
     def should_continue(self, *, cycles_run: int) -> bool: ...  # cycles_run < max_cycles
 ```
 
-`refine_cap` bounds how many times a single lineage may be refined before it terminates in
-`rejected`. It is enforced **per lineage at commit** (issue #17): `ControlPlane._count_lineage_refines`
-walks the store's `revises` chain and passes `refine_exhausted` into `run_commit`, which converts a
-capped refine into a reject. (`TaskState.refine_counts` was removed in favour of this store-derived
-count.)
+- `refine_cap` binds **per lineage at commit**: `_count_lineage_refines` walks the store's `revises`
+  chain and passes `refine_exhausted` into `run_commit`, which converts a capped refine into a
+  terminal `rejected` — so an un-satisfiable artifact cannot loop forever.
+- `max_consecutive_sandbox_failures` is the **degrade-don't-crash breaker** (ROADMAP 5.1): a cycle
+  where the sandbox could not propose **or** the gate was unavailable is a *recorded, fed-back* failed
+  cycle, not a fatal error; but this many in a row aborts the run with `OrchestrationError`, so a
+  wholly-broken sandbox or verifier cannot spin to `max_cycles`. The counter resets on any cycle that
+  proposes and is evaluated.
 
 ### `TaskState`
 
-`src/verity/control_plane/api.py:114-122` — internal per-task record (not constructed by callers):
-holds the `config`, the resolved `sandbox` and `verifier`, and the segregated `rationale` channel
-(`dict[artifact_id, str]`).
+`src/verity/control_plane/api.py:157-167` — internal per-task record (not constructed by callers):
+holds the `config`, the resolved `sandbox` and `verifier`, the segregated `rationale` channel
+(`dict[artifact_id, str]`), the per-cycle `history` (the `RunReport`'s input), and the mutable
+`run_context` (the `RunContext` stamped onto the work each cycle provisions).
 
 ---
 
@@ -128,66 +168,53 @@ holds the `config`, the resolved `sandbox` and `verifier`, and the segregated `r
 
 ### `configure`
 
-`src/verity/control_plane/api.py:148-160`
+`src/verity/control_plane/api.py:229-260`
 
 ```python
 async def configure(self, config: TaskConfig) -> None: ...
 ```
 
-**Does**: registers a task. In order (`api.py:150-160`):
-1. Reads `store.current_schema_version()`; computes the next version (`current.version + 1`, else `1`).
-2. Writes a `schema_versions` row via `store.register_schema_version(config.schema.snapshot(...))`
-   — a stamped snapshot of the domain's declared types + operation signatures (`registries.py:133`).
+**Does**: registers a task. In order (`api.py:231-260`):
+1. Computes the next schema version from `store.current_schema_version()` (`current.version + 1`,
+   else `1`) and writes a `schema_versions` row via `store.register_schema_version(config.schema.snapshot(...))`.
+2. Stamps the **workspace-contract / orientation version** too (#12, §3.4): a `ContractVersion`
+   (with an `orientation_digest`) recorded like the schema, not left ambient. Idempotent across tasks.
 3. Resolves the sandbox via `sandbox_providers.create(config.sandbox_key)` and the verifier via
    `verifier_providers.create(config.verifier_key)`.
-4. `await`s `sandbox.provision()` then `verifier.provision()` (the §3.4 lifecycle surface).
-5. Stores a `TaskState` under `config.task_id` and logs `task_configured`.
+4. `await`s `sandbox.provision()` (the §3.4 lifecycle surface). **The verifier is *not* provisioned
+   here** — its provision/teardown are **run-scoped** (`run` provisions it at run-start, tears it down
+   at run-end; #96), so an idle verifier sibling never outlives its run on a long-resident task. It is
+   still created + bound below; in-process verifiers provision as a no-op.
+5. Builds a `TaskState` with a fresh `RunContext(tenant_id=config.tenant_id, run_id=...)` and **binds
+   it** to any service that implements `SupportsRunContext` (`service.bind_run_context(...)`) — so a
+   backend-backed sandbox/verifier labels every worker it launches; an in-process stub ignores the
+   bind. Bound once: the cell is mutable, so advancing `cycle` / re-minting `run_id` shows through
+   without re-binding.
+6. Stores the `TaskState` under `config.task_id` and logs `task_configured`.
 
-**Downstream effect**: one durable `schema_versions` row; two services provisioned; an entry added
-to the in-memory `_tasks` map. Re-configuring stamps a *new* schema version (the counter only
-increments).
+**Downstream effect**: one `schema_versions` row + one (idempotent) `contract_versions` row; two
+services provisioned and bound; an entry in the in-memory `_tasks` map. Re-configuring stamps a *new*
+schema version (the counter only increments).
 
-**Errors**: `ProviderError` if `sandbox_key`/`verifier_key` are unregistered (`ports.py:175-182`).
+**Errors**: `ProviderError` if `sandbox_key`/`verifier_key` are unregistered.
 
-**Precondition**: the named providers must be registered on the registries passed to `__init__`.
-
-```python
-from verity.control_plane.config import TaskConfig
-from verity.control_plane.registries import DefaultRetrievalPolicy
-from verity.domains.fake import build_fake_domain
-
-domain = build_fake_domain()  # schema + gated_types + shape_validator (Source/Note/Orphan)
-config = TaskConfig(
-    task_id="t1",
-    instructions="write notes",
-    domain_instructions="a Note has a text field",
-    schema=domain.schema,
-    gated_types=domain.gated_types,
-    retrieval=DefaultRetrievalPolicy(),
-    shape_validator=domain.shape_validator,
-    sandbox_key="stub",
-    verifier_key="stub",
-)
-await cp.configure(config)        # inside an async context
-# or, top-level: asyncio.run(cp.configure(config))
-```
+**Precondition**: the named providers must be registered (via `register_sandbox`/`register_verifier`
+or the registries passed to `__init__`) before this call.
 
 ### `teardown`
 
-`src/verity/control_plane/api.py:162-165`
+`src/verity/control_plane/api.py:265-268`
 
 ```python
 async def teardown(self, task_id: str) -> None: ...
 ```
 
-**Does**: `await`s `task.sandbox.teardown()` then `task.verifier.teardown()` for the named task.
-Does **not** remove the task from `_tasks`, mutate the store, or release the schema version.
+**Does**: `await`s `task.sandbox.teardown()` then `task.verifier.teardown()` for the named task. The
+verifier is normally provisioned + torn down per-run (run-scoped, #96); the call here is an
+**idempotent backstop**. Does **not** remove the task from `_tasks`, mutate the store, or release the
+schema version.
 
-**Errors**: `UnknownTask` if `task_id` was never configured (`api.py:167-170`).
-
-```python
-await cp.teardown("t1")
-```
+**Errors**: `UnknownTask` if `task_id` was never configured.
 
 ---
 
@@ -195,7 +222,7 @@ await cp.teardown("t1")
 
 ### `serve_context`
 
-`src/verity/control_plane/api.py:174-191`
+`src/verity/control_plane/api.py:274-294`
 
 ```python
 async def serve_context(
@@ -205,67 +232,62 @@ async def serve_context(
 
 **Does**: assembles the §9 bounded context from the store and serves it to the sandbox.
 1. `ContextAssembler.assemble(store, system_prompt=config.system_prompt(), goal=..., scratch=...,
-   retrieval=config.retrieval)` — regenerates a stable prefix (composed 3-layer system prompt +
-   ranked manifest) and a volatile tail (the task retrieval policy's selection + goal + scratch),
-   capped by the assembler's bounded-context limits (`context.py:139-177`).
-2. Wraps it in a `ServedContext(system_prompt=prefix, tail=volatile_tail, feedback=feedback)`.
-3. `await`s `task.sandbox.serve_context(served)` and returns the `ServedContext`.
+   retrieval=config.retrieval)` — regenerates a stable prefix (composed 3-layer system prompt + ranked
+   manifest) and a volatile tail (the task retrieval policy's selection + goal + scratch), capped by
+   the assembler's bounded-context limits.
+2. Wraps it in a `ServedContext`, including `workspace_objects =
+   config.object_provisioning.materialize(store)` — durable refs the agent builds on, selected by
+   status / recency / recorded score only (§9, no verifier knowledge), re-materialized every cycle
+   into a writable role.
+3. `await`s `task.sandbox.serve_context(served)` and returns it.
 
 **Downstream effect**: read-only against the store; pushes context into the sandbox runtime. The
-task's own `retrieval` policy (not the assembler default) drives the tail (`api.py:183`, verified by
-`tests/test_api.py:215-243`).
-
-**Returns**: the `ServedContext` that was served (so callers can inspect it).
+task's own `retrieval` policy (not the assembler default) drives the tail.
 
 **Errors**: `UnknownTask` for an unconfigured task.
 
-```python
-served = await cp.serve_context("t1", goal="find roots", scratch="", feedback="")
-assert "Store manifest" in served.system_prompt
-```
-
 ### `submit_proposal`
 
-`src/verity/control_plane/api.py:195-228`
+`src/verity/control_plane/api.py:322-366`
 
 ```python
-async def submit_proposal(
-    self, task_id: str, envelope: ProposalEnvelope
-) -> IntakeResult: ...
+async def submit_proposal(self, task_id: str, envelope: ProposalEnvelope) -> IntakeResult: ...
 ```
 
-This is the **intake "endpoint"** — the single path that turns a sandbox proposal into durable
-provenance. Step by step (`api.py:199-228`):
+The **intake "endpoint"** — the single path that turns a sandbox proposal into durable provenance.
+Step by step:
 
-1. **Shape check (§7.0, pre-gate).** Calls `config.shape_validator(envelope.artifact)`. If it
-   returns a `ShapeError`, the method logs `intake_shape_error` and returns
-   `IntakeResult(entered_protocol=False, shape_error=...)` — **nothing is recorded**: no object
-   harvested, no `proposed` row, no decision, and the verifier is never dispatched
-   (`tests/test_api.py:153-167`).
+1. **Shape check (§7.0, pre-gate).** `_check_shape` runs three kernel-first layers (`api.py:298-320`):
+   (a) the payload must be a **JSON object**; (b) any **required payload keys** the operation declares
+   must be present; (c) the domain's own `config.shape_validator`. If any returns a `ShapeError`, the
+   method logs `intake_shape_error` and returns `IntakeResult(entered_protocol=False, shape_error=...)`
+   — **nothing is recorded**: no object harvested, no `proposed` row, no decision, verifier never
+   dispatched.
 2. **Harvest before teardown.** `harvested = {name: store.put_object(data) for name, data in
    envelope.objects.items()}` — content-addresses each outbox object into the object store. This
    ordering (harvest before the sandbox regenerates) is the hard constraint.
 3. **Object sidecar.** If anything was harvested, replaces the artifact with
    `replace(artifact, objects=tuple(harvested.items()))` — a control-plane-owned sidecar; the domain
-   `payload` is stored verbatim and never reached into (`tests/test_api.py:178-196`).
+   `payload` is stored verbatim and never reached into (§4.1, ADR 0001).
 4. **Rationale segregation.** If `envelope.metadata` is non-empty, stores it on
    `task.rationale[artifact.id]` — the provenance/context channel, **never** sent to a gate (§10).
 5. **Propose.** `store.propose(artifact, envelope.operation)` writes a `proposed` artifact row + its
-   producing `operations` row.
-6. **Revision linkage.** `_link_revision_if_any(envelope)` — if the operation is `revises` and its
-   first parent is currently `REVISED`, calls `store.link_revision(...)` to set `revised_by`
-   (`api.py:262-273`).
-7. **Commit.** `await self._run_commit(task, artifact.id, envelope.objects)` runs the synchronous
-   §7 commit path in a worker thread, bridging the one opaque verifier handoff (see below). Logs
-   `proposal_committed` and returns `IntakeResult(entered_protocol=True, commit=..., harvested=...)`.
+   producing `operations` row; `_link_revision_if_any` sets `revised_by` when this is a `revises` of a
+   currently-`REVISED` parent.
+6. **Commit.** `await self._run_commit(...)` runs the synchronous §7 commit path in a worker thread,
+   bridging the one opaque verifier handoff (see below). On acceptance, if the task declares a
+   `harvester`, `_harvest_children` mints the domain's child artifacts (e.g. one `Feature` per declared
+   feature) and gates each through its own declared gate. Logs `proposal_committed` and returns
+   `IntakeResult(entered_protocol=True, commit=..., harvested=...)`.
 
-**The verifier handoff** (`_run_commit`, `api.py:230-260`): a `dispatch` closure resolves the
-declared store-inputs for the artifact's type (`config.gated_types.resolve(type)`), cuts the
-rationale-free `store_slice` via `resolve_declared_slice` (`independence.py:65`), builds a
-`VerifierRequest(proposal, store_slice, objects)`, and calls `verifier.dispatch(...)` across the
-thread boundary with `asyncio.run_coroutine_threadsafe`. `run_commit` then records every decision,
-validates the bundle is self-consistent and the transition is legal, and sets the status
-(`commit.py:148-221`). One handoff per proposal — not one per gate (`tests/test_api.py:142`).
+**The verifier handoff** (`_run_commit`, `api.py:409-453`): a `dispatch` closure resolves the declared
+store-inputs for the artifact's type (`config.gated_types.resolve(type)`), cuts the rationale-free
+`store_slice` via `resolve_declared_slice`, builds a `VerifierRequest(proposal, store_slice, objects)`,
+and calls `verifier.dispatch(...)` across the thread boundary with `asyncio.run_coroutine_threadsafe`.
+If `dispatch_timeout_s` elapses, the future is cancelled and a `GateUnavailable` is raised (a
+recoverable failed cycle, not an aborting timeout). `run_commit` records every decision, validates the
+bundle is self-consistent and the transition is legal, and sets the status. **One handoff per
+proposal — not one per gate.**
 
 **Downstream durable effects**, by verdict bundle status:
 
@@ -274,95 +296,141 @@ validates the bundle is self-consistent and the transition is legal, and sets th
 | `REJECTED` | `set_status → rejected` | `REJECTED` |
 | `REVISED` | `set_status → revised`; `CommitResult.defects` carries the localized defect list | `REVISED` |
 | `TENTATIVE` | provenance ensured, `set_status → tentative` | `TENTATIVE` |
-| `ACCEPTED` | provenance ensured, `set_status → accepted`; if `bundle.supersedes` is set, `accept_superseding` flips the incumbent to `superseded` atomically | `ACCEPTED` |
+| `ACCEPTED` | provenance ensured, `set_status → accepted`; if `bundle.supersedes` is set, the incumbent flips to `superseded` atomically | `ACCEPTED` |
 
 In all non-shape-error cases a `decisions` row is written for every `GateDecision` in the bundle.
 
-**Returns**: `IntakeResult` (`api.py:80-93`):
+**Errors**: `UnknownTask`; and from the commit path: `NoImplicitAccept` (type not gated, §5.7),
+`ProposerIsGate` (verifier identity == `artifact.created_by`, §7.2), `BundleInconsistent`,
+`CommitError`, `IllegalTransition`, `IndependenceViolation`, `StoreError`. A `GateUnavailable` is
+raised when the verifier could not render a verdict — caught by `run_cycle` as a recoverable failed
+cycle (it does **not** propagate out of `run`).
+
+### `IntakeResult`
+
+`src/verity/control_plane/api.py:113-132`
 
 ```python
 @dataclass(frozen=True, slots=True)
 class IntakeResult:
-    entered_protocol: bool                    # False iff shape-error (nothing recorded)
+    entered_protocol: bool                    # False on malformed OR sandbox-fail OR gate-unavailable
     shape_error: ShapeError | None = None     # the correction, when malformed
     commit: CommitResult | None = None        # the §7 result, when it entered the protocol
     harvested: dict[str, ObjectRef] = {}      # outbox name → content-addressed ref
+    sandbox_error: str | None = None          # the reason, when the sandbox produced no usable proposal
+    gate_error: str | None = None             # the reason, when the gate could not render a verdict
 ```
 
-**Errors**: `UnknownTask`; and from the commit path (`commit.py`): `NoImplicitAccept` (type not
-gated, §5.7), `ProposerIsGate` (verifier identity == `artifact.created_by`, §7.2),
-`BundleInconsistent` (a reject/refine decision under a non-matching status), `CommitError` (unknown
-incumbent to supersede, or a non-root artifact accepted with no provenance edge),
-`IllegalTransition` (the bundle's status is not a legal edge from `proposed`),
-`IndependenceViolation` (a declared store-input has no provider). `StoreError` if an id/op-id is
-reused.
-
-```python
-from verity.contracts import Artifact, ArtifactStatus, Operation, OperationStatus, ProposalEnvelope
-from verity.domains.fake import NOTE
-
-envelope = ProposalEnvelope(
-    artifact=Artifact(
-        id="n1", type=NOTE, payload={"text": "hi"},
-        status=ArtifactStatus.PROPOSED, created_by="agent", created_at="",
-    ),
-    operation=Operation(
-        op_id="op-n1", op_name="author", parents=("src",), output_id="n1",
-        status=OperationStatus.SUCCESS, created_at="",
-    ),
-    metadata="i derived this from the source",          # rationale → segregated channel
-    objects={"submission.py": b"def feature(df): return df"},  # outbox → harvested
-)
-
-result = await cp.submit_proposal("t1", envelope)
-assert result.entered_protocol is True
-assert result.commit.outcome.value == "accepted"
-ref = result.harvested["submission.py"]                 # ObjectRef(blob_ref="sha256:...", content_hash=...)
-```
+`entered_protocol` is `False` exactly when the proposal was malformed, the sandbox produced no usable
+proposal this cycle, **or** the gate was unavailable. For shape/sandbox failures **nothing is
+recorded**; for a gate failure the proposal *was* recorded (`proposed`) but no verdict could be
+rendered.
 
 ### `run_cycle`
 
-`src/verity/control_plane/api.py:277-285`
+`src/verity/control_plane/api.py:491-541`
 
 ```python
 async def run_cycle(self, task_id: str, *, goal: str, feedback: str = "") -> IntakeResult: ...
 ```
 
 **Does**: one complete read→propose→gate→commit cycle:
-1. `await serve_context(task_id, goal=goal, feedback=feedback)` (read).
-2. `envelope = await task.sandbox.collect_proposal()` (propose — pulls the proposal + outbox).
-3. `result = await submit_proposal(task_id, envelope)` (gate + commit).
-4. `await task.sandbox.regenerate()` — discards the ephemeral workspace (one ephemerality event,
-   §3.5). Harvest already happened inside `submit_proposal`, so it is safe to regenerate now.
+1. Advances `task.run_context.cycle` so this cycle's workers are labelled.
+2. `await serve_context(...)` (read).
+3. `envelope = await task.sandbox.collect_proposal()` — a `SandboxError` here is caught: the broken
+   workspace is regenerated, the failure is recorded as a failed cycle (`sandbox_error`), and the run
+   continues (a single bad cycle cannot destroy a multi-round session, §3.4 / #21). The transcript and
+   telemetry a failed/no-proposal cycle carries (`SandboxError.transcript` / `.telemetry` — e.g. a
+   recursion/step-budget limit-end) are still stored + recorded, so the failure stays debuggable and
+   the report names *why* it stopped (`stop_reason`).
+4. `result = await submit_proposal(...)` (gate + commit) — a `GateUnavailable` is caught symmetrically
+   as a `gate_error` failed cycle.
+5. `await task.sandbox.regenerate()` — discards the ephemeral workspace (one ephemerality event, §3.5).
+6. `_record_cycle` appends this cycle's facts (timings + agent telemetry + `transcript_ref`) to the
+   task `history`.
 
-**Returns**: the `IntakeResult` from the embedded `submit_proposal`.
-
-**Errors**: as `submit_proposal`, plus whatever the sandbox raises.
-
-```python
-result = await cp.run_cycle("t1", goal="make a good note", feedback="")
-```
+**Returns**: the `IntakeResult` (carrying `commit`, or a `sandbox_error`/`gate_error`).
 
 ### `run`
 
-`src/verity/control_plane/api.py:287-308`
+`src/verity/control_plane/api.py:574-635`
 
 ```python
 async def run(self, task_id: str, *, goal: str) -> list[IntakeResult]: ...
 ```
 
-**Does**: drives `run_cycle` repeatedly while `policy.should_continue(cycles_run=...)` (i.e. while
-`cycles < max_cycles`). After each cycle it appends the result, increments the counter, and — if
-`policy.stop_on_accept` and the cycle's `commit.status is ACCEPTED` — breaks early. Otherwise it
-computes `feedback` from the result (`_feedback_from`, `api.py:336-342`: a `shape-error: ...`
-message, or `refine: <defects>`, or empty) and feeds it into the next cycle's served context.
-Logs `run_complete`.
+**Does**: drives `run_cycle` while `policy.should_continue(cycles_run=...)`. A run is one execution of
+a task (task ≠ run): it **mints a fresh `run_id`** and resets `cycle = 0` up front, then **provisions
+the task's verifier at run-start and tears it down in a `finally` at run-end** (run-scoped lifecycle,
+#96 — so an idle verifier sibling never outlives its run; `provision`/`teardown` are no-ops for
+in-process verifiers). After each cycle it
+feeds the cycle's correction back into the next (`_feedback_from`, `api.py:672-697` — a shape-error, a
+refine defect list, a sandbox-failure reason, a gate-unavailable note, **or** a rejection reason). It
+counts consecutive failed cycles and aborts with `OrchestrationError` at
+`max_consecutive_sandbox_failures`; with `stop_on_accept` it breaks on the first accept. At the end it
+emits a `RunRecord` (via `_record_run`) and logs `run_complete`.
 
 **Returns**: the list of per-cycle `IntakeResult`s.
 
+**Errors**: `OrchestrationError` on too many consecutive failed cycles (a `RunRecord` with
+`status="aborted"` is still recorded first).
+
+---
+
+## Run metadata & reporting
+
+### `run_report`
+
+`src/verity/control_plane/api.py:628-646`
+
 ```python
-results = await cp.run("t1", goal="make a good note")
-# with stop_on_accept=True and a sandbox queuing two proposals, len(results) == 1 on first accept
+def run_report(self, task_id: str) -> RunReport: ...
+```
+
+A generic, machine-readable projection of the task's run so far (ROADMAP 5.3a), built from the
+recorded per-cycle facts + the store's lifecycle queries. It assumes nothing about the verifier or
+domain (decisions are projected verbatim, `score` nullable). `RunReport`
+(`control_plane/run_report.py:190`) carries `report_schema_version`, `task_id`, `tenant_id`,
+`generated_at`, `policy`, `cycles: list[CycleReport]`, a `summary: RunSummary` (with `cycles_run`,
+per-outcome counts, and the `accepted` ids), and run-total `agent_telemetry` (tokens / steps /
+tool-calls, or `None`). Each `CycleReport` also carries a `transcript_ref` (content hash of the
+always-on step transcript) and, on a budget/recursion limit-end, a `stop_reason` inside its
+`agent_telemetry` (which `RunReport.render_text` surfaces on the failed-cycle line).
+`RunReport.to_dict()` is the JSON form. The control plane **emits** it; parsing
+it is the receiving service's job (the `verity.eval` benchmark and `verity.telemetry` sink both consume
+it).
+
+### `run_records`
+
+`src/verity/control_plane/api.py:622-624`
+
+```python
+def run_records(self) -> RunRecordStore: ...
+```
+
+The run-results read side — operational metadata for finished runs (7.4.h). Each `run()` persists a
+`RunRecord` (`control_plane/run_record.py:24`) keyed by `(tenant_id, run_id)`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class RunRecord:
+    tenant_id: str
+    task_id: str                        # which task (configuration) this run executed
+    run_id: str                         # the run's own identity, distinct from the task
+    status: str                         # "complete" / "aborted" / …
+    report: RunReport
+    accepted_artifact_ids: tuple[str, ...] = ()   # pointers INTO the store, not a copy
+```
+
+`RunRecordStore` is a `Protocol` (`put` / `get(tenant_id, run_id)` / `list(tenant_id, *, task_id=None)`)
+with an `InMemoryRunRecordStore` default; the standing job server swaps the adapter. `RunRecord` points
+into the provenance store (the system of record) — it never copies artifacts.
+
+```python
+results = await cp.run("code", goal="write a submission script that runs cleanly")
+record = cp.run_records().list("default", task_id="code")[-1]
+assert record.status == "complete"
+assert record.accepted_artifact_ids            # ids you can resolve via cp.provenance(...)
 ```
 
 ---
@@ -373,7 +441,7 @@ All synchronous; all pure reads.
 
 ### `accepted_artifacts`
 
-`src/verity/control_plane/api.py:312-313`
+`src/verity/control_plane/api.py:648-649`
 
 ```python
 def accepted_artifacts(self, *, type: str | None = None) -> list[Artifact]: ...
@@ -381,77 +449,58 @@ def accepted_artifacts(self, *, type: str | None = None) -> list[Artifact]: ...
 Returns `store.query_artifacts(type=type, status=ACCEPTED)` — the accepted artifacts, optionally
 filtered by type, ordered by `(created_at, id)`.
 
-```python
-notes = cp.accepted_artifacts(type="Note")
-```
-
 ### `provenance`
 
-`src/verity/control_plane/api.py:315-317`
+`src/verity/control_plane/api.py:651-653`
 
 ```python
 def provenance(self, artifact_id: str) -> Provenance: ...
 ```
 Returns the full transitive lineage + gathered decisions behind an artifact — the "why do we believe
-X" answer (`store.get_provenance`, `store.py:518-546`). `Provenance` carries `artifact`,
-`operations`, `ancestors`, and `decisions` (`store.py:103-114`).
+X" answer. `Provenance` carries `artifact`, `operations`, `ancestors`, and `decisions`.
 
-**Errors**: `StoreError` if the artifact is unknown (`store.py:521`).
-
-```python
-prov = cp.provenance("n1")
-assert "src" in {a.id for a in prov.ancestors}
-assert any(d.verdict.value == "accept" for d in prov.decisions)
-```
+**Errors**: `StoreError` if the artifact is unknown.
 
 ### `rejected_log` / `superseded_log` / `revised_log`
 
-`src/verity/control_plane/api.py:319-326`
+`src/verity/control_plane/api.py:655-662`
 
 ```python
 def rejected_log(self,   *, type: str | None = None) -> list[Artifact]: ...
 def superseded_log(self, *, type: str | None = None) -> list[Artifact]: ...
 def revised_log(self,    *, type: str | None = None) -> list[Artifact]: ...
 ```
-The terminal/lineage logs: `rejected`, `superseded`, and `revised` artifacts respectively (the first
-two delegate to `store.rejected_log`/`store.superseded_log`; `revised_log` queries by the `REVISED`
-status). Optional `type` filter.
-
-```python
-for art in cp.rejected_log(type="Note"):
-    print(art.id, art.status.value)
-```
+The terminal/lineage logs: `rejected`, `superseded`, and `revised` artifacts respectively. Optional
+`type` filter.
 
 ### `rationale_for`
 
-`src/verity/control_plane/api.py:328-333`
+`src/verity/control_plane/api.py:664-669`
 
 ```python
 def rationale_for(self, artifact_id: str) -> str | None: ...
 ```
 Returns the agent's how/why summary captured at intake from `envelope.metadata`, by scanning every
-task's segregated `rationale` channel. Returns `None` if no rationale was stored. This is **never** a
-gate input (it lives off the `VerifierRequest` by construction).
-
-```python
-why = cp.rationale_for("n1")  # "i derived this from the source", or None
-```
+task's segregated `rationale` channel. Returns `None` if none was stored. This is **never** a gate
+input (it lives off the `VerifierRequest` by construction).
 
 ---
 
 ## Errors
 
-`src/verity/control_plane/api.py:72-77`
+`src/verity/control_plane/api.py:101-110`
 
 ```python
 class ControlPlaneError(RuntimeError):  # a misuse of the control-plane API
 class UnknownTask(ControlPlaneError):   # operation referenced an unconfigured task
+class OrchestrationError(ControlPlaneError):  # run aborted on too many consecutive failed cycles
 ```
 
-Commit-path errors surface through `submit_proposal` (`commit.py:115-143`): `CommitError`,
-`NoImplicitAccept`, `ProposerIsGate`, `BundleInconsistent`; lifecycle: `IllegalTransition`
-(`lifecycle.py:48`); independence: `IndependenceViolation` (`independence.py:37`); provider
-resolution: `ProviderError` (`ports.py:47`); store invariants: `StoreError` (`store.py:140`).
+Commit-path errors surface through `submit_proposal` (`commit.py`): `CommitError`, `NoImplicitAccept`,
+`ProposerIsGate`, `BundleInconsistent`; lifecycle: `IllegalTransition`; independence:
+`IndependenceViolation`; provider resolution: `ProviderError` (`contracts/ports.py:47`); store
+invariants: `StoreError`; transient gate infrastructure: `GateUnavailable` (`contracts/errors.py`,
+caught inside the loop).
 
 ---
 
@@ -464,19 +513,18 @@ expose the no-op-able lifecycle surface (`provision` / `teardown` / `health`).
 
 ### `ServiceLifecycle` (Protocol)
 
-`ports.py:54-64`
+`contracts/ports.py:55-64`
 
 ```python
 async def provision(self) -> None: ...
 async def teardown(self) -> None: ...
 async def health(self) -> bool: ...
 ```
-The optional lifecycle the control plane may drive (start/stop/health-check). In-process
-implementations satisfy these as no-ops.
+The optional lifecycle the control plane may drive. In-process implementations satisfy these as no-ops.
 
 ### `VerifierPort` (Protocol)
 
-`ports.py:86-101`
+`contracts/ports.py:87-101`
 
 ```python
 class VerifierPort(Protocol):
@@ -487,13 +535,13 @@ class VerifierPort(Protocol):
     async def health(self) -> bool: ...
 ```
 The advisory, **opaque** verifier. `dispatch` is the only path to a verdict — one proposal in, one
-`VerdictBundle` out; the verifier owns which checks run and in what order. `identity` must differ
-from the proposer's (`created_by`), enforced at commit (Builder/Breaker, §7.2). The sandbox has no
-path to it.
+`VerdictBundle` out; the verifier owns which checks run and in what order. `identity` must differ from
+the proposer's (`created_by`), enforced at commit (Builder/Breaker, §7.2). The sandbox has no path to
+it.
 
 ### `VerifierRequest`
 
-`ports.py:70-83`
+`contracts/ports.py:70-83`
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -506,14 +554,14 @@ class VerifierRequest:
 | Field | Type | Meaning |
 |---|---|---|
 | `proposal` | `Artifact` | The artifact under test. |
-| `store_slice` | `tuple[Artifact, ...]` | The declared, control-plane-cut slice (incumbents, rejected-log) for this type. A tuple of `Artifact` — which has **no rationale field**, so the proposer's reasoning cannot ride along (§10). |
+| `store_slice` | `tuple[Artifact, ...]` | The declared, control-plane-cut slice (incumbents, rejected-log) for this type. `Artifact` has **no rationale field**, so the proposer's reasoning cannot ride along (§10). |
 | `objects` | `Mapping[str, bytes]` | Harvested attachments a check may need to *execute* (e.g. submitted code), keyed by outbox name. |
 
 There is deliberately **no** rationale field and no gate name/pipeline on this type.
 
 ### `SandboxPort` (Protocol)
 
-`ports.py:137-151`
+`contracts/ports.py:150-163`
 
 ```python
 class SandboxPort(Protocol):
@@ -531,39 +579,33 @@ store.
 
 ### `ServedContext`
 
-`ports.py:107-119`
+`contracts/ports.py:107-128`
 
 ```python
 @dataclass(frozen=True, slots=True)
 class ServedContext:
-    system_prompt: str       # the stable prefix (composed system prompt + manifest)
-    manifest: str = ""       # reserved; serve_context currently folds the manifest into system_prompt
+    system_prompt: str       # the stable prefix (composed system prompt + manifest already folded in)
     tail: str = ""           # the volatile tail (retrieved artifacts + goal + scratch)
     feedback: str = ""       # last cycle's correction: a shape-error msg or a refine defect list
+    workspace_objects: Mapping[str, Mapping[str, bytes]] = {}  # durable objects → writable role this cycle
 ```
-Note: `serve_context` populates `system_prompt`, `tail`, and `feedback`; it leaves `manifest` empty
-because the assembler already renders the manifest into the stable prefix (`api.py:185-189`,
-`context.py:155`).
+`serve_context` populates `system_prompt`, `tail`, `feedback`, and `workspace_objects`. The manifest is
+folded into `system_prompt` (the cache-friendly stable prefix), not a separate field.
 
 ### `ProposalEnvelope`
 
-`ports.py:122-134`
+`contracts/ports.py:157-176`
 
 ```python
 @dataclass(frozen=True, slots=True)
 class ProposalEnvelope:
     artifact: Artifact
     operation: Operation
-    metadata: str = ""                  # agent's how/why → provenance channel, kept OFF the verifier
-    objects: Mapping[str, bytes] = {}   # outbox contents, harvested before teardown
+    metadata: str = ""                              # agent's how/why → provenance channel, OFF the verifier
+    objects: Mapping[str, bytes] = {}               # outbox contents, harvested before teardown
+    agent_telemetry: Mapping[str, object] | None = None  # tokens / steps / model (5.3b), or None
+    transcript: bytes | None = None                 # rendered step transcript (instrumentation), or None
 ```
-
-| Field | Type | Meaning |
-|---|---|---|
-| `artifact` | `Artifact` | The proposed artifact (status must be `PROPOSED`). |
-| `operation` | `Operation` | The provenance edge that produced it (`parents → output_id`). |
-| `metadata` | `str` | The agent's rationale — stored on the segregated channel, never sent to a gate. |
-| `objects` | `Mapping[str, bytes]` | Outbox objects, content-addressed at intake. |
 
 ### `VerdictBundle`
 
@@ -577,12 +619,12 @@ class VerdictBundle:
     supersedes: str | None = None                # an incumbent this proposal beats, applied atomically on accept
 ```
 The opaque verifier's reply to one dispatch. The control plane records the decisions and sets the
-status **after** validating self-consistency (`commit.py:224-234`) and that the transition is legal
-(`lifecycle.py:62`), but never sequences or parses.
+status **after** validating self-consistency and that the transition is legal, but never sequences or
+parses.
 
 ### `GateDecision`
 
-`contracts/model.py:142-155`
+`contracts/model.py:143-155`
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -594,18 +636,40 @@ class GateDecision:
     score: float | None = None
 ```
 One recorded ruling inside a bundle. Self-contained (no artifact id) so it crosses the wire cleanly;
-the control plane turns each into a durable `Decision` row at commit (`commit.py:184-196`).
+the control plane turns each into a durable `Decision` row at commit.
 
 ### `GateVerdict`
 
-`contracts/model.py:126-140` — one *internal* check's verdict (`kind`, `rationale`, `defects`,
-`score`, plus `supersedes` for a selection check). A verifier primitive returns this; the verifier
-composes per-check verdicts into the `GateDecision`s of a `VerdictBundle`. Not handed across the
-control-plane boundary directly.
+`contracts/model.py:127-140` — one *internal* check's verdict (`kind`, `rationale`, `defects`, `score`,
+plus `supersedes` for a selection check). A verifier primitive returns this; the verifier composes
+per-check verdicts into the `GateDecision`s of a `VerdictBundle`. Not handed across the control-plane
+boundary directly.
+
+### `RunContext` / `SupportsRunContext`
+
+`contracts/run_context.py:26-49`
+
+```python
+@dataclass(slots=True)
+class RunContext:                       # mutable on purpose
+    tenant_id: str = "default"
+    run_id: str = ""
+    cycle: int = 0
+
+@runtime_checkable
+class SupportsRunContext(Protocol):
+    def bind_run_context(self, ctx: RunContext) -> None: ...
+```
+The neutral `(tenant_id, run_id, cycle)` identity of the work a cycle provisions (ROADMAP 7.4.h, ADR
+0003). The control plane binds one mutable cell per task at `configure`, then advances `cycle` per
+cycle and sets `run_id` per `run()` in place; a bound service (a backend-backed sandbox/verifier) reads
+the current values lazily and stamps them onto every worker's `{harness, tenant, run, cycle, role,
+config}` labels — the seam the `verity-reaper` and run-control machinery key off. An in-process service
+that doesn't implement the protocol simply isn't bound.
 
 ### `ProviderRegistry[PortT]`
 
-`ports.py:157-185`
+`contracts/ports.py:169-196`
 
 ```python
 class ProviderRegistry[PortT]:
@@ -614,19 +678,21 @@ class ProviderRegistry[PortT]:
     def create(self, key: str) -> PortT: ...                                  # raises ProviderError if unknown
     def keys(self) -> tuple[str, ...]: ...
 ```
-A config-keyed registry of zero-arg port factories. Module-level singletons `SANDBOX_PROVIDERS` and
-`VERIFIER_PROVIDERS` are the defaults the control plane resolves against (`ports.py:189-190`).
+A config-keyed registry of zero-arg port factories. Module-level singletons `SANDBOX_PROVIDERS` /
+`VERIFIER_PROVIDERS` still exist in `contracts.ports` (`ports.py:201-202`) for callers that want a
+shared registry, but the **control plane no longer defaults to them** — its registries are empty unless
+you register through `register_sandbox`/`register_verifier` or pass populated ones to `__init__`.
 
 ### Boundary value model (referenced by the ports)
 
 From `src/verity/contracts/model.py`:
 
-- **`Artifact`** (`model.py:86-107`): `id, type, payload, status, created_by, created_at,
+- **`Artifact`** (`model.py:87`): `id, type, payload, status, created_by, created_at,
   superseded_by=None, revised_by=None, is_root=False, objects=()`. Frozen; a status change produces a
   new snapshot via the commit path. `objects` is the control-plane sidecar (name → `ObjectRef`).
-- **`Operation`** (`model.py:110-124`): `op_id, op_name, parents, output_id, status, created_at` — a
-  typed provenance edge.
-- **`ObjectRef`** (`model.py:69-79`): `blob_ref` (e.g. `"sha256:<hash>"`), `content_hash`.
+- **`Operation`** (`model.py:111`): `op_id, op_name, parents, output_id, status, created_at` — a typed
+  provenance edge.
+- **`ObjectRef`** (`model.py:70`): `blob_ref` (e.g. `"sha256:<hash>"`), `content_hash`.
 - **Enums** (`model.py:37-62`): `ArtifactStatus` (`proposed/tentative/accepted/rejected/superseded/
   revised`), `OperationStatus` (`success/failed/retried`), `VerdictKind` (`accept/reject/refine`).
 
@@ -634,8 +700,8 @@ From `src/verity/contracts/model.py`:
 
 ## Lifecycle state machine
 
-`src/verity/control_plane/lifecycle.py:32-45` — the transitions the commit path validates the
-verifier's recommended status against before writing:
+`src/verity/control_plane/lifecycle.py` — the transitions the commit path validates the verifier's
+recommended status against before writing:
 
 ```
 proposed  -> { tentative, accepted, rejected, revised }
@@ -649,126 +715,205 @@ rejected | superseded | revised -> {}   (terminal, retained)
 
 ---
 
-## End-to-end: one full cycle
+## Worked example — applying a task to a generic control plane
 
-A complete configure → serve → intake → gate → commit → extract, mirroring `tests/test_api.py`. This
-uses the in-tree fake domain and minimal in-test port doubles.
+The MVP validation target is the §12 feature-engineering domain, exercised through the **`fe-kaggle`**
+task. The example below shows the **genericity contract** in action: a `ControlPlane` is built knowing
+no task, and a task is *applied to it* through a composition-layer builder — the one layer allowed to
+know both a domain and the control plane (`src/verity/composition/`).
+
+### A. Programmatic — apply a task to a generic control plane, then run it
+
+A composition builder registers the task's sandbox + verifier providers via the CP's API, seeds any
+input data into `cp.store`, and calls `cp.configure(...)`. The sandbox runs as a **worker**
+(`BackendSandboxDriver`); a domain that executes code (feature-engineering) keeps its gate logic
+**trusted and in-process** and runs the untrusted submission as a `BackendCodeRunner` worker — so an
+answer key never enters any worker. The worker substrate (Docker now) is chosen by the `WorkerBackend`
+you pass; `ProvisioningConfig` carries the substrate shape, kept **off** `TaskConfig`. The trivial
+`code` task is the smallest illustration (no data, no creds):
 
 ```python
 import asyncio
-from verity.contracts import (
-    Artifact, ArtifactStatus, Operation, OperationStatus,
-    ProposalEnvelope, ProviderRegistry, SandboxPort, ServedContext,
-    VerdictBundle, GateDecision, VerdictKind, VerifierPort, VerifierRequest,
-)
+
+from verity.composition import configure_code_task
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
-from verity.control_plane.config import TaskConfig
-from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import SqliteStore
-from verity.domains.fake import NOTE, SOURCE, build_fake_domain
-
-
-class StubVerifier:                       # a VerifierPort
-    identity = "fake-verifier"            # MUST differ from the proposer's created_by
-    async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
-        return VerdictBundle(
-            status=ArtifactStatus.ACCEPTED,
-            decisions=(
-                GateDecision(gate="well-formed", kind=VerdictKind.ACCEPT, rationale="ok"),
-                GateDecision(gate="worth-keeping", kind=VerdictKind.ACCEPT, rationale="ok"),
-            ),
-        )
-    async def provision(self): ...
-    async def teardown(self): ...
-    async def health(self): return True
-
-
-class StubSandbox:                        # a SandboxPort
-    def __init__(self, proposals): self.queue = list(proposals); self.regenerated = 0
-    async def serve_context(self, context: ServedContext): ...
-    async def collect_proposal(self) -> ProposalEnvelope: return self.queue.pop(0)
-    async def regenerate(self): self.regenerated += 1
-    async def provision(self): ...
-    async def teardown(self): ...
-    async def health(self): return True
+from verity.domains.code import SUBMISSION
+from verity.provisioning import DockerBackend
 
 
 async def main() -> None:
-    # 0. store seeded with a root Source the Note's `author` op consumes
-    store = SqliteStore()
-    store.propose(
-        Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
-        Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
-    )
+    # 1. A GENERIC control plane — it knows no task at construction.
+    cp = ControlPlane(SqliteStore(), policy=OrchestrationPolicy(max_cycles=4))
 
-    note = ProposalEnvelope(
-        artifact=Artifact("n1", NOTE, {"text": "hi"}, ArtifactStatus.PROPOSED, "agent", ""),
-        operation=Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, ""),
-        metadata="derived from src",
-    )
+    # 2. Apply a task through the CP's API (register providers + seed data + configure). The
+    #    DockerBackend launches sandbox + code-runner worker containers per cycle. The FE-Kaggle
+    #    task is applied the same way via `configure_fe_kaggle_task` (it additionally needs the
+    #    train/test split + a `KaggleScorer`); the `code` task needs no inputs.
+    await configure_code_task(cp, backend=DockerBackend())
 
-    sandbox_providers: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
-    verifier_providers: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
-    sandbox_providers.register("stub", lambda: StubSandbox([note]))
-    verifier_providers.register("stub", lambda: StubVerifier())
+    # 3. Drive read → propose → gate → commit until the policy stops.
+    await cp.run("code", goal="write a submission script that runs cleanly")
 
-    cp = ControlPlane(
-        store,
-        policy=OrchestrationPolicy(max_cycles=5, stop_on_accept=True),
-        sandbox_providers=sandbox_providers,
-        verifier_providers=verifier_providers,
-    )
-
-    domain = build_fake_domain()
-    config = TaskConfig(
-        task_id="t1", instructions="write notes",
-        domain_instructions="a Note has a text field",
-        schema=domain.schema, gated_types=domain.gated_types,
-        retrieval=DefaultRetrievalPolicy(), shape_validator=domain.shape_validator,
-        sandbox_key="stub", verifier_key="stub",
-    )
-
-    # 1. configure -> stamps schema v1, provisions services
-    await cp.configure(config)
-
-    # 2. serve context (optional when using run/run_cycle, which call it)
-    served = await cp.serve_context("t1", goal="make a note")
-
-    # 3-5. intake -> gate -> commit (a single cycle); harvest happens inside, then regenerate
-    results = await cp.run("t1", goal="make a note")
-    assert results[0].commit.outcome.value == "accepted"
-
-    # 6. extract
-    accepted = cp.accepted_artifacts(type=NOTE)        # [Artifact(id="n1", status=accepted, ...)]
-    prov = cp.provenance("n1")                          # ancestors include "src"; decisions include accepts
-    why = cp.rationale_for("n1")                        # "derived from src" (never a gate input)
-    assert accepted[0].status is ArtifactStatus.ACCEPTED
+    # 4. Extract: the accepted submissions, the audit report, and the run record.
+    accepted = cp.accepted_artifacts(type=SUBMISSION)
+    report = cp.run_report("code")
+    print("accepted:", [a.id for a in accepted])
+    print("cycles:", report.summary.cycles_run, "outcomes:", report.summary.outcomes)
 
 
 asyncio.run(main())
 ```
 
+For the real feature-engineering workload, apply `fe-kaggle` instead — programmatically via
+`configure_fe_kaggle_task`, or (the usual path) through the standing daemon's catalog from a
+declarative request file (section B). The genericity is the same: the control plane never learns what
+the task is.
+
+### B. The standing daemon — one container, many tasks, no rebuild (Phase 8, ADR 0004)
+
+The same image also runs a **long-lived control-plane daemon** (`verity serve`) you configure at
+runtime — define tasks, ingest data, run, and pull results without rebuilding (ADR 0004). The daemon
+keeps a `DockerBackend`, the `TaskCatalog`, and a **generic `ControlPlane` + `SqliteStore` per task
+instance** as process state, and serves an HTTP surface over a **Unix-domain socket** inside the
+container. The `verity` console script is a thin **client** over that socket; `just cp <verb>` is
+`docker exec verity-cp verity <verb>`.
+
+Lifecycle: `just cp-serve` (build images + `docker compose -f infra/compose.daemon.yml up -d`),
+`just cp <verb>`, `just cp-down`. Verbs: `catalog` (task types + published contracts), `ingest`
+(exchange file → a data handle), `create` (a `TaskRequest` → a `task_id`), `run` (background → a
+`run_id`), `status` / `results`, `export` (durable artifacts → the exchange out-dir).
+
+`infra/compose.daemon.yml` adds two CP-only volumes on top of the socket + staging mounts:
+
+| Env var | Default (container) | Meaning |
+|---|---|---|
+| `VERITY_SOCKET` | `/run/verity.sock` | The daemon's IPC socket; the v1 trust boundary (local / `docker exec`-only, no auth). |
+| `VERITY_EXCHANGE` | `/exchange` | The client↔CP file channel (`in/` for ingest, `out/` for export). **CP-only — never a worker.** Host dir via `VERITY_EXCHANGE_HOST` (default `/tmp/verity-exchange`). |
+| `VERITY_STORE_ROOT` | `/var/lib/verity` | Persistent per-task stores + task definitions (durable across restart). **CP-only.** Host dir via `VERITY_STORE_HOST` (default `/tmp/verity-store`). |
+| `VERITY_WORKER_STAGING` | *(unset)* | Shared host↔container staging dir, at an **identical path** on both, so worker bind-mounts resolve on the host daemon (the sibling-mount fix). |
+| `VERITY_SANDBOX_IMAGE` | `verity-sandbox:latest` | The agent worker image. |
+| `VERITY_MODEL` | `anthropic:claude-sonnet-4-6` | Default provider string for the sandbox model (overridable per task at `create`). |
+| `VERITY_LOCAL_BASE_URL` | *(unset)* | If set, `VERITY_MODEL` is a local model served at this OpenAI-compatible URL (e.g. `http://host.docker.internal:11434/v1`). |
+
+The model key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) is forwarded to the agent worker via sandbox
+env-passthrough. The exchange + store volumes reach the control-plane
+container alone — workers receive bytes **only** through the CP provisioning path, asserted by
+`tests/test_daemon_volume_isolation.py` (a `WorkerSpec` has no host-bind-mount field; neither host
+path nor the answer key reaches a worker). The end-to-end live proof — two task types and a restart,
+no rebuild — is `tests/test_daemon_live.py`.
+
+#### The `fe-kaggle` task type — the real Kaggle leaderboard as the final-test gate
+
+`fe-kaggle` is the feature-engineering task with the **live competition leaderboard** as its
+authoritative gate (a goal-seeking ladder: a cheap local-hold-out proxy filters every cycle, then a
+**competitive** rung reads the live leaderboard and only lets through an attempt whose *calibrated*
+hold-out estimate would reach the top-`target_percentile`% — below the bar the attempt is **refined**,
+the gap fed back, spending no submission; the hard gate then regenerates the submission on the full
+train + the real `test.csv`, submits to Kaggle, and accepts only what **beats our best prior public
+score**). The Kaggle submit happens on the **trusted verifier
+side** — `KAGGLE_USERNAME`/`KAGGLE_KEY` are forwarded to the verifier sibling only and are **never**
+sent to a worker; the competition's daily submission cap is read from its Kaggle metadata (default 5,
+overridable via the `daily_submission_limit` knob) and the gate **blocks** until budget frees.
+
+**Data prep is the user's, not the control plane's** (ADR 0005 / #74): you split the data into
+per-role bundles *outside* Verity and the CP routes opaque **role → {filename: blob}** maps — it reads
+no `target`/`id_column` and derives no answer key. Prepare with `tools/prepare_fe_data.py` (it writes
+an `agent/` bundle and a `verifier/` bundle), ingest each role file, and route it with
+`--file ROLE:NAME=HANDLE`:
+
+```bash
+verity ingest agent/train.csv                 # -> {h1}  (subdir paths allowed)
+verity ingest verifier/holdout_labels.csv     # -> {h2}  (the answer key — verifier role only)
+# ...ingest every agent/* and verifier/* file...
+verity create --request-file task.json \
+  --file agent:train.csv={h1} --file verifier:holdout_labels.csv={h2} ...   # repeatable -> {task_id}
+```
+
+`--request-file` reads a full `TaskRequest` JSON (the catalog's declarative form, e.g. a task package's
+`task.json`; it supersedes the request-shaping flags, only `--file`/`--goal` still apply). The
+answer-key isolation invariant holds **by construction**: `holdout_labels.csv` is a verifier-role
+file the CP cannot route to the agent. The committed, runnable package — `task.json` (local-agent
+default), `run.sh` (which runs the prep + role routing for you), and the full setup protocol (token,
+accepting the competition rules) — is operator-local and versioned in the sibling `verity-analysis`
+repo, since it carries dataset-bearing inputs. Read the live contract with
+`verity catalog --type fe-kaggle`.
+
+#### Adding a task or verifier type (a plugin) — no control-plane rebuild (Phase 9.3, ADR 0006)
+
+Task and verifier types are **discovered** from Python entry-point groups at boot, not compiled in, so
+a new type ships **a container + an installed package that advertises an entry point — with no
+control-plane rebuild**. Two groups: `verity.task_types` (read by the CP daemon) and
+`verity.verifier_types` (read by the verifier image). Each entry point resolves to a
+`register(registry)` callable (the same shape as `TaskCatalog.register`):
+
+```python
+# my_pkg/verity_plugin.py
+def register(catalog):
+    catalog.register("my-task", build_my_task, describe=describe_my_task)
+```
+
+```toml
+# the plugin package's own pyproject.toml
+[project.entry-points."verity.task_types"]
+my-task = "my_pkg.verity_plugin:register"
+```
+
+Install the package into the daemon image (or alongside it) and `verity catalog` lists `my-task` — no
+`verity` source edit. The built-ins (`code`, `fe-kaggle`; `fake`, `fe-kaggle` verifiers) are themselves
+declared this way and load **first**, so they keep priority under the **incumbent-wins** collision
+policy; a broken plugin is logged and skipped (the daemon still boots). **Note:** entry points come
+from *installed* dist metadata — run `uv sync` (or reinstall) after declaring them.
+
+### D. External HTTP/REST — the network control API (Phase 8.4, ADR 0004 (e))
+
+The *same* `build_app` the daemon serves over a Unix socket also binds to a **network TCP port**, so a
+remote client (no `docker exec`, no shared volume) can drive the control plane:
+
+```sh
+VERITY_API_TOKEN=<secret> verity serve --http 0.0.0.0:8080   # (or `python -m verity.service` + $VERITY_HTTP)
+```
+
+**Auth — bearer token (resolves ADR 0004 open Q3).** When bound to a port, **every route except
+`GET /health` requires `Authorization: Bearer $VERITY_API_TOKEN`** (401 otherwise); the daemon
+**refuses to start a network binding without a token**. The Unix-socket binding stays auth-free (the
+local trust boundary). The authenticated principal is stashed on the request (the identity hook);
+per-principal authz/tenancy is deferred (#58). mTLS / OAuth are out of scope for v1.
+
+**Byte data plane (pulled forward from #3, bounded).** Because a network client has no shared
+exchange volume:
+
+| Route | Purpose |
+|---|---|
+| `POST /objects` (raw body, non-JSON) | Upload object **bytes** → a content-addressed `{handle}` (vs the JSON `{"name": …}` form that reads the server-side exchange). Capped (413 over the limit), in-memory, no streaming. |
+| `GET /artifacts/{run_id}/{object_path}` | Download a single durable artifact object's **bytes** (`<artifact_id>/<name>` or a bare `<name>`). |
+
+All other routes are the §(d) verbs (`/catalog`, `/tasks`, `/tasks/{id}/runs`, `/runs/{id}`,
+`/runs/{id}/results`, `/runs/{id}/export`) — **endpoint-parity with the CLI**. The `verity` CLI is the
+same client against a TCP daemon: `verity --url http://host:8080 --token <secret> catalog`
+(or `$VERITY_URL` / `$VERITY_API_TOKEN`). Removing the shared exchange volume entirely and
+large-file streaming remain the deferred #3 data-plane work.
+
 ---
 
-## Notable / ambiguous findings
+## Notable findings
 
-- **Class name (#16 — closed, no change needed).** The public class is `ControlPlane`; no
-  `ControlPlaneApi` symbol exists anywhere in the package, and the repo is consistent on
-  `ControlPlane`. The `...Api` name only ever appeared in the audit's orientation prompt, not the code.
-- **`refine_cap` enforced (#17 — resolved).** The cap now binds per *lineage* at commit:
-  `_count_lineage_refines` (over the store's `revises` chain) → `run_commit(refine_exhausted=…)`
-  converts a capped refine into a terminal `rejected`. `TaskState.refine_counts` was removed in
-  favour of the store-derived count.
-- **`ServedContext.manifest` removed (#18 — resolved).** The manifest is delivered folded into
-  `system_prompt` (the stable prefix); the dead field was removed and the docstring updated.
-- **`teardown` does not deregister the task.** It tears down the services but leaves the `_tasks`
-  entry and the stamped schema version in place; a subsequent call on that `task_id` would still find
-  the (now torn-down) services.
-- **Independence/rationale segregation is structural, not conventional.** `store_slice` is a tuple of
-  `Artifact` (no rationale field) and `resolve_declared_slice` asserts the resolved slice never
-  exceeds the declared allowlist (`independence.py:84-91`) — so "no proposer rationale, no undeclared
-  state reaches a gate" holds at the type level.
+- **The control plane is provably task-agnostic.** Empty registries by default + the
+  `register_sandbox`/`register_verifier`/`configure` application path + the AST import guard
+  (`tests/test_control_plane_genericity.py`) mean FE-specific code lives only in
+  `verity.domains.feature_engineering` + `verity.composition.fe`; `verity.control_plane` has zero
+  domain references. The earlier `build_fe_control_plane` (which built a `ControlPlane` inside an
+  FE-specific function) was deleted for this reason.
+- **`refine_cap` enforced per lineage at commit.** `_count_lineage_refines` over the store's `revises`
+  chain → `run_commit(refine_exhausted=…)` converts a capped refine into a terminal `rejected`.
+- **Degrade-don't-crash is symmetric.** A sandbox that can't propose and a verifier that can't render a
+  verdict are both *recorded, fed-back* failed cycles (`sandbox_error` / `gate_error`); only
+  `max_consecutive_sandbox_failures` in a row aborts the run.
+- **`teardown` does not deregister the task.** It tears down the services but leaves the `_tasks` entry
+  and the stamped schema version in place.
+- **Independence/rationale segregation is structural.** `store_slice` is a tuple of `Artifact` (no
+  rationale field) and `resolve_declared_slice` asserts the resolved slice never exceeds the declared
+  allowlist — so "no proposer rationale, no undeclared state reaches a gate" holds at the type level.
 - **Thread-crossing commit.** The sync §7 commit path runs in a worker thread (`asyncio.to_thread`)
   while the async verifier is awaited via `run_coroutine_threadsafe`; the `SqliteStore` connection is
-  opened `check_same_thread=False` precisely because the control plane is the sole serialized mutator
-  (`store.py:274-278`).
+  opened `check_same_thread=False` precisely because the control plane is the sole serialized mutator.

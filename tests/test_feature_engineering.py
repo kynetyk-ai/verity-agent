@@ -10,6 +10,7 @@ cycle. The two real ``Submission`` gates land in 4.2; here the verifier is a scr
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import pytest
 from tools.harness.dataset import stratified_split
 from tools.harness.stub_verifier import StubVerifier
 
+from verity.composition.fe_kaggle import configure_fe_kaggle_task
 from verity.contracts import (
     Artifact,
     ArtifactStatus,
@@ -25,24 +27,28 @@ from verity.contracts import (
     ProviderRegistry,
     SandboxPort,
     ServedContext,
+    VerdictKind,
     VerifierPort,
 )
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.commit import CommitOutcome, ShapeError
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import (
+    _PRESETS,
     DefaultRetrievalPolicy,
     ObjectProvisioningPolicy,
     ObjectProvisionMode,
+    ProvisionSelect,
+    provisioning_policy,
 )
-from verity.control_plane.store import SqliteStore
+from verity.control_plane.store import Decision, SqliteStore
 from verity.domains.feature_engineering import (
     DATASET_VERSION,
     ENTRYPOINT,
-    FEATURE,
     REQUIREMENTS,
     SUBMISSION,
     build_feature_engineering_domain,
+    declared_objects,
 )
 from verity.sandbox import AgentSandbox, ProposalDescriptor
 from verity.sandbox.descriptor import RESERVED_PROPOSAL_NAME
@@ -54,22 +60,22 @@ def test_schema_and_gating_match_section_12() -> None:
     domain = build_feature_engineering_domain()
     types = {t.name: t for t in domain.schema.types()}
     assert types[DATASET_VERSION].is_root is True
-    assert types[SUBMISSION].is_root is False and types[FEATURE].is_root is False
+    assert types[SUBMISSION].is_root is False
+    # the broadened domain dropped the harvested Feature type (submission is the unit)
+    assert FEATURE_REMOVED not in types
     ops = {o.name: o for o in domain.schema.operations()}
     assert ops["submit"].inputs == (DATASET_VERSION,) and ops["submit"].output == SUBMISSION
-    assert ops["harvest"].inputs == (SUBMISSION,) and ops["harvest"].output == FEATURE
     assert ops["revises"].inputs == (SUBMISSION,) and ops["revises"].output == SUBMISSION
-    # Submission is gated with the incumbents + rejected-log slice; Feature is gated, slice empty.
-    assert domain.gated_types.is_gated(SUBMISSION) and domain.gated_types.is_gated(FEATURE)
-    assert domain.gated_types.resolve(FEATURE) == frozenset()
+    assert "harvest" not in ops  # no feature harvest
+    # Submission is gated with the incumbents + rejected-log slice; no Feature type is gated.
+    assert domain.gated_types.is_gated(SUBMISSION)
+
+
+FEATURE_REMOVED = "Feature"  # the type the broadened domain no longer registers
 
 
 def _submission_payload() -> dict[str, object]:
-    return {
-        "entrypoint": ENTRYPOINT,
-        "requirements": REQUIREMENTS,
-        "features": [{"name": "u_g", "definition": "u - g", "rationale": "colour index"}],
-    }
+    return {"entrypoint": ENTRYPOINT, "requirements": REQUIREMENTS}
 
 
 def _artifact(payload: object, *, type_: str = SUBMISSION) -> Artifact:
@@ -88,9 +94,6 @@ def test_shape_accepts_a_well_formed_submission() -> None:
     [
         lambda p: p.pop("entrypoint"),
         lambda p: p.pop("requirements"),
-        lambda p: p.update(features=[]),
-        lambda p: p.update(features=[{"name": "x"}]),  # missing definition/rationale
-        lambda p: p.update(features=[{"name": "x", "definition": "y", "rationale": ""}]),
     ],
 )
 def test_shape_rejects_malformed_submissions(mutate: object) -> None:
@@ -100,13 +103,12 @@ def test_shape_rejects_malformed_submissions(mutate: object) -> None:
     assert isinstance(domain.shape_validator(_artifact(payload)), ShapeError)
 
 
-def test_more_than_five_features_is_malformed() -> None:
-    domain = build_feature_engineering_domain()
-    payload = _submission_payload()
-    payload["features"] = [
-        {"name": f"f{i}", "definition": "d", "rationale": "r"} for i in range(6)
-    ]
-    assert isinstance(domain.shape_validator(_artifact(payload)), ShapeError)
+def test_declared_objects_names_the_submission_attachments() -> None:
+    # the harvest keeps only what a Submission declares: its entrypoint + requirements files
+    declared = declared_objects(_artifact(_submission_payload()))
+    assert declared == frozenset({ENTRYPOINT, REQUIREMENTS})
+    # a non-Submission (or a payload without the keys) declares no objects
+    assert declared_objects(_artifact({}, type_=DATASET_VERSION)) == frozenset()
 
 
 # --------------------------------------------------------------------------- the split helper
@@ -174,13 +176,13 @@ def _store_with_three() -> SqliteStore:
 
 
 def test_policy_none_provisions_nothing() -> None:
-    policy = ObjectProvisioningPolicy(mode=ObjectProvisionMode.NONE)
+    policy = provisioning_policy(ObjectProvisionMode.NONE)
     assert policy.materialize(_store_with_three()) == {}
 
 
 def test_policy_last_accepted_takes_the_most_recent_accepted() -> None:
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(_store_with_three())["scratch"]
     # the rejected s3 is more recent but not accepted; s2 (latest accepted) wins, flat + a manifest.
@@ -189,8 +191,8 @@ def test_policy_last_accepted_takes_the_most_recent_accepted() -> None:
 
 
 def test_policy_all_accepted_ranks_by_recency_with_a_manifest() -> None:
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
     )
     out = policy.materialize(_store_with_three())["scratch"]
     # newest-first ranked subdirs (01 = s2, the most recent accepted), plus the manifest.
@@ -200,14 +202,186 @@ def test_policy_all_accepted_ranks_by_recency_with_a_manifest() -> None:
     assert "| 01 | s2 |" in manifest and "| 02 | s1 |" in manifest  # ordered, meaningful
 
 
-def test_policy_all_includes_terminal_and_respects_cap() -> None:
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.ALL, type_filter=SUBMISSION, max_objects=2
+def test_policy_all_includes_terminal_and_respects_artifact_limit() -> None:
+    # #133: limits are opt-in (default unlimited) and ARTIFACT-granular; omissions are stated.
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL, type_filter=SUBMISSION, max_artifacts=2
     )
     out = policy.materialize(_store_with_three())["scratch"]
-    # the cap bounds object files (2), but the manifest always rides along (metadata, not payload).
     object_files = [k for k in out if not k.endswith("INDEX.md")]
     assert len(object_files) == 2 and "provided/INDEX.md" in out
+    assert "(1 artifact(s) omitted by the provisioning limits)" in out["provided/INDEX.md"].decode()
+
+
+def test_policy_last_revised_or_accepted_picks_the_in_flight_revised() -> None:
+    # The agent's most-recent submission is `revised` (its refine target). Provision THAT so the
+    # next cycle edits it, not just the older accepted incumbent or nothing at all (#51).
+    store = SqliteStore()
+    _seed_with_object(store, art_id="s1", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"accepted", ts="t1")
+    _seed_with_object(store, art_id="s2", status=ArtifactStatus.REVISED,
+                      name=ENTRYPOINT, data=b"refining", ts="t2")
+    policy = provisioning_policy(
+        ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(store)["scratch"]
+    assert out["provided/submission.py"] == b"refining"  # the in-flight revised, not the accepted
+    assert b"s2" in out["provided/INDEX.md"]
+
+
+def test_policy_last_revised_or_accepted_falls_back_to_accepted() -> None:
+    # With no in-flight revised it behaves like LAST_ACCEPTED, ignoring the more-recent rejected.
+    policy = provisioning_policy(
+        ObjectProvisionMode.LAST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(_store_with_three())["scratch"]
+    assert out["provided/submission.py"] == b"v2"  # s2 (latest accepted); rejected s3 ignored
+
+
+def _record_score(store: SqliteStore, art_id: str, score: float) -> None:
+    """Record a gate decision carrying ``score`` — what ``_artifact_score`` (and BEST) reads."""
+    store.record_decision(
+        Decision(
+            artifact_id=art_id, gate="selection", verdict=VerdictKind.ACCEPT,
+            rationale="seeded", score=score, created_at="t",
+        )
+    )
+
+
+def test_policy_best_picks_higher_score_not_newest() -> None:
+    # The #95 fix: among accepted/revised, BEST hands the agent its highest-SCORING prior, even when
+    # an older artifact outscores a newer one — so the agent never iterates away from its peak.
+    store = SqliteStore()
+    _seed_with_object(store, art_id="s1", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"older-better", ts="t1")
+    _seed_with_object(store, art_id="s2", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"newer-worse", ts="t2")
+    _record_score(store, "s1", 0.90)
+    _record_score(store, "s2", 0.50)
+    policy = provisioning_policy(
+        ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(store)["scratch"]
+    assert out["provided/submission.py"] == b"older-better"  # score beats recency
+    assert b"s1" in out["provided/INDEX.md"]
+
+
+def test_policy_best_falls_back_to_recency_when_no_scores() -> None:
+    # No decisions recorded → no scores → BEST degrades to LAST (newest wins, a defined fallback).
+    store = SqliteStore()
+    _seed_with_object(store, art_id="s1", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"old", ts="t1")
+    _seed_with_object(store, art_id="s2", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"new", ts="t2")
+    policy = provisioning_policy(
+        ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(store)["scratch"]
+    assert out["provided/submission.py"] == b"new"
+
+
+def test_policy_best_accepted_ignores_revised() -> None:
+    # The status-set filter precedes the score sort: BEST_ACCEPTED never picks a higher-scoring
+    # revised over a lower-scoring accepted.
+    store = SqliteStore()
+    _seed_with_object(store, art_id="s1", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"accepted", ts="t1")
+    _seed_with_object(store, art_id="s2", status=ArtifactStatus.REVISED,
+                      name=ENTRYPOINT, data=b"revised", ts="t2")
+    _record_score(store, "s1", 0.80)
+    _record_score(store, "s2", 0.90)
+    policy = provisioning_policy(
+        ObjectProvisionMode.BEST_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(store)["scratch"]
+    assert out["provided/submission.py"] == b"accepted"  # 0.80 accepted beats 0.90 revised
+
+
+def test_policy_all_revised_or_accepted_ranks_accepted_and_revised() -> None:
+    # Both non-rejected statuses, recency-ranked under subdirs; the rejected artifact is excluded.
+    store = SqliteStore()
+    _seed_with_object(store, art_id="s1", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"acc", ts="t1")
+    _seed_with_object(store, art_id="s2", status=ArtifactStatus.REVISED,
+                      name=ENTRYPOINT, data=b"rev", ts="t2")
+    _seed_with_object(store, art_id="s3", status=ArtifactStatus.REJECTED,
+                      name=ENTRYPOINT, data=b"bad", ts="t3")
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_REVISED_OR_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(store)["scratch"]
+    assert out["provided/01-s2/submission.py"] == b"rev"  # newest non-rejected first
+    assert out["provided/02-s1/submission.py"] == b"acc"
+    object_files = [k for k in out if not k.endswith("INDEX.md")]
+    assert len(object_files) == 2  # rejected s3 excluded
+    assert b"s3" not in out["provided/INDEX.md"]
+
+
+def test_policy_all_accepted_single_hit_is_flat() -> None:
+    # Count-based naming: a single selected artifact flattens (no clash possible), even in a
+    # multi-select mode that would otherwise namespace under subdirs.
+    store = SqliteStore()
+    _seed_with_object(store, art_id="s1", status=ArtifactStatus.ACCEPTED,
+                      name=ENTRYPOINT, data=b"only", ts="t1")
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(store)["scratch"]
+    assert out["provided/submission.py"] == b"only"
+    assert not any(k.startswith("provided/01-") for k in out)  # not namespaced
+
+
+def test_provision_name_clash_namespaced() -> None:
+    # Two artifacts declaring the SAME object name must not clobber: count>1 ⇒ each under its own
+    # <NN>-<id>/ subdir, both bytes survive, both listed in the index.
+    store = _store_with_three()  # s1, s2 both declare ENTRYPOINT; s3 rejected
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
+    )
+    out = policy.materialize(store)["scratch"]
+    assert out["provided/01-s2/submission.py"] == b"v2"
+    assert out["provided/02-s1/submission.py"] == b"v1"
+    object_files = [k for k in out if not k.endswith("INDEX.md")]
+    assert len(object_files) == 2  # no overwrite despite identical object name
+    idx = out["provided/INDEX.md"]
+    assert b"s1" in idx and b"s2" in idx
+
+
+def test_manifest_drops_instruction() -> None:
+    # INDEX.md is a dumb metadata list: no hardwired agent instruction, just a title + table.
+    out = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION
+    ).materialize(_store_with_three())["scratch"]
+    idx = out["provided/INDEX.md"]
+    assert b"Build on" not in idx
+    assert b"newest first" not in idx
+    assert b"starting from scratch" not in idx
+    assert idx.startswith(b"# Provisioned durable objects")
+    assert b"| rank | artifact | type | status | created_at | score | files |" in idx
+
+
+def test_every_named_mode_has_a_preset() -> None:
+    # The named modes are sugar; each must resolve to axes (none can silently mean "nothing").
+    assert {m.value for m in ObjectProvisionMode} <= set(_PRESETS)
+
+
+def test_provisioning_policy_resolves_presets_and_explicit_axes() -> None:
+    # A preset name (str or enum), case-insensitive, resolves to the right axes.
+    p = provisioning_policy("all_accepted", type_filter=SUBMISSION)
+    assert p.statuses == frozenset({ArtifactStatus.ACCEPTED}) and p.select is ProvisionSelect.ALL
+    assert provisioning_policy("BEST_ACCEPTED").select is ProvisionSelect.BEST
+    assert provisioning_policy(ObjectProvisionMode.NONE).statuses == frozenset()  # nothing
+    assert provisioning_policy("not-a-mode").statuses == frozenset()  # unknown → none + warn
+    # The decoupling: the explicit form reaches superseded artifacts, no named mode required.
+    lineage = provisioning_policy({"statuses": ["accepted", "superseded"], "select": "all"})
+    assert lineage.statuses == frozenset({ArtifactStatus.ACCEPTED, ArtifactStatus.SUPERSEDED})
+    assert provisioning_policy({"statuses": "any", "select": "last"}).statuses is None  # any
+
+
+def test_fe_kaggle_default_provisioning_is_best() -> None:
+    # The chosen default (#95): fe-kaggle builds on the best prior unless a knob overrides it.
+    param = inspect.signature(configure_fe_kaggle_task).parameters["provisioning_spec"]
+    assert param.default is ObjectProvisionMode.BEST_REVISED_OR_ACCEPTED
 
 
 # ----------------------------------------------------------- sandbox materializes + re-provisions
@@ -304,6 +478,7 @@ def _build_cp(
         gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=declared_objects,
         sandbox_key="fe",
         verifier_key="stub",
         object_provisioning=policy,
@@ -314,8 +489,8 @@ def _build_cp(
 
 def test_two_cycles_commit_and_provision_prior_script(tmp_path: Path) -> None:
     driver = _RecordingDriver()
-    policy = ObjectProvisioningPolicy(
-        mode=ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
+    policy = provisioning_policy(
+        ObjectProvisionMode.LAST_ACCEPTED, type_filter=SUBMISSION
     )
     cp, store = _build_cp(tmp_path, driver=driver, policy=policy)
 
@@ -330,3 +505,78 @@ def test_two_cycles_commit_and_provision_prior_script(tmp_path: Path) -> None:
     r2 = asyncio.run(cp.run_cycle("fe", goal="improve the submission"))
     assert r2.commit is not None and r2.commit.outcome is CommitOutcome.ACCEPTED
     assert driver.seen_provided.get(ENTRYPOINT) == b"# script v1"
+
+
+# ------------------------------------------- provisioning limits: bytes/count, whole artifacts
+
+
+def _seed_pair(store: SqliteStore, *, art_id: str, script: bytes, reqs: bytes, ts: str) -> None:
+    """An artifact with TWO objects (script + requirements) — the torn-pair fixture (#133)."""
+    refs = (
+        (ENTRYPOINT, store.put_object(script)),
+        (REQUIREMENTS, store.put_object(reqs)),
+    )
+    store.propose(
+        Artifact(art_id, SUBMISSION, {"k": 1}, ArtifactStatus.PROPOSED, "agent", ts, objects=refs),
+        Operation(f"op-{art_id}", "load", (), art_id, OperationStatus.SUCCESS, ts),
+    )
+    store.set_status(art_id, ArtifactStatus.ACCEPTED)
+
+
+def test_provisioning_default_is_unlimited() -> None:
+    store = SqliteStore()
+    for i in range(40):  # far beyond the old 16-object cap
+        _seed_with_object(store, art_id=f"s{i:02d}", status=ArtifactStatus.ACCEPTED,
+                          name=ENTRYPOINT, data=b"v", ts=f"t{i:02d}")
+    policy = provisioning_policy(ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION)
+    out = policy.materialize(store)["scratch"]
+    object_files = [k for k in out if not k.endswith("INDEX.md")]
+    assert len(object_files) == 40  # nothing silently dropped by a buried constant
+    assert "omitted" not in out["provided/INDEX.md"].decode()
+
+
+def test_byte_budget_skips_whole_artifacts_never_tears_them() -> None:
+    # #133: the artifact straddling the byte budget is skipped INTACT — a provisioned script must
+    # never arrive without its requirements (the old file-granular cap produced torn pairs).
+    store = SqliteStore()
+    _seed_pair(store, art_id="big", script=b"x" * 900, reqs=b"y" * 900, ts="t2")
+    _seed_pair(store, art_id="small", script=b"a" * 100, reqs=b"b" * 100, ts="t1")
+    policy = provisioning_policy(
+        ObjectProvisionMode.ALL_ACCEPTED, type_filter=SUBMISSION, max_bytes=1000
+    )
+    out = policy.materialize(store)["scratch"]
+    object_files = sorted(k for k in out if not k.endswith("INDEX.md"))
+    # 'big' (most recent, 1800 bytes) exceeds the budget alone -> skipped whole; 'small' fits whole
+    assert all("small" in k for k in object_files)
+    assert {k.rsplit("/", 1)[-1] for k in object_files} == {ENTRYPOINT, REQUIREMENTS}
+    index = out["provided/INDEX.md"].decode()
+    assert "(1 artifact(s) omitted by the provisioning limits)" in index
+    assert "| big |" not in index  # the index never implies a torn artifact was provisioned
+
+
+def test_both_limits_compose_and_wire_spec_round_trips() -> None:
+    store = SqliteStore()
+    for i in range(5):
+        _seed_pair(store, art_id=f"s{i}", script=b"s" * 50, reqs=b"r" * 50, ts=f"t{i}")
+    # the explicit mapping form is exactly what PolicyRequest.provisioning carries over the wire
+    policy = provisioning_policy(
+        {"statuses": ["accepted"], "select": "all", "max_artifacts": 3, "max_bytes": 250},
+        type_filter=SUBMISSION,
+    )
+    assert policy.max_artifacts == 3 and policy.max_bytes == 250
+    out = policy.materialize(store)["scratch"]
+    object_files = [k for k in out if not k.endswith("INDEX.md")]
+    # byte budget binds first here: 2 artifacts x 100 bytes fit, a third would exceed 250
+    assert len(object_files) == 4
+    assert "(3 artifact(s) omitted by the provisioning limits)" in out["provided/INDEX.md"].decode()
+
+
+def test_bad_limit_specs_fail_loud() -> None:
+    import pytest
+
+    from verity.control_plane.registries import RegistryError
+
+    with pytest.raises(RegistryError, match="max_bytes must be an integer"):
+        provisioning_policy({"statuses": ["accepted"], "max_bytes": "lots"})
+    with pytest.raises(RegistryError, match="max_artifacts must be >= 0"):
+        provisioning_policy({"statuses": ["accepted"], "max_artifacts": -1})

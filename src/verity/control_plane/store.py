@@ -21,7 +21,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +40,7 @@ from verity.contracts.model import (
     Payload,
     VerdictKind,
 )
+from verity.contracts.wire import OBJECT_REF_MARKER
 from verity.logging import get_logger
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "Artifact",
     "Operation",
     "Decision",
+    "CycleFailure",
     "SchemaVersion",
     "Provenance",
     "JSONValue",
@@ -91,12 +93,45 @@ class Decision:
 
 
 @dataclass(frozen=True, slots=True)
+class CycleFailure:
+    """A durably-recorded FAILED cycle (#32 — failure provenance in the store, not just memory).
+
+    A cycle that produced no gated artifact (a timed-out/crashed sandbox, an unavailable gate, a
+    malformed proposal) deliberately mints nothing in the artifact tables (§7.0) — this row is its
+    provenance instead, so failure history survives a daemon restart and the served-context
+    digest can tell the agent about failures that never became artifacts. ``kind`` mirrors the
+    feedback channel's classification (``sandbox-error`` / ``gate-error`` / ``shape-error``);
+    ``detail`` is the same text the next-cycle correction carried; ``transcript_ref`` links the
+    salvaged step transcript in the object store when one was recovered.
+    """
+
+    kind: str
+    detail: str
+    created_at: str
+    transcript_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SchemaVersion:
     """A stamped snapshot of the registered schema in force (spec §4.1, §8.1)."""
 
     version: int
     types: tuple[str, ...]
     op_signatures: tuple[str, ...]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContractVersion:
+    """A stamped record of the workspace-contract / orientation in force (spec §3.4, §8.1).
+
+    Versioned like the schema: ``version`` is the deliberate marker (bumped on any change to how
+    the agent is oriented), and ``orientation_digest`` is a content hash of the rendered
+    orientation so a silent change *without* a version bump is still detectable (ROADMAP 5.1, #12).
+    """
+
+    version: int
+    orientation_digest: str
     created_at: str
 
 
@@ -163,6 +198,7 @@ class Store(Protocol):
     def decisions_for(self, artifact_id: str) -> list[Decision]: ...
     def current_schema_version(self) -> SchemaVersion | None: ...
     def schema_versions(self) -> list[SchemaVersion]: ...
+    def current_contract_version(self) -> ContractVersion | None: ...
 
     # proposing records an intention; it accepts nothing (§4.2)
     def propose(self, artifact: Artifact, operation: Operation) -> Artifact: ...
@@ -175,6 +211,7 @@ class Store(Protocol):
     def get_provenance(self, artifact_id: str) -> Provenance: ...
     def rejected_log(self, *, type: str | None = None) -> list[Artifact]: ...
     def superseded_log(self, *, type: str | None = None) -> list[Artifact]: ...
+    def cycle_failures(self) -> list[CycleFailure]: ...
 
 
 @runtime_checkable
@@ -191,6 +228,11 @@ class CommitSink(Protocol):
     def accept_superseding(self, new_id: str, old_id: str) -> None: ...
     def link_revision(self, old_id: str, new_id: str) -> None: ...
     def register_schema_version(self, schema: SchemaVersion) -> None: ...
+    def register_contract_version(self, contract: ContractVersion) -> None: ...
+
+    # one atomic unit spanning several of the writes above (ROADMAP 5.1): a commit's decision rows
+    # and its terminal status land together, or not at all — no partial commit on a mid-path fail.
+    def transaction(self) -> AbstractContextManager[None]: ...
 
 
 # ---------------------------------------------------------------------- sqlite backend
@@ -225,18 +267,30 @@ CREATE TABLE IF NOT EXISTS decisions (
     score       REAL,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cycle_failures (
+    kind           TEXT NOT NULL,
+    detail         TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    transcript_ref TEXT
+);
 CREATE TABLE IF NOT EXISTS schema_versions (
     version       INTEGER PRIMARY KEY,
     types         TEXT NOT NULL,
     op_signatures TEXT NOT NULL,
     created_at    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS contract_versions (
+    version            INTEGER PRIMARY KEY,
+    orientation_digest TEXT NOT NULL,
+    created_at         TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_artifacts_type_status ON artifacts(type, status);
 CREATE INDEX IF NOT EXISTS idx_operations_output ON operations(output_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_artifact ON decisions(artifact_id);
 """
 
-_OBJECT_MARKER = "__object_ref__"
+# The ObjectRef payload tag, shared with the wire codec so on-disk and on-wire encodings agree.
+_OBJECT_MARKER = OBJECT_REF_MARKER
 
 
 def _dump_objects(objects: tuple[tuple[str, ObjectRef], ...]) -> str:
@@ -270,6 +324,7 @@ class SqliteStore:
     new_id: IdFactory = field(default=default_id_factory)
     _objects: dict[str, bytes] = field(default_factory=dict, init=False, repr=False)
     _conn: sqlite3.Connection = field(init=False, repr=False)
+    _tx_depth: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # check_same_thread=False: the control plane runs the (sync) commit path in a worker
@@ -287,13 +342,34 @@ class SqliteStore:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
-        """A single atomic unit. Supersession/revision must be atomic with their cause (§6)."""
+        """A single atomic unit, **re-entrant**: when several writes nest under one
+        :meth:`transaction`, only the outermost commits (or rolls back), so a multi-write commit
+        lands all-or-nothing (ROADMAP 5.1). Supersession/revision stay atomic with their cause (§6).
+        """
+        self._tx_depth += 1
+        outermost = self._tx_depth == 1
         try:
             yield self._conn
-            self._conn.commit()
         except Exception:
-            self._conn.rollback()
+            if outermost:
+                self._conn.rollback()
             raise
+        else:
+            if outermost:
+                self._conn.commit()
+        finally:
+            self._tx_depth -= 1
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Run several :class:`CommitSink` writes as one atomic unit (ROADMAP 5.1).
+
+        All of a commit's decision rows + its terminal status write land together, or none do — a
+        failure part-way through (a failed provenance check, an illegal transition, a store error)
+        rolls the whole thing back instead of leaving decisions on a still-``proposed`` artifact.
+        """
+        with self._tx():
+            yield
 
     # -- (de)serialization --------------------------------------------------------
 
@@ -411,6 +487,30 @@ class SqliteStore:
             for r in rows
         ]
 
+    def current_contract_version(self) -> ContractVersion | None:
+        row = self._conn.execute(
+            "SELECT * FROM contract_versions ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return ContractVersion(
+            version=row["version"],
+            orientation_digest=row["orientation_digest"],
+            created_at=row["created_at"],
+        )
+
+    def _contract_version(self, version: int) -> ContractVersion | None:
+        row = self._conn.execute(
+            "SELECT * FROM contract_versions WHERE version = ?", (version,)
+        ).fetchone()
+        if row is None:
+            return None
+        return ContractVersion(
+            version=row["version"],
+            orientation_digest=row["orientation_digest"],
+            created_at=row["created_at"],
+        )
+
     # -- propose (public; records an intention only, §4.2) ------------------------
 
     def propose(self, artifact: Artifact, operation: Operation) -> Artifact:
@@ -493,12 +593,47 @@ class SqliteStore:
                 ),
             )
 
+    def register_contract_version(self, contract: ContractVersion) -> None:
+        """Stamp the workspace-contract version (#12), idempotently across tasks sharing a contract.
+
+        The contract version is a kernel constant, not a per-task bump, so re-recording the same
+        (version, digest) is a no-op. The same version with a *different* orientation digest means
+        the orientation changed without a deliberate version bump — a misconfiguration, raised
+        loudly rather than silently recorded (§3.4: deliberate and recorded, not ambient).
+        """
+        existing = self._contract_version(contract.version)
+        if existing is not None:
+            if existing.orientation_digest != contract.orientation_digest:
+                raise StoreError(
+                    f"contract version {contract.version} is already recorded with a different "
+                    f"orientation digest (bump WORKSPACE_CONTRACT_VERSION when the orientation "
+                    f"changes); recorded={existing.orientation_digest[:12]}, "
+                    f"now={contract.orientation_digest[:12]}"
+                )
+            return  # already stamped, same content — idempotent
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO contract_versions (version, orientation_digest, created_at) "
+                "VALUES (?, ?, ?)",
+                (
+                    contract.version,
+                    contract.orientation_digest,
+                    contract.created_at or self.clock(),
+                ),
+            )
+
     # -- objects (§4.2) -----------------------------------------------------------
 
     def put_object(self, data: bytes) -> ObjectRef:
         content_hash = hashlib.sha256(data).hexdigest()
         if self.object_dir is not None:
-            (self.object_dir / content_hash).write_bytes(data)
+            try:
+                (self.object_dir / content_hash).write_bytes(data)
+            except OSError as exc:
+                # A disk/IO failure at the object-store boundary is a typed store error, not a raw
+                # OSError that escapes to abort the run — the control plane's degrade-don't-crash
+                # path records it as a failed cycle (ROADMAP 5.1; degrade-don't-crash invariant).
+                raise StoreError(f"could not write object {content_hash}: {exc}") from exc
         else:
             self._objects[content_hash] = data
         return ObjectRef(blob_ref=f"sha256:{content_hash}", content_hash=content_hash)
@@ -550,6 +685,39 @@ class SqliteStore:
 
     def superseded_log(self, *, type: str | None = None) -> list[Artifact]:
         return self.query_artifacts(type=type, status=ArtifactStatus.SUPERSEDED)
+
+    def record_cycle_failure(
+        self, *, kind: str, detail: str, transcript_ref: str | None = None
+    ) -> CycleFailure:
+        """Durably record a failed cycle (#32) — the control plane's failure-provenance write.
+
+        Written by the sole mutator on the cycle-record path (not the commit path, so it is not a
+        :class:`CommitSink` method): a failed cycle mints no artifact, and this row is the only
+        durable trace it leaves.
+        """
+        failure = CycleFailure(
+            kind=kind, detail=detail, created_at=self.clock(), transcript_ref=transcript_ref
+        )
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO cycle_failures (kind, detail, created_at, transcript_ref) "
+                "VALUES (?, ?, ?, ?)",
+                (failure.kind, failure.detail, failure.created_at, failure.transcript_ref),
+            )
+        log.info("cycle_failure_recorded", kind=failure.kind)
+        return failure
+
+    def cycle_failures(self) -> list[CycleFailure]:
+        rows = self._conn.execute(
+            "SELECT * FROM cycle_failures ORDER BY created_at"
+        ).fetchall()
+        return [
+            CycleFailure(
+                kind=r["kind"], detail=r["detail"], created_at=r["created_at"],
+                transcript_ref=r["transcript_ref"],
+            )
+            for r in rows
+        ]
 
     # -- low-level helpers --------------------------------------------------------
 

@@ -1,0 +1,21 @@
+# The build-context ignore for EVERY image: all five are `--target`s of the root Dockerfile and
+# share this one context. It is also the only ignore file that the LEGACY docker builder honours
+# (per-Dockerfile ignore files are BuildKit-only; a legacy build silently skipped them and
+# `COPY . /app` then baked secrets + the answer key into the image, #137). Isolation here is
+# therefore builder- and target-independent. tests/test_sandbox_image_purity.py pins the entries.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+spikes
+spec/references
+# Secrets — must never enter any image (#137, trusted-submitter creds never reach a worker).
+.env
+# Isolation (#137): the agent runs inside the sandbox image — no datasets (the ablation answer key
+# lives under data/*/verifier/), no prior run results, no analysis figures.
+data
+results
+figures

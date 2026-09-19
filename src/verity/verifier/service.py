@@ -23,6 +23,8 @@ from verity.contracts import (
     ArtifactStatus,
     GateDecision,
     GateVerdict,
+    RunContext,
+    SupportsRunContext,
     VerdictBundle,
     VerdictKind,
     VerifierRequest,
@@ -64,6 +66,28 @@ class SdkVerifier:
     pipelines: dict[str, tuple[GateStep, ...]]
     requests: list[VerifierRequest] = field(default_factory=list)
     provisioned: bool = False
+    # Resources this verifier provisions work on (e.g. a backend-backed code-runner) that want the
+    # control plane's run identity stamped onto their workers (7.4.h). A gate's runner registers
+    # here; a pure in-process gate registers nothing.
+    context_sinks: tuple[SupportsRunContext, ...] = ()
+
+    def __post_init__(self) -> None:
+        # G1 — no silent accept: a gated type's pipeline must declare at least one *hard* gate.
+        # Without one, `_run_pipeline` would clear the (possibly empty) cheap stage and fall
+        # straight through to ACCEPTED having ruled on no hard check — exactly the implicit accept
+        # the architecture forbids (§5.7). Caught at construction so it's a loud config error, not a
+        # silent runtime pass.
+        for atype, pipeline in self.pipelines.items():
+            if not any(step.is_hard for step in pipeline):
+                raise VerifierError(
+                    f"pipeline for type {atype!r} declares no hard gate: a gated type with no hard "
+                    f"check would accept unconditionally (no implicit accept, §5.7)"
+                )
+
+    def bind_run_context(self, ctx: RunContext) -> None:
+        """Forward the control plane's run-identity cell to every resource that stamps it."""
+        for sink in self.context_sinks:
+            sink.bind_run_context(ctx)
 
     async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         self.requests.append(request)
@@ -90,7 +114,11 @@ class SdkVerifier:
         self, pipeline: tuple[GateStep, ...], request: VerifierRequest
     ) -> VerdictBundle:
         decisions: list[GateDecision] = []
-        supersedes: str | None = None
+        # G2 — supersession is the authoritative *hard*-stage decision's call, not last-writer-wins.
+        # Only a hard ACCEPT may retire an incumbent, and at most one distinct incumbent may be
+        # named; a cheap gate naming a supersedes, or two hard gates naming different incumbents, is
+        # a verifier inconsistency, not a silently-applied retirement.
+        superseded: set[str] = set()
         cheap = [s for s in pipeline if not s.is_hard]
         hard = [s for s in pipeline if s.is_hard]
 
@@ -106,11 +134,18 @@ class SdkVerifier:
                     return VerdictBundle(ArtifactStatus.REJECTED, tuple(decisions))
                 if verdict.kind is VerdictKind.REFINE:
                     return VerdictBundle(ArtifactStatus.REVISED, tuple(decisions))
-                supersedes = verdict.supersedes or supersedes
+                if step.is_hard and verdict.supersedes is not None:
+                    superseded.add(verdict.supersedes)
             if stage is hard and ruled < len(hard):
                 # a hard check deferred to a human — cleared the cheap checks, not the hard ones
                 return VerdictBundle(ArtifactStatus.TENTATIVE, tuple(decisions))
 
+        if len(superseded) > 1:
+            raise VerifierError(
+                f"pipeline accepted {request.proposal.id!r} but its hard gates named more than one "
+                f"incumbent to supersede ({sorted(superseded)}): supersession must be unambiguous"
+            )
+        supersedes = next(iter(superseded), None)
         return VerdictBundle(ArtifactStatus.ACCEPTED, tuple(decisions), supersedes=supersedes)
 
     async def provision(self) -> None:

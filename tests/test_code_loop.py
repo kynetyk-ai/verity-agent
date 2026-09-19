@@ -30,7 +30,7 @@ from verity.control_plane.commit import CommitOutcome
 from verity.control_plane.config import TaskConfig
 from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import SqliteStore
-from verity.domains.code import DATASET, ENTRYPOINT, SUBMISSION, build_code_domain
+from verity.domains.code import DATASET, ENTRYPOINT, SUBMISSION, build_code_domain, declared_objects
 from verity.verifier import (
     CodeRunner,
     ContainerCodeRunner,
@@ -84,6 +84,7 @@ def _build(
         gated_types=domain.gated_types,
         retrieval=DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=declared_objects,
         sandbox_key="stub",
         verifier_key="stub",
     )

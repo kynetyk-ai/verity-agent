@@ -26,10 +26,11 @@ from verity.contracts import (
 )
 from verity.control_plane.api import ControlPlane, OrchestrationPolicy
 from verity.control_plane.commit import CommitOutcome
-from verity.control_plane.config import TaskConfig
+from verity.control_plane.config import TaskConfig, orientation_digest
 from verity.control_plane.registries import DefaultRetrievalPolicy
 from verity.control_plane.store import SqliteStore
-from verity.domains.fake import NOTE, SOURCE, build_fake_domain
+from verity.control_plane.workspace import WORKSPACE_CONTRACT
+from verity.domains.fake import NOTE, SOURCE, build_fake_domain, declared_objects
 
 _ACCEPT = bundle(ArtifactStatus.ACCEPTED, decision("well-formed"), decision("worth-keeping"))
 
@@ -42,9 +43,12 @@ class FakeVerifier:
         self.result = result if result is not None else _ACCEPT
         self.requests: list[VerifierRequest] = []
         self.provisioned = False
+        self.dispatched_while_provisioned = False
 
     async def dispatch(self, request: VerifierRequest) -> VerdictBundle:
         self.requests.append(request)
+        if self.provisioned:
+            self.dispatched_while_provisioned = True
         return self.result
 
     async def provision(self) -> None:
@@ -93,13 +97,19 @@ def _config(domain, *, retrieval=None) -> TaskConfig:
         gated_types=domain.gated_types,
         retrieval=retrieval if retrieval is not None else DefaultRetrievalPolicy(),
         shape_validator=domain.shape_validator,
+        object_namer=declared_objects,
         sandbox_key="stub",
         verifier_key="stub",
     )
 
 
 def _note(note_id: str, *, text: str = "hi", metadata: str = "", objects=None) -> ProposalEnvelope:
-    artifact = Artifact(note_id, NOTE, {"text": text}, ArtifactStatus.PROPOSED, "agent", "")
+    # Declare the attached object names in the payload so the harvest keeps them (a well-formed
+    # proposal declares its objects); the fake domain's namer reads this 'objects' list.
+    payload: dict = {"text": text}
+    if objects:
+        payload["objects"] = sorted(objects)
+    artifact = Artifact(note_id, NOTE, payload, ArtifactStatus.PROPOSED, "agent", "")
     op = Operation(f"op-{note_id}", "author", ("src",), note_id, OperationStatus.SUCCESS, "")
     return ProposalEnvelope(
         artifact=artifact, operation=op, metadata=metadata, objects=objects or {}
@@ -125,11 +135,23 @@ def _setup(
     return cp, sandbox, verifier, store
 
 
-def test_configure_stamps_schema_and_provisions_services() -> None:
+def test_configure_stamps_schema_and_defers_verifier_provision() -> None:
+    # #96: configure provisions the sandbox but NOT the verifier — the verifier is provisioned on
+    # the run boundary (see test_run_provisions_and_tears_down_verifier), so an idle verifier
+    # sibling never outlives its run on a resident task.
     _cp, _sandbox, verifier, store = _setup()
-    assert verifier.provisioned is True
+    assert verifier.provisioned is False
     current = store.current_schema_version()
     assert current is not None and NOTE in current.types
+
+
+def test_configure_stamps_the_workspace_contract_version() -> None:
+    # #12: the workspace-contract / orientation version is recorded like the schema version (§3.4).
+    _cp, _sandbox, _verifier, store = _setup()
+    cv = store.current_contract_version()
+    assert cv is not None
+    assert cv.version == WORKSPACE_CONTRACT.version
+    assert cv.orientation_digest == orientation_digest(WORKSPACE_CONTRACT)
 
 
 def test_happy_path_accepts_and_commits() -> None:
@@ -166,6 +188,77 @@ def test_malformed_proposal_records_nothing() -> None:
     assert verifier.requests == []
 
 
+def test_a_non_object_payload_is_refused_at_the_kernel(  # #13: kernel JSON-object guarantee
+) -> None:
+    cp, _sandbox, verifier, store = _setup()
+    # a list payload would slip past the domain validator (it only checks NOTE dicts); the kernel
+    # guard refuses any non-object payload before the domain validator runs and records nothing.
+    bad_payload = ["not", "an", "object"]
+    bad = ProposalEnvelope(
+        artifact=Artifact("n1", NOTE, bad_payload, ArtifactStatus.PROPOSED, "agent", ""),
+        operation=Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, ""),
+    )
+    result = asyncio.run(cp.submit_proposal("t1", bad))
+    assert result.entered_protocol is False
+    assert result.shape_error is not None and "JSON object" in result.shape_error.message
+    assert store.get_artifact("n1") is None and verifier.requests == []
+
+
+def test_an_operation_can_require_payload_keys_at_intake() -> None:  # #13 per-op payload schema
+    from verity.control_plane.registries import (
+        ArtifactTypeDef,
+        GatedTypeRegistry,
+        OperationSignature,
+        SchemaRegistry,
+        StoreInput,
+    )
+
+    schema = SchemaRegistry()
+    schema.register_type(ArtifactTypeDef(SOURCE, is_root=True))
+    schema.register_type(ArtifactTypeDef(NOTE))
+    schema.register_operation(
+        OperationSignature("author", (SOURCE,), NOTE, required_payload_keys=("text", "priority"))
+    )
+    gated = GatedTypeRegistry()
+    gated.gate(NOTE, declared_inputs=frozenset({StoreInput.INCUMBENTS}))
+
+    store = SqliteStore()
+    store.propose(
+        Artifact("src", SOURCE, {"raw": 1}, ArtifactStatus.PROPOSED, "loader", "t0", is_root=True),
+        Operation("op-src", "load", (), "src", OperationStatus.SUCCESS, "t0"),
+    )
+    sp: ProviderRegistry[SandboxPort] = ProviderRegistry("sandbox")
+    vp: ProviderRegistry[VerifierPort] = ProviderRegistry("verifier")
+    sp.register("stub", lambda: FakeSandbox(None))
+    vp.register("stub", lambda: FakeVerifier(bundle(ArtifactStatus.TENTATIVE, decision("g"))))
+    cp = ControlPlane(store, sandbox_providers=sp, verifier_providers=vp)
+    asyncio.run(cp.configure(TaskConfig(
+        task_id="t1", instructions="x", domain_instructions="x", schema=schema, gated_types=gated,
+        retrieval=DefaultRetrievalPolicy(), shape_validator=lambda _a: None,
+        object_namer=lambda _a: frozenset(), sandbox_key="stub", verifier_key="stub",
+    )))
+
+    # payload missing the declared 'priority' key -> refused at intake, records nothing
+    missing = ProposalEnvelope(
+        artifact=Artifact("n1", NOTE, {"text": "hi"}, ArtifactStatus.PROPOSED, "agent", ""),
+        operation=Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, ""),
+    )
+    refused = asyncio.run(cp.submit_proposal("t1", missing))
+    assert refused.entered_protocol is False
+    assert refused.shape_error is not None and "priority" in refused.shape_error.message
+    assert store.get_artifact("n1") is None
+
+    # the same payload WITH the declared keys clears the per-op check and proceeds
+    complete = ProposalEnvelope(
+        artifact=Artifact(
+            "n2", NOTE, {"text": "hi", "priority": 1}, ArtifactStatus.PROPOSED, "agent", ""
+        ),
+        operation=Operation("op-n2", "author", ("src",), "n2", OperationStatus.SUCCESS, ""),
+    )
+    accepted = asyncio.run(cp.submit_proposal("t1", complete))
+    assert accepted.entered_protocol is True and accepted.shape_error is None
+
+
 def test_object_is_harvested_and_content_addressed() -> None:
     cp, _sandbox, _verifier, store = _setup()
     code = b"def feature(df): return df"
@@ -186,7 +279,31 @@ def test_harvested_objects_are_linked_as_an_artifact_sidecar() -> None:
     assert art is not None
     objects = dict(art.objects)
     assert store.get_object(objects["submission.py"].content_hash) == code
-    assert art.payload == {"text": "hi"}  # payload untouched
+    assert art.payload == {"text": "hi", "objects": ["submission.py"]}  # payload untouched
+
+
+def test_undeclared_outbox_objects_are_dropped_and_warned() -> None:
+    # Context discipline (§3.4): the harvest keeps ONLY the objects the proposal declares. An extra
+    # file the agent left in the outbox is dropped — never content-addressed, never on the sidecar,
+    # never provisioned next cycle — and the drop is logged. (Declared via the payload 'objects'.)
+    import structlog
+
+    cp, _sandbox, _verifier, store = _setup()
+    env = ProposalEnvelope(
+        artifact=Artifact(
+            "n1", NOTE, {"text": "hi", "objects": ["keep.py"]}, ArtifactStatus.PROPOSED, "agent", ""
+        ),
+        operation=Operation("op-n1", "author", ("src",), "n1", OperationStatus.SUCCESS, ""),
+        objects={"keep.py": b"keep", "drop.py": b"junk"},  # drop.py is undeclared
+    )
+    with structlog.testing.capture_logs() as logs:
+        result = asyncio.run(cp.submit_proposal("t1", env))
+
+    assert "keep.py" in result.harvested and "drop.py" not in result.harvested
+    art = store.get_artifact("n1")
+    assert art is not None and dict(art.objects).keys() == {"keep.py"}  # sidecar excludes it too
+    dropped = [e for e in logs if e["event"] == "undeclared_outbox_objects_dropped"]
+    assert dropped and dropped[0]["dropped"] == ["drop.py"]
 
 
 def test_objectless_proposal_has_an_empty_sidecar_and_untouched_payload() -> None:
@@ -252,6 +369,18 @@ def test_run_loop_drives_cycles_and_regenerates() -> None:
     assert len(results) == 1  # stop_on_accept ended after the first accept
     assert sandbox.regenerated == 1  # workspace regenerated each cycle
     assert [a.id for a in cp.accepted_artifacts(type=NOTE)] == ["n1"]
+
+
+def test_run_provisions_and_tears_down_verifier() -> None:
+    # #96: run-scoped verifier lifecycle — provisioned at run-start, torn down at run-end (the
+    # FakeVerifier flips `provisioned` on provision/teardown), so it is False again after the run.
+    cp, _sandbox, verifier, _store = _setup(
+        proposals=[_note("n1")], policy=OrchestrationPolicy(max_cycles=1, stop_on_accept=True),
+    )
+    assert verifier.provisioned is False  # not provisioned at configure
+    asyncio.run(cp.run("t1", goal="make a good note"))
+    assert verifier.provisioned is False  # torn down at run-end
+    assert verifier.dispatched_while_provisioned is True  # it WAS live during the run
 
 
 def test_extraction_answers_why_from_provenance() -> None:

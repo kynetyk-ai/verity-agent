@@ -1,26 +1,33 @@
-"""Deterministic, stratified train/reserved split for the feature-engineering domain (Phase 4).
+"""Deterministic stratified train/reserved split — a **user-side** data-prep helper (ADR 0005).
 
-NON-PRODUCT test/dev tooling. Splits a labelled CSV into the three pieces §12 needs:
+This is the §12 feature-engineering split, kept as a *dev/prep tool* and imported by **no Verity
+service**. Since ROADMAP 9.2 / #74 data preparation is the user's responsibility, performed outside
+the control plane: the CP routes opaque, role-keyed blobs and interprets no dataset semantics (no
+``target``/``id_column``, no answer-key derivation). This helper is what a user runs to *produce*
+those role-keyed inputs (see ``tools/prepare_fe_data.py``); it deliberately lives under ``tools/``,
+not in the installed ``verity`` package, so a guard test can prove the control-plane image carries
+no split logic.
 
-* ``agent_train_csv`` — the labelled rows handed to the agent (mounted read-only into ``data/``);
-* ``reserved_test_csv`` — the **reserved** rows with the target column dropped, handed to the gate
-  as the unlabelled set the submitted script must predict;
-* ``reserved_labels`` — the reserved rows' true targets, **held by the gate** and never exposed, so
-  a feature that leaks the target is caught on this set (§12 leakage-safety, §13.11).
+It splits a labelled CSV into the three pieces §12 needs:
 
-Stratified by the target so balanced accuracy is well-defined on both sides, and fully
-deterministic (no RNG — reproducible verdicts, §5.8): within each class, rows are interleaved into
-the reserved set at a fixed fraction. Pure stdlib (``csv``) so the harness needs no pandas/sklearn;
-the *agent's* script installs its own libraries in-container.
+* ``agent_train_csv`` — the labelled rows handed to the agent (the agent's training set);
+* ``reserved_test_csv`` — the **reserved** rows with the target column dropped, the unlabelled set
+  the submitted script must predict for the cheap local proxy;
+* ``reserved_labels`` — the reserved rows' true targets, the answer key the proxy scores against,
+  routed only to the verifier role so a feature that leaks the target is caught (§12, §13.11).
+
+Stratified by the target so balanced accuracy is well-defined on both sides, fully deterministic (no
+RNG — reproducible, §5.8), pure stdlib (``csv``) so prep needs no pandas.
 """
 
 from __future__ import annotations
 
 import csv
 import io
+import random
 from dataclasses import dataclass
 
-__all__ = ["DatasetSplit", "stratified_split"]
+__all__ = ["DatasetSplit", "stratified_split", "subsample", "random_sample"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +86,43 @@ def stratified_split(
         target=target,
         id_column=id_column,
     )
+
+
+def subsample(data: bytes, *, per_class: int | None, target: str = "class") -> bytes:
+    """Keep up to ``per_class`` rows per target class — a fast, stratified slice for a live run.
+
+    ``per_class=None`` keeps **all** rows: the full competitive train (the data is the bottleneck
+    for reaching a top-N% leaderboard score, so a serious attempt trains on everything). Rows are
+    always re-written through the same writer, so the full-train bytes are byte-stable with the
+    split path.
+    """
+    reader = csv.DictReader(io.StringIO(data.decode("utf-8")))
+    header = tuple(reader.fieldnames or ())
+    seen: dict[str, int] = {}
+    kept: list[dict[str, str]] = []
+    for row in reader:
+        label = row[target]
+        if per_class is None or seen.get(label, 0) < per_class:
+            seen[label] = seen.get(label, 0) + 1
+            kept.append(row)
+    return _write_csv(header, kept)
+
+
+def random_sample(data: bytes, *, n: int, seed: int) -> bytes:
+    """A uniform-random sample of up to ``n`` rows, reproducible via ``seed``.
+
+    Unlike :func:`subsample` (which caps per class and so *balances* the data), this preserves the
+    population's **natural class distribution** — the faithful way to scale the experiment dataset
+    to a target size. Original row order is kept among the sampled rows, so a downstream
+    :func:`stratified_split` interleave stays stable. ``n >= len(rows)`` keeps everything.
+    """
+    reader = csv.DictReader(io.StringIO(data.decode("utf-8")))
+    header = tuple(reader.fieldnames or ())
+    rows = list(reader)
+    if n < len(rows):
+        keep = sorted(random.Random(seed).sample(range(len(rows)), n))
+        rows = [rows[i] for i in keep]
+    return _write_csv(header, rows)
 
 
 def _write_csv(header: tuple[str, ...], rows: list[dict[str, str]]) -> bytes:

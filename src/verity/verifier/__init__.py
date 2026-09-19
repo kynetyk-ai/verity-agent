@@ -9,6 +9,7 @@ behind the :class:`~verity.verifier.model_client.ModelClient` seam, so the suite
 from __future__ import annotations
 
 from verity.verifier.code_runner import (
+    BackendCodeRunner,
     CodeRunner,
     ContainerCodeRunner,
     FakeCodeRunner,
@@ -17,6 +18,8 @@ from verity.verifier.code_runner import (
     docker_available,
 )
 from verity.verifier.errors import VerifierError
+from verity.verifier.kaggle import DAILY_SUBMISSION_LIMIT, FakeKaggleScorer, KaggleScorer
+from verity.verifier.kaggle_client import RealKaggleScorer
 from verity.verifier.model_client import (
     AnthropicModelClient,
     FakeModelClient,
@@ -52,9 +55,14 @@ __all__ = [
     "CodeRunner",
     "FakeCodeRunner",
     "ContainerCodeRunner",
+    "BackendCodeRunner",
     "RunRequest",
     "RunResult",
     "docker_available",
     "GateStep",
     "SdkVerifier",
+    "KaggleScorer",
+    "FakeKaggleScorer",
+    "RealKaggleScorer",
+    "DAILY_SUBMISSION_LIMIT",
 ]
