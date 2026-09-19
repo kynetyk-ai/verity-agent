@@ -1,8 +1,11 @@
-"""The user-side fe-kaggle trajectory readout (``results/prototyping_datasci_test/trajectory.py``).
+"""The user-side fe-kaggle trajectory readout (the prototyping task package's ``trajectory.py``).
 
 It's a standalone script (not an installed module), so we load it by path and drive both its parsing
 helpers and its CLI entrypoint over a synthetic RunReport — the shape ``verity results`` emits.
 Proves the climb readout extracts the proxy / competitive-estimate / public scores, best included.
+
+The package lives under ``results/``, which this repo no longer tracks (it is operator-local), so
+this module skips wholesale when the script is absent rather than failing a fresh clone's suite.
 """
 
 from __future__ import annotations
@@ -13,8 +16,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = (
     Path(__file__).resolve().parents[1] / "results" / "prototyping_datasci_test" / "trajectory.py"
+)
+
+pytestmark = pytest.mark.skipif(
+    not _SCRIPT.exists(), reason="results/ not present in this checkout (operator-local)"
 )
 
 
