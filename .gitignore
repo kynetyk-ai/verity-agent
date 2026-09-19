@@ -22,8 +22,36 @@ npm-debug.log*
 *.sqlite
 *.sqlite3
 *.db
-/data/
 /store/
+store/
+
+# ---------------------------------------------------------------------------
+# Third-party datasets — NEVER committed. We hold access rights to the Kaggle
+# competition data; we hold no right to redistribute it. This repo may go
+# public, so the rules below are deliberately broad and extension-based rather
+# than path-anchored: a dataset dropped in a new directory must be ignored by
+# default, not by remembering to add a path. Tracking a data file requires an
+# explicit `!` exception here and a deliberate answer to "may we publish this?".
+# ---------------------------------------------------------------------------
+data/
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.arrow
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.xlsx
+*.zip
+*.csv.gz
+*.tsv.gz
+*.json.gz
+*.jsonl
+*.ndjson
 
 # results/ is a local sweep-output SCRATCH dir — the committed experimental record + analysis now
 # live in the sibling `verity-analysis` repo (finished batches are pulled over with
@@ -38,6 +66,7 @@ npm-debug.log*
 /results/prototyping_datasci_test/agent/
 /results/prototyping_datasci_test/verifier/
 /figures/
+figures/
 
 # OS / editor
 .DS_Store
