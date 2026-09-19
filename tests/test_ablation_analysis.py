@@ -3,17 +3,23 @@
 Builds minimal synthetic `RunReport` cycle dicts in-memory and pins every derived signal: the
 held-out score extraction, the self-estimate parse, best-so-far, the regression flag, gate
 catch-rate, final-quality aggregation, and the pre-registered Claim A/B/B′ deltas + Cliff's delta.
+
+`experiments/` is no longer tracked in this repo (it is operator-local sweep machinery), so this
+module skips wholesale when it is absent rather than failing a fresh clone's suite.
 """
 
 from __future__ import annotations
 
 import pytest
-from experiments.ablation.analyze import (
-    CellData,
-    cell_from_report,
-    cliffs_delta,
-    summary,
+
+analyze = pytest.importorskip(
+    "experiments.ablation.analyze", reason="experiments/ not present in this checkout"
 )
+
+CellData = analyze.CellData
+cell_from_report = analyze.cell_from_report
+cliffs_delta = analyze.cliffs_delta
+summary = analyze.summary
 
 
 def _cycle(
@@ -181,7 +187,7 @@ def _write_results_dir(path, cells_meta) -> None:  # type: ignore[no-untyped-def
 def test_load_results_merges_separately_run_rungs(tmp_path) -> None:
     # The bottom rung (exp1) run on its own + the loop (exp3) run separately combine into one
     # analysis — the §1 split: calibrate first, then run the guarded loop.
-    from experiments.ablation.analyze import load_results
+    load_results = analyze.load_results
 
     exp1_dir = tmp_path / "exp1"
     loop_dir = tmp_path / "loop"
@@ -197,7 +203,7 @@ def test_load_results_merges_separately_run_rungs(tmp_path) -> None:
 
 def test_render_all_writes_five_figures(tmp_path) -> None:
     pytest.importorskip("matplotlib")
-    from experiments.ablation import figures
+    figures = pytest.importorskip("experiments.ablation.figures")
 
     paths = figures.render_all(_full_ladder_summary(), tmp_path)
     assert {p.name for p in paths} == {"F1.png", "F2.png", "F3.png", "F4.png", "F5.png"}

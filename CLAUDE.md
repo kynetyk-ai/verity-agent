@@ -56,44 +56,45 @@ and a stub verifier in `tools/harness/`); **Phases 2–3** swap in the real veri
 criteria pass. This follows the spec's §17 build order (kernel contracts → extension interfaces →
 context assembly → service scaffolding → domain → acceptance).
 
-## Experiments: data & analysis live in a sibling repo
+## Experiments: the whole experiment tree is out of this repo
 
-The **runnable experiment machinery stays here**: the sweep orchestration + specs
-(`experiments/ablation/` — `sweep.py`, `analyze.py`, `figures.py`, `run_sweep_container.sh`, the
-`spec.*.json` plans, `README.md`) and the runnable spec (`docs/experimental-design.md`). Sweeps write
-to `results/` **as local scratch** — it is gitignored (except the `prototyping_datasci_test` task
-package). The durable `store/` object-blobs never leave scratch.
+Nothing under `experiments/`, `results/` or `figures/` is tracked here. All three are gitignored
+outright. This repo is the harness; the experiments that use it, and everything they produce, are
+versioned elsewhere.
+
+- **`experiments/`** — the sweep machinery (`ablation/sweep.py`, `analyze.py`, `figures.py`,
+  `run_sweep_container.sh`), the `spec.*.json` catalog, and the runnable experimental design. It is
+  operator-local: keep it on disk and in the sibling repo, not in a commit here. `tests/test_ablation_*.py`
+  `importorskip` it, so a checkout without it still runs green.
+- **`results/`** — raw sweep output: RunReport JSONs, `manifest.json`, `transcripts/`, `submissions/`,
+  and the durable `store/`. Always scratch. Transcripts record agent tool output verbatim, which
+  includes rows of whatever dataset the agent read, so a result batch is **never** committed here:
+  we hold access rights to the competition data and no right to redistribute it.
+- **`figures/`** — analysis output, authored in `verity-analysis`.
+
+**Do not `git add` any of these, and do not force past the gitignore.** If something in these trees
+needs to be versioned, it belongs in `verity-analysis`, not here.
 
 The **experiment data, the R/renv analysis, and the paper writing** live in the sibling
 **`../verity-analysis`** repo (`data/<group>/`, notebooks + `scripts/`, `docs/paper-outline.md` +
 `docs/related-work.md`).
 
-### Where experimental results are saved
+### Keeping a finished batch
 
-1. **A run writes to `verity/results/<batch>/` — always scratch, never committed here.** That path
-   is the `<out-dir>` argument to `run_sweep_container.sh` and holds the RunReport JSONs, `manifest.json`,
-   `transcripts/`, `submissions/`, and the durable `store/` (the last is separately huge). All of it
-   is gitignored (`.gitignore` ignores `/results/*` except the `prototyping_datasci_test` package).
-   **Do not `git add` a result batch, a `store/`, or `figures/` in this repo** — the gitignore blocks
-   it by default; don't force past it.
-2. **To keep/version/analyze a finished batch, import it into `verity-analysis`, passing the exact
-   spec that produced it:**
-   `cd ../verity-analysis && scripts/import_results.sh <batch-subdir> <group> ../verity/experiments/ablation/<spec>.json`
-   — this `rsync`s the batch into `data/<group>/` **excluding `store/` and `sweep.log`** (only the
-   extracted artifacts — RunReports, transcripts, submissions — plus any figures are versioned; stores
-   are regenerable and never committed anywhere), **snapshots the producing spec into the batch dir as
-   `spec.json` + records this repo's git sha in `PROVENANCE.txt`** (so each run ties back to its exact
-   parameters), then you **add a row to `verity-analysis/data/REGISTRY.md`** and commit it in
-   `verity-analysis`. Always pass the spec arg. The registry is the human-readable index of what each
-   batch is; the runnable spec catalog stays here (`experiments/ablation/`, kept current — retired
-   specs move to `experiments/ablation/archive/`).
-3. **`store/` dirs are disposable scratch.** Everything analysis needs is extracted at import; once a
-   batch is imported and committed in `verity-analysis`, its `verity/results/<batch>/` (stores
-   included) can be deleted to reclaim disk.
+Import it into `verity-analysis`, passing the exact spec that produced it:
 
-So: run → `results/` scratch here → `import_results.sh <subdir> <group> <spec>` into
-`verity-analysis/data/` → add a `REGISTRY.md` row → commit there → delete the scratch. Analysis +
-figures + narrative writeups are authored in `verity-analysis`, not here.
+`cd ../verity-analysis && scripts/import_results.sh <batch-subdir> <group> ../verity/experiments/ablation/<spec>.json`
+
+This `rsync`s the batch into `data/<group>/` **excluding `store/` and `sweep.log`** (only the
+extracted artifacts — RunReports, transcripts, submissions — plus any figures are versioned; stores
+are regenerable and never committed anywhere), **snapshots the producing spec into the batch dir as
+`spec.json` + records this repo's git sha in `PROVENANCE.txt`** (so each run ties back to its exact
+parameters), then you **add a row to `verity-analysis/data/REGISTRY.md`** and commit it in
+`verity-analysis`. Always pass the spec arg.
+
+Once a batch is imported and committed there, its `verity/results/<batch>/` (stores included) can be
+deleted to reclaim disk. So: run → `results/` scratch here → `import_results.sh` into
+`verity-analysis/data/` → add a `REGISTRY.md` row → commit there → delete the scratch.
 
 ## Coding habits
 
@@ -156,7 +157,7 @@ worker), **live-validated** at 0.92253 balanced accuracy on `playground-series-s
 scoring, and the standalone verifier exercised by `tests/test_feature_engineering_*.py` — is reused by
 both `fe-kaggle` and `fe-holdout`. The installed catalog is `{code, fe-kaggle, fe-holdout}` — `fe-holdout`
 is the ablation task: the same §12 FE domain scored on a **local reserved hold-out** (no Kaggle, no
-competitive bar; the `holdout-experiment` verifier), driven by `experiments/ablation/`. Prefer
+competitive bar; the `holdout-experiment` verifier), driven by the operator-local `experiments/` tree. Prefer
 `verity catalog` for the live set.) The three **acceptance modes** (optimizer / accumulate / first-acceptable) are documented as
 emergent from verifier gate composition × `--stop-on-accept` × object-provisioning mode (README + the
 `verity-run-task` skill).

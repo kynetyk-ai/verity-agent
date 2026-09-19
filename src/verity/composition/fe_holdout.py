@@ -1,6 +1,6 @@
 """Apply the FE-holdout task to a generic control plane (the `fe-holdout` task type).
 
-The ablation-ladder task (Exp 1–4b, ``docs/experimental-design.md`` §1/§6): the same §12
+The ablation-ladder task (Exp 1–4b, the experimental design §1/§6): the same §12
 feature-engineering domain (schema / shape / instructions / object-naming) and worker provisioning
 as `fe-kaggle`, but scored **locally on a reserved hold-out** — no Kaggle, no competitive bar, no
 calibration. The verifier runs as the same kind of **sibling service** (§9.1), here selected by

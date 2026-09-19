@@ -170,11 +170,10 @@ sibling — `KAGGLE_USERNAME`/`KAGGLE_KEY` never reach a worker. It's a new task
 (`verity catalog --type fe-kaggle`). **You prepare the data** (ADR 0005): split it into per-role
 bundles outside Verity (`tools/prepare_fe_data.py`), then create with role-keyed
 `verity create --request-file task.json --file agent:train.csv=<h> --file verifier:holdout_labels.csv=<h> …`
-— the control plane routes opaque blobs and interprets no dataset semantics. The committed, runnable
-package — `task.json` (local-agent default), `run.sh` (which runs the prep for you), and the full
-setup protocol (token, accepting the competition rules) — lives in
-[`results/prototyping_datasci_test/PROTOCOL.md`](results/prototyping_datasci_test/PROTOCOL.md). Validated live on
-`playground-series-s6e6` with a local model at **0.92253 balanced accuracy**.
+— the control plane routes opaque blobs and interprets no dataset semantics. The runnable task
+package (`task.json`, `run.sh`, and the setup protocol covering the token and accepting the
+competition rules) is operator-local and versioned in the sibling `verity-analysis` repo, not here.
+Validated live on `playground-series-s6e6` with a local model at **0.92253 balanced accuracy**.
 
 ## Acceptance modes
 

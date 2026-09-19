@@ -70,7 +70,7 @@ notebook = [
     "nbconvert>=7.17.1",
     "pandas>=3.0.3",
 ]
-# The ablation analysis/plotting layer (experiments/ablation/figures): renders the F1-F5 figures.
+# The ablation analysis/plotting layer (the operator-local experiments/ tree): renders the figures.
 # The analysis *projection* (analyze.py) is pure stdlib and needs none of this; only the figures do.
 analysis = [
     "matplotlib>=3.11.0",
@@ -85,11 +85,12 @@ packages = ["src/verity"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests", "tools", "experiments"]
-# `results/` is the run-artifacts tree: recorded agent submissions (verbatim model output kept as
-# artifacts, not maintained source), calibration scripts, reports, and a throwaway analysis notebook.
-# Library source lives under src/tests/tools/experiments (the `src` list above); none of it is here.
+src = ["src", "tests", "tools"]
+# `experiments/` and `results/` are operator-local trees that are not tracked in this repo (the
+# sweep machinery and the run-artifacts they produce; see .gitignore). They may still be present in
+# a working checkout, so exclude them rather than lint output we do not version.
 extend-exclude = [
+    "experiments",
     "results",
 ]
 

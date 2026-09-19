@@ -53,18 +53,20 @@ data/
 *.jsonl
 *.ndjson
 
-# results/ is a local sweep-output SCRATCH dir — the committed experimental record + analysis now
-# live in the sibling `verity-analysis` repo (finished batches are pulled over with
-# verity-analysis/scripts/import_results.sh). Ignore everything under results/ EXCEPT the
-# prototyping_datasci_test task package, which stays tracked (PROTOCOL.md / task.json / run.sh, ADR
-# 0005-linked) with only its large datasets + generated output excluded. figures/ is analysis output.
-/results/*
-!/results/.gitkeep
-!/results/prototyping_datasci_test/
-/results/prototyping_datasci_test/*.csv
-/results/prototyping_datasci_test/out/
-/results/prototyping_datasci_test/agent/
-/results/prototyping_datasci_test/verifier/
+# The experiment tree is operator-local and out of this repo entirely.
+#
+#   experiments/  the sweep machinery + spec catalog + the runnable experimental design. It drives
+#                 runs, it is not part of the harness, and the experimental record it produces is
+#                 versioned in the sibling `verity-analysis` repo. Keep a copy there or on disk.
+#   results/      raw sweep output (RunReports, transcripts, submissions, the durable store) plus
+#                 the prototyping task package. Finished batches are imported into verity-analysis
+#                 with scripts/import_results.sh; what is left here is scratch.
+#   figures/      analysis output, authored and versioned in verity-analysis.
+#
+# tests/test_ablation_*.py `importorskip` the experiments package, so a checkout without it stays
+# green.
+/experiments/
+/results/
 /figures/
 figures/
 
