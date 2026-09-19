@@ -5,26 +5,29 @@ what's next?"* — `README.md` and `CLAUDE.md` point here.
 
 **MVP = spec v1.** The feature-engineering domain (spec §12) runs end-to-end and **all twelve §13
 acceptance criteria pass** — the MVP finish line (Phase 4). The arc then continues into the
-**Post-MVP roadmap** (Phases 5–7) below.
+**Post-MVP roadmap** (Phases 5–9) below.
 
-> **Status: post-MVP, deep into the Post-MVP roadmap.** Phases 0–4 reached MVP (all twelve §13 criteria
+> **Status: post-MVP. Phases 0–9 are complete.** Phases 0–4 reached MVP (all twelve §13 criteria
 > pass as runnable checks in `tests/test_feature_engineering_acceptance.py`; a `@live` run drives real
 > Claude proposals scored in a container on the stellar dataset). Beyond MVP: **Phase 5 ✅**
-> (reliability & observability hardening); **Phase 6 🚧** (model breadth — code-complete, local open
-> model live-validated 2026-06-08, hosted-OpenAI live pending a key); **Phase 7 🚧** (service split &
-> full containerization — the seams are live, and the full-containerization **done-line is reached:
-> a generic control plane runs in a container and launches ephemeral worker containers, running FE via
-> its API — 7.5 ✅**). **Phase 8 🚧** (the long-lived, configurable control-plane service — a standing
-> daemon configured + run via a CLI/HTTP, no image rebuild), settled by
+> (reliability & observability hardening); **Phase 6 ✅** (model breadth — live-validated across ten
+> models, local and hosted: `gpt-5.4-mini`/`nano`, `haiku-4-5`, `sonnet-4-6`, `gpt-oss`, `gemma4`,
+> `qwen`, `granite`, `glm-4.7-flash`, `fugu`, over batches run 2026-06-30 → 2026-07-16 and indexed in
+> `verity-analysis/data/REGISTRY.md`); **Phase 7 ✅** (service split & full containerization — the
+> seams are live and the **done-line is reached: a generic control plane runs in a container and
+> launches ephemeral worker containers, running FE via its API — 7.5 ✅**). **Phase 8 ✅ (v1)** (the
+> long-lived, configurable control-plane service — a standing daemon configured + run via a CLI/HTTP,
+> no image rebuild), settled by
 > [ADR 0004](docs/adr/0004-long-lived-configurable-control-plane.md) and **activating issue #3**: the
 > transport-agnostic **`ControlService` core (8.1 ✅)**, the **standing daemon + `verity` CLI over a
 > Unix socket (8.2 ✅)**, the **container wiring + isolation proof (8.3 ✅)**, and the
 > **external HTTP/REST control API (8.4 ✅)** have all landed — so **Phase 8 v1 is complete**: one
 > image serves a local Unix-socket daemon *and* an authenticated (bearer-token) network API with an
 > over-the-wire byte data plane, configured + run with no rebuild, durable across restart, with the
-> exchange + store volumes provably off every worker. Remaining beyond v1 (deferred engine tracks):
-> hosted-model live validation, the multi-tenancy/concurrency engine (#58), crash recovery (#57), the
-> full #3 networked data plane, and a `K8sBackend`.
+> exchange + store volumes provably off every worker. Remaining beyond v1 (deferred engine tracks,
+> tracked as issues rather than roadmap scope): the multi-tenancy/concurrency engine (epic #27, with
+> store-isolation tiers #58), crash recovery (#57), the full #3 networked data plane, and a
+> `K8sBackend`.
 > **Phase 9 ✅ (complete):** the last domain code is out of the control-plane image — adding a
 > verifier or task type needs **no CP rebuild**. **9.1 ✅** — the verifier runs as a **sibling
 > container** (its own image carries the gates + `kaggle`; the CP image drops `--extra kaggle`), built
@@ -55,6 +58,12 @@ service**.
   has drifted from the code is worse than none.
 - **Status legend:** ⬜ not started · 🚧 in progress · ✅ done.
 - **One source of truth.** If you want to know what to build next, read the lowest ⬜/🚧 item here.
+- **Completed phases are a record, not a map.** A landed sprint's entry describes the code as it was
+  when it landed, so it may name files that have since been retired. Retired so far: the one-shot
+  `composition/fe_run.py` entrypoint and `infra/compose.fe.yml` (removed with the basic-`fe` task,
+  #68); `tools/benchmark_models.py` and `tests/test_fe_via_config_acceptance.py`; and the five
+  per-image `Dockerfile.*` files, consolidated into one multi-stage `Dockerfile` with a target per
+  image. For what exists now, read the tree or `README.md`, not a completed entry.
 
 ## Tracking off-roadmap items (use GitHub issues)
 
@@ -250,7 +259,7 @@ now, cheap open models later; ADR 0002). Built as two sprints behind one `Sandbo
     timeout-kill) — but with **outbound network** for the model API and the workspace mounted writable,
     with read-only roles re-mounted ro on top (**physical gold-data isolation**) and `data_sources`
     mounted ro into `data/`. The container entrypoint reuses the shared agent builders, so a host that
-    only orchestrates containers needs no Deep Agents install (`Dockerfile.sandbox` carries it).
+    only orchestrates containers needs no Deep Agents install (the sandbox image carries it).
   - A docker+live integration test commits a `Submission` end to end: the agent **writes and runs
     code inside the container**, then proposes; the verifier gates it `ACCEPTED`. A cross-cycle test
     proves feedback-driven correction + ephemerality (a shape-error records nothing, threads back, and
@@ -261,7 +270,7 @@ now, cheap open models later; ADR 0002). Built as two sprints behind one `Sandbo
 ### Phase 4 — Feature-engineering domain (§12) → MVP ✅
 
 The first real discovery run, and the MVP — the §12 domain on the real Kaggle stellar dataset
-(`results/prototyping_datasci_test/`), run for multiple proposal rounds against the live control plane. Two
+(the operator-local prototyping task package), run for multiple proposal rounds against the live control plane. Two
 settled decisions shape it: the submitted **script trains end-to-end** and the verifier scores it on
 a **reserved hold-out** split from `train.csv` (leakage caught on the reserved set, §13.11); and the
 submission declares a **package list** the runner **pip-installs at run time** (network on; pinned
@@ -311,7 +320,7 @@ versions for reproducibility). Built in sub-phases, each a tested, gate-green PR
   read from its Kaggle metadata (default 5, overridable) and the gate blocks until budget frees;
   degrade-don't-crash on API failure. New `verity create
   --request-file` + `--test-data` (two inputs); the committed, runnable task package
-  (`results/prototyping_datasci_test/{PROTOCOL.md,task.json,run.sh}`, local-agent default). Offline-tested on a
+  (the prototyping task package's `PROTOCOL.md` / `task.json` / `run.sh`, local-agent default). Offline-tested on a
   `FakeKaggleScorer`; a `@kaggle @live` test submits for real (auto-skips without creds).
 
 - **Enhancement — `fe-kaggle`: goal-seeking toward a top-N% leaderboard bar ✅.** Reshapes the gate
@@ -385,11 +394,14 @@ Harden the loop and make it measurable before scaling models or splitting servic
   adapter binds *how*; names — not callables — cross the container boundary). First concrete tool:
   **`read_pdf`**, so the agent can read PDFs in its read-only roles.
 
-### Phase 6 — Model breadth: open, local & cheaper hosted 🚧 *(the thesis payoff)*
+### Phase 6 — Model breadth: open, local & cheaper hosted ✅ *(the thesis payoff)*
 
 "Good proposals from cheap models" is the point of the whole approach — make it real across local /
-open weights *and* cheaper hosted APIs. **Code landed and offline-green; live validation is the
-remaining paired step** (stand up a local server / supply an OpenAI key — see below).
+open weights *and* cheaper hosted APIs. **Done: code landed, offline-green, and live-validated across
+ten models** — hosted (`gpt-5.4-mini`, `gpt-5.4-nano`, `haiku-4-5`, `sonnet-4-6`) and local/open
+(`gpt-oss`, `gemma4`, `qwen`, `granite`, `glm-4.7-flash`, `fugu`) — over the ablation batches run
+2026-06-30 → 2026-07-16. Each batch, its producing spec and its headline result are indexed in
+`verity-analysis/data/REGISTRY.md`.
 
 The seam is a typed, provider-agnostic **`ModelSpec`** (`provider`, `model`, `base_url`,
 `api_key_env`, `extra`) + a lazy **`resolve_model`**: no `base_url` → the bare `provider:model` string
@@ -426,8 +438,11 @@ Ultra) drove the full read→propose→gate→commit loop to an accepted commit.
 >   limited-reasoning model** to act on, rather than a hard ceiling. A prompt/feedback-tuning question,
 >   not a blocker.
 
-**(2) hosted OpenAI — pending a key.** Both paths are manual (Docker + image + a real model), outside
-the CI gate.
+**(2) hosted OpenAI — done (2026-07-01 onward).** `gpt-5.4-mini` and `gpt-5.4-nano` drove the loop
+across the exp1 headroom sweep and the exp2/exp3/exp4b ladder batches; `haiku-4-5` and `sonnet-4-6`
+cover the Anthropic path. See `verity-analysis/data/REGISTRY.md` for the batch-by-batch record.
+
+Both paths are manual (Docker + image + a real model), outside the CI gate.
 
 > **Revisit for hardening — Docker Model Runner (DMR).** We first tried DMR's `vllm-metal` backend as
 > the *cleaner, Docker-managed* way to host the local model, but it **failed `EngineCore`
@@ -436,7 +451,7 @@ the CI gate.
 > `vllm-metal` tracks newer model architectures — it is the tidier host-model story on macOS. Tracked
 > as **#40** under the woven model-server hardening track.
 
-### Phase 7 — Service split & full containerization 🚧
+### Phase 7 — Service split & full containerization ✅
 
 The biggest, most deferrable: make each service independently deployable. The **seams are done and
 live-validated** (7.1–7.3 + the multi-tenancy seams): the verifier runs as a standing HTTP service the
@@ -454,7 +469,7 @@ the ports, never on the CP's surface. **7.4 is the live edge** and ends at the f
 done-line: the FE run driven entirely by control-plane configuration, no ad-hoc wiring.
 
 - **7.1 Service entrypoints + images ✅ (verifier)** — `verifier/__main__.py` serves the
-  advisory verifier over HTTP (uvicorn); `Dockerfile.verifier` builds it (core + `service` extra, no
+  advisory verifier over HTTP (uvicorn); the `verifier` image target builds it (core + `service` extra, no
   deepagents). The built image serves `/health` + `/provision` live. *Re-homed:* the **control-plane**
   entrypoint/image is absorbed into **7.4** (the worker-driven CP); the outward data-plane API (**#3**)
   is the Multi-tenancy & run-control track. *Superseded by ADR 0003:* the sandbox-as-server (the
@@ -555,7 +570,7 @@ done-line: the FE run driven entirely by control-plane configuration, no ad-hoc 
     imports nothing from `verity.domains`, and one generic CP runs both the FE and `code` tasks.
   - **Sibling-mount fix.** `DockerBackend(staging_root=…)` / `VERITY_WORKER_STAGING` — staging dirs go
     under a host↔CP-container shared path so worker bind mounts resolve on the host daemon.
-  - **CP image + entrypoint.** `Dockerfile.controlplane` (verity core + the docker CLI, no sandbox
+  - **CP image + entrypoint.** The control-plane image (verity core + the docker CLI, no sandbox
     extra) + `python -m verity.composition.fe_run` (generic CP, FE applied via its API). The
     stratified-split helper moved into the package (`verity.composition.dataset`).
   - **Wiring + live proof.** `infra/compose.fe.yml` + `just fe-containerized`. Live on the local model:
@@ -617,7 +632,7 @@ entrypoint + `infra/compose.fe.yml` were removed with the basic-`fe` task (#68);
   a real-`uds` round-trip; fastapi/httpx `importorskip`, so the lean gate skips cleanly).
 - **8.3 Container wiring + live proof (the done-line) ✅** — the control-plane image now also serves
   the standing daemon, with the **exchange** + **persistent-store** volumes wired and proven isolated.
-  **Landed:** `Dockerfile.controlplane` carries the `service` extra (fastapi/uvicorn/httpx) so it can
+  **Landed:** the control-plane image carries the `service` extra (fastapi/uvicorn/httpx) so it can
   run `verity serve`; a new **`infra/compose.daemon.yml`** brings up a long-lived `verity-cp` container
   (entrypoint `verity serve`) mounting the docker socket, the shared staging dir, the **exchange**
   (`VERITY_EXCHANGE`, client↔CP only) and a **persistent store** (`VERITY_STORE_ROOT`, durable
@@ -668,8 +683,8 @@ the genericity guard and the sandbox byte-provenance isolation invariant hold th
 - **9.1 Verifier → sibling containers (#73) ✅** — the *already-built but unwired* transport seam is now
   wired: composition builds a `RemoteVerifier` (a generic per-task `VerifierSetup` ships the split CSVs
   + gate knobs over the wire at provision) instead of the in-process `SdkVerifier`; the fe-kaggle gates
-  + the `kaggle` extra moved into `Dockerfile.verifier`, which carries the docker CLI and spawns its own
-  code-runner siblings. `Dockerfile.controlplane` **drops `--extra kaggle`** and all gate code — a guard
+  + the `kaggle` extra moved into the verifier image, which carries the docker CLI and spawns its own
+  code-runner siblings. The control-plane image **drops `--extra kaggle`** and all gate code — a guard
   test (`test_cp_image_imports_no_fe_gates_or_kaggle` + a kaggle-blocked daemon import) proves a new
   verifier needs **no CP rebuild**. The trusted Kaggle creds are forwarded by name to the verifier
   sibling only, never the agent worker. **Verifier reach = a *minimal on-demand launch*** (the right
@@ -737,7 +752,7 @@ the selection-margin noise-floor lever wired through the sweep (`Budgets.selecti
     (auditable drift) rather than pinning a closed wheelhouse (which would reject legitimate
     submissions). Belongs with the code-runner config work below.
   - ~~**ε measurement + the `selection_margin` value (C).**~~ **Done 2026-07-05**
-    (`verity-analysis/data/ablation-gpt5mini/epsilon-calibration/`): 5× reruns on both an sklearn and a lgbm+xgb submission were
+    (`verity-analysis/data/calibration_and_prototyping/ablation-gpt5mini/ablation-ladder-calibration/epsilon-calibration/`): 5× reruns on both an sklearn and a lgbm+xgb submission were
     bit-identical → ε = 0.0 on the study host; loop-rung `selection_margin` pinned at 0.0
     (`spec.loop.gpt5mini.*.json`).
   - **Post-audit addendum (2026-07-07):** the audit missed the *image* boundary — the sandbox image

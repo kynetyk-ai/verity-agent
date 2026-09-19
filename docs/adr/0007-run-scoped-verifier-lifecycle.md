@@ -35,8 +35,8 @@ provisions the task's verifier at run-start and tears it down in a `finally` at 
 reaped even on abort/exception); `configure()` no longer provisions the verifier (it still *creates*
 and run-context-binds it). `teardown()` keeps an idempotent `verifier.teardown()` as a backstop.
 
-Mechanically, the eager launch-at-configure is replaced by a thin **`_LazyLaunchVerifier`** adapter
-(`composition/fe_kaggle.py`) that holds the launch factory + the per-task `VerifierSetup` and
+Mechanically, the eager launch-at-configure is replaced by a thin **`LazyLaunchVerifier`** adapter
+(`composition/verifier_launch.py`) that holds the launch factory + the per-task `VerifierSetup` and
 (re)builds a fresh inner `VerifierPort` on each `provision()` (launch sibling → ship setup → await
 healthy), destroying it on each `teardown()`. It is re-launchable across a resident task's runs.
 

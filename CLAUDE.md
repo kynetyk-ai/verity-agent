@@ -133,8 +133,10 @@ feature-engineering domain (§12) that reached MVP against the twelve §13 accep
 Phase 5 reliability & observability hardening (degrade-don't-crash on both boundaries, typed errors,
 retries, atomic commits, the store-derived `RunReport`).
 
-**Phase 6 — model breadth** (the thesis payoff) is code-complete and **live-validated on a local open
-model** (Ollama / Qwen on Apple Silicon, 2026-06-08); hosted-OpenAI live validation is pending a key.
+**Phase 6 — model breadth (complete)** (the thesis payoff): **live-validated across ten models**,
+hosted (`gpt-5.4-mini`/`nano`, `haiku-4-5`, `sonnet-4-6`) and local/open (`gpt-oss`, `gemma4`, `qwen`,
+`granite`, `glm-4.7-flash`, `fugu`), over ablation batches run 2026-06-30 → 2026-07-16 and indexed in
+`../verity-analysis/data/REGISTRY.md`.
 **Phase 7 — service split & full containerization** reached its done-line (7.5): a **task-agnostic
 control plane runs in a container** and launches ephemeral sandbox + code-runner **worker containers**
 as siblings on the host daemon (ADR 0003), running the FE task by configuring the CP through its
@@ -176,7 +178,7 @@ task **and** verifier types are **discovered** from the `verity.task_types` / `v
 entry-point groups at boot (built-ins dogfooded through the same loader), not compiled in. Litmus test —
 now met: a new verifier or task type ships **a container + an installed entry point, no CP rebuild**.
 
-**Remaining / open tracks:** hosted-model live validation; the multi-tenancy engine (real queue +
+**Remaining / open tracks:** the multi-tenancy engine (real queue +
 tenant isolation, issue #3); a `K8sBackend`; and three research-driven docs/feature tracks — making the
 domain concept optional (#64), per-task harness-agnostic agent skills via the CLI (#65), and extender
 docs for adding sandboxes & verifiers (#66). See [ROADMAP.md](ROADMAP.md) for the live plan and

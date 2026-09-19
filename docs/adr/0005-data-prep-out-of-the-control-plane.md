@@ -104,12 +104,14 @@ from "the split withheld it" to "routing never placed it there."
 
 ## The worked example (this change ships it)
 
-`results/prototyping_datasci_test/` now carries the prepared, role-keyed inputs (generated once from the
-stellar `train.csv`/`test.csv` with the *same* `subsample(per_class=300)` → `stratified_split(
-reserved_fraction=0.5)` the CP did, run user-side):
+A prepared task package now carries the role-keyed inputs (generated once from the stellar
+`train.csv`/`test.csv` with the *same* `subsample(per_class=300)` → `stratified_split(
+reserved_fraction=0.5)` the CP did, run user-side). The package that shipped with this change lives
+outside version control — like all dataset-bearing trees here, it is operator-local — but its shape is
+the point:
 
 ```
-results/prototyping_datasci_test/
+<task-package>/
   agent/
     train.csv            # labeled, hold-out rows removed — what the agent trains on
     test.csv             # the real Kaggle test set, unlabeled

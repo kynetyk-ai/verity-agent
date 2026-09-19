@@ -267,8 +267,10 @@ Reference material lives in [`docs/`](docs/):
   example of applying a task to a generic control plane and the daemon CLI flow.
 - [`docs/local-models.md`](docs/local-models.md) — running against a local / open OpenAI-compatible model.
 - [`docs/glossary.md`](docs/glossary.md) — the run-control vocabulary (tenant / task / run / job).
-- [`docs/adr/`](docs/adr/) — architecture decision records (opaque verifier; Deep Agents sandbox;
-  control-plane + ephemeral-worker provisioning).
+- [`docs/adr/`](docs/adr/) — architecture decision records: the opaque verifier boundary (0001), the
+  Deep Agents sandbox runtime (0002), control-plane + ephemeral-worker provisioning (0003), the
+  long-lived configurable control plane (0004), data prep out of the control plane (0005), the
+  entry-point plugin loader (0006), and the run-scoped verifier lifecycle (0007).
 
 ---
 
