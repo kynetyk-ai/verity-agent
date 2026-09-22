@@ -1,6 +1,6 @@
 # Verity Roadmap
 
-What is still outstanding, and where each open issue folds in. `README.md` and `CLAUDE.md` point
+What is still outstanding, and where each open issue folds in. `README.md` and `AGENT.md` point
 here for status rather than restating it.
 
 **Phases 0 through 9 are complete.** What each one delivered is summarized under *What has been
@@ -36,7 +36,7 @@ ambiguity, a future refactor, a "we should revisit this": **open an issue.**
 
 ## Cross-cutting principles (always on)
 
-These hold in every phase (see `CLAUDE.md` → *Coding habits*):
+These hold in every phase (see `AGENT.md` → *Coding habits*):
 
 - **uv** for everything; **structured logging from day one**; **tests alongside the code**.
 - **Branch + PR** for all changes; **never a PR on buggy or embarrassing code.**
@@ -57,7 +57,7 @@ the ADRs, which are the durable account of why each shape was chosen.
 
 | Phase | Delivered |
 |---|---|
-| **0 — Bootstrap** | Repo, uv project, CI, the working norms in `CLAUDE.md`. |
+| **0 — Bootstrap** | Repo, uv project, CI, the working norms in `AGENT.md`. |
 | **1 — Control plane** | The kernel: typed-provenance store, commit path, lifecycle, context assembly, registries, loop control, workspace contract. Proven against throwaway agent and verifier doubles. |
 | **2 — Verifier service** | The opaque verifier and its gate-primitive SDK (deterministic check, numeric scorer, LLM judge, auto code runner, human-in-the-loop), staged cheap → `tentative`, hard → `accepted`. [ADR 0001](docs/adr/0001-opaque-verifier-and-control-plane-boundary.md) |
 | **3 — Sandbox service** | The real agent runtime on Deep Agents, in-process and container drivers, the outbox harvest path. [ADR 0002](docs/adr/0002-sandbox-runtime-deep-agents.md) |

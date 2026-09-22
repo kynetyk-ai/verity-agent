@@ -1,99 +1,77 @@
 # Verity
 
-A verifier-gated loop for autonomous agent work. An agent proposes; something that is not the agent
-judges; the decision and the reasons behind it become durable, typed state you can query later.
+Verity is part of an ongoing experiment in how to build agentic systems that run unattended and produce
+trustable results for knowledge work. The name comes from the same idea: *verity* = truth, and *verify*.
+The prototype system works as a managed agent that works as part of an
+integrated containerized system. The prototype system has three components:
 
-Verity is an ongoing experiment in how to build agentic systems that run unattended and produce
-results worth trusting. The name carries the point: *verity* = truth, and *verify*.
+- **Sandbox**: An isolated tool-using agent (currently built on the LangChain
+  DeepAgents harness) inside a workspace where the agent is free to manipulate files, use tools, and
+  compose its outputs for verification.
+- **Verifier**: an isolated service that the agent cannot reach directly and which  provides
+  validation of agent outputs according to a user-defined protocol.  
+- **Control Plane**: A deliberately unintelligent service that spawns agent working sessions and their
+  appropriate verification gates.  The control plane is the only service that mutates durable 
+  state and context, based on the outputs from the **Verifier**.
 
-The kernel knows nothing about any particular problem. A task supplies a sandbox (the agent runtime)
-and a verifier (the gates that judge its output), and both are extension points. Feature engineering
-against a live Kaggle leaderboard is the application this was built and validated on, and it is one
-application rather than the definition.
+Verity is designed to allow **Sandbox** agents to complete tasks in multiple modes across loops:
+1) Work on a task until a single acceptable output proposal is received.
+2) To optimize for the best output proposal across an arbitrary number of attempts
+3) To accumulate distinct, acceptable proposals across an arbitrary number of attempts
 
-> **Status:** post-MVP; Phases 0–9 complete. See [ROADMAP.md](ROADMAP.md) for what remains.
-> Stack: Python, managed with [uv](https://docs.astral.sh/uv/).
+The **Sandboxes** are deliberately ephemeral, and the agent in each works until it generates an
+appropriately shaped proposal or hits its step budget or timeout.  The system places these ephemeral workers
+in a loop that continues until an acceptable proposal is reached, a loop budget is reached, or both.
+The workers' context includes prompt instructions as well as a filesystem state populated by the 
+deterministic **Control Plane**.  This is intended to control what each run knows about previous runs,
+provide information about past proposals the worker can reason from, and prevent faulty reasoning or
+hallucinated information from an unacceptable proposal from poisoning future runs.
 
-## The case for independent verification
 
-An agent's own assessment of its work is not evidence about that work. Asked whether its output is
-good, a model tends to say yes, and its stated confidence carries little information about whether it
-is right. A loop running unattended on self-assessment compounds the problem, because every cycle
-builds on work that only its author has vouched for.
+## The case for Verity's architecture
 
-The thing that decides whether work is accepted therefore has to be something with no stake in having
-produced it. That single property is what makes the result of an unattended run worth anything. For
-the result to be auditable as well as trustworthy, the decision and its reasons have to survive as
-durable typed state rather than as a passage in a transcript, so that you can ask later why a given
-artifact holds the status it holds.
+Most knowledge work isn't right or wrong; its 'correctness' depends in large part on being able
+to describe the methodology that produced it along with a level of confidence that the methodology was 
+actually applied.  This is particularly true in domains where the quality of an output can't be judged
+by simple deterministic tests. However, even in coding, quality depends on things that go beyond simply
+whether the code runs and the tests pass.
 
-The strength of the guarantee is the strength of the gate, which is why the gate is an extension
-point: a deterministic check, a numeric scorer, a code runner in a clean container, an LLM judge, a
-human, or a live competition leaderboard. The feature-engineering task uses a real Kaggle leaderboard
-as its final test precisely because that is a judgement the system cannot talk itself into.
+Modern agents are pretty good, and for individual use, you may never need anything like Verity.  However,
+for trustable systems at scale in business settings, particularly those running relatively autonomously,
+we need to accept certain realities about how the agents work and engineer around them:
+1) Agents at some frequency are untruthful about the work they did and how they did it.
+2) They can be subject to hallucination at one or many steps in a long-running process.
+3) They may persist incorrect information, unhelpful reasoning, or frank hallucinations in their context, 
+   whether it's memory systems, or file-based state, or simply the chat history, that can then potentially 
+   poison all future steps the agent takes.
+4) Because of agents' limited ability to weigh different kinds of context or certainty of assertions in context
+   they are also at some frequency very poor judges of the quality of their own work.
 
-Four rules enforce this in the kernel:
+Verity is a step towards that kind of engineering, designed to provide:
+1) *Bounded Methodological Certainty*: at minimum, the steps taken to validate agents' work are guaranteed
+   and isolated from the agents themselves.  The verification gate can also flexibly and optionally include
+   assessment of the steps, recorded in the logs, that the agent took to do the work.  This means that 
+   an output of a Verity worker can always be described accurately with the steps taken to verify the output
+   and the level of certainty those steps provide.
+2) *Selective Context Management*: How context evolves across loops is bounded and configurable. Under extreme selection,
+   for example, the worker in a subsequent run may only ever see a single best output proposal with instructions to 
+   improve upon it.
+3) *Ephemeral Workers, Durable State*: one of the key premises of Verity is that the agent should not be a long-
+   running friend, but rather a disposable process that can be swiftly pruned if and when it errs in detectable ways.
 
-- **No implicit accept.** An artifact type with no declared gate cannot be committed at all. Silence
-  is never consent.
-- **The proposer is never its own gate.** The sandbox proposes and writes nothing; the verifier
-  judges and writes nothing; only the control plane mutates state.
-- **Status is richer than accept/reject.** An artifact moves `proposed → tentative → accepted`, and
-  can be `rejected`, `superseded` or `revised`. Cheap checks can only reach `tentative`; reaching
-  `accepted` takes a hard gate.
-- **`refine` recovers near-misses.** A mostly-sound artifact with a localized defect comes back with
-  the defect named, instead of being thrown away.
-
-The design originated in a natural-language specification, which is why `§N` citations appear
-throughout the code and the ADRs. That document is kept in the sibling `NL-specs` repo.
+Verity does not guarantee correctness, and indeed, nothing can, but it does provide an extensible framework
+that allows for methodological certainty and rational degrees of belief in outputs scoped by the methodology. To make this
+more concrete, think of a coding agent fanning out sub-agents to run a deep research task.  Anyone who has used such 
+a workflow understands (a) there are at least some inaccuracies or hallucinations in the outputs; (b) the frequency
+of such inaccuracies or hallucinations and the degree to which they may affect conclusions is almost impossible to assess
+without checking everything; (c) any verification that may be done is entirely subject to what the orchestrating agent
+decides to do or not.  While those workflows are useful (we use them all the time) that kind of uncertainty, from
+unaccountable actors, cannot be acceptable within industrial-grade, trustable systems.
 
 ## What's in the box
 
-### The loop and the three services
-
-The cycle is **read → propose → gate → commit**.
-
-- **Control plane** — the only service that mutates durable state, and deliberately unintelligent. It
-  owns the typed-provenance store, the commit path, the lifecycle, context assembly, the registries,
-  the task config, loop control, and the invariant workspace contract plus composed system prompt.
-- **Sandbox** — the agent runtime and its workspace. Ephemeral, regenerated each cycle. It proposes
-  and emits objects to an outbox for harvest; it never writes durable state.
-- **Verifier** — advisory, and opaque to the control plane. It receives a shaped proposal plus a
-  declared slice of the store and returns a verdict. It never writes either.
-
-### What it guarantees when left alone
-
-These are the properties that make an unattended run survivable, and they are asserted as tests
-rather than described as intentions.
-
-- **A failed step is recorded, not fatal.** A sandbox crash, a hard timeout, or a verifier that goes
-  away becomes a recorded failed cycle that is fed back to the agent, and the run continues.
-- **Typed errors at every service and IO boundary**, distinguishing recoverable conditions from
-  misuse. A raw `OSError` never escapes to abort a run.
-- **Bounded-backoff retries** on transient external calls, with transient and fatal classified
-  explicitly rather than by accident.
-- **Atomic commits.** Decision rows and terminal status move together or not at all.
-- **Invariants are property tests.** The rules above are checked against generated inputs, not only
-  against examples.
-- **A store-derived run report.** What a run did is reconstructed from durable state, so it survives a
-  restart and cannot drift from what was actually committed.
-
-### What it keeps separated
-
-- Each cycle runs in a **fresh, capability-dropped worker container** that is destroyed afterwards.
-- The **exchange and store volumes mount into the control-plane container only** and never reach a
-  worker, so a worker cannot see another task's files, an export in flight, or an answer key.
-- **Answer-key isolation holds by construction at the prep boundary.** You split the data into
-  per-role bundles yourself; the control plane routes opaque role-keyed blobs and interprets no
-  dataset semantics ([ADR 0005](docs/adr/0005-data-prep-out-of-the-control-plane.md)).
-- **Credentials stay on the trusted verifier.** Kaggle submission happens on the verifier sibling;
-  `KAGGLE_USERNAME` and `KAGGLE_KEY` never reach a worker.
-- Each task instance gets **its own provenance store**, so two tasks of the same type cannot see each
-  other's incumbents.
-
-### What ships today
-
-Read the live installed set with `verity catalog`; the current build carries:
+Verity is a work in progress that is designed to be extensible.  We do not consider it production-ready, and it may never 
+be developed to be so in its current form. Nonetheless, in our testing it has run stably for long periods including hundreds of runs on an initial prototyping domain, which so far has allowed us to run our experiments. Read the live installed set with `verity catalog`; the current build carries:
 
 | Task type | Gate | Mode |
 |---|---|---|
@@ -234,7 +212,7 @@ runnable task package and its setup protocol are operator-local and versioned in
 
 ```
 README.md     this file
-CLAUDE.md     orientation for coding agents working in this repo
+AGENT.md      orientation for coding agents working in this repo
 ROADMAP.md    outstanding work (completed phases are summarized, not detailed)
 .env.example  copy to .env for a live run
 pyproject.toml / justfile   uv project + dev commands
@@ -275,3 +253,13 @@ tests/            test suite (offline by default; docker/live auto-skip)
   entry-point plugin loader (0006), and the run-scoped verifier lifecycle (0007).
 - [`.claude/skills/verity-run-task/`](.claude/skills/verity-run-task/) — the operator's guide: setup,
   the full CLI reference, and the concepts companion.
+
+## Contributing
+
+You are welcome to fork and use Verity under the terms of the license, and to get in touch if you
+are interested in the project. If you find something worth pointing out, feel free to open an issue.
+We are not actively maintaining the project for third-party use.
+
+## License
+
+MIT. See [LICENSE.md](LICENSE.md).
