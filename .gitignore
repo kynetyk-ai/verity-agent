@@ -75,3 +75,6 @@ figures/
 .idea/
 .vscode/
 *.swp
+
+# Claude Code per-user permissions
+.claude/settings.local.json

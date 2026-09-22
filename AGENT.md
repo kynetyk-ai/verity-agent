@@ -1,14 +1,14 @@
 # Verity
 
-A verifier-gated loop for autonomous agent work. An agent proposes; something that is not the agent
-judges; the decision and its reasons become durable, typed state rather than a chat transcript or a
-vector store. The name carries the point: **verity** = truth, and *verify*.
+An ongoing experiment in how to build agentic systems that run unattended and produce trustable
+results for knowledge work. The name comes from the same idea: **verity** = truth, and *verify*.
 
-The project is an ongoing experiment in how to build agentic systems that run unattended and produce
-results worth trusting. The kernel is domain-agnostic: a task supplies a sandbox and a verifier, both
-of which are extension points. Feature engineering against a live Kaggle leaderboard is the
-application it was built and validated on, and it is one application rather than the definition.
-`README.md` carries the full argument and the usage recipes.
+An ephemeral agent in a sandbox proposes; an isolated verifier the agent cannot reach judges the
+proposal; a deterministic control plane records the decision and its reasons as durable, typed state
+and decides what context the next sandbox sees. The kernel is domain-agnostic: a task supplies a
+sandbox and a verifier, both of which are extension points. Feature engineering against a live Kaggle
+leaderboard is the prototyping domain it was built and validated on. `README.md` carries the full
+argument and the usage recipes.
 
 ## Where `§N` citations point
 
